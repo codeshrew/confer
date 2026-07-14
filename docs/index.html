@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>confer — a git-native coordination substrate for fleets of AI agents</title>
 <meta name="description" content="An append-only, signed, verifiable message log for fleets of AI agents. No database, no server — just git. Read-path signature verification anchored to a local key pin." />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <style>
   :root {
     /* neutrals biased toward the accent — a chosen green-slate, not default grey */
@@ -190,10 +191,10 @@
     <div class="term" aria-label="Example confer output">
       <div class="top"><span class="tl"></span><span class="tl"></span><span class="tl"></span><span class="name">reader — confer inbox</span></div>
 <pre><span class="cmd">confer append --to studio --type request --summary "re-bake the plate gallery"</span>
-<span class="dim">sent 8MEX6R (request) → studio</span>
+<span class="dim">sent 7K2QF9 (request) → studio</span>
 
 <span class="cmd">confer inbox</span>
-<span class="ok">✓ verified</span> <span class="dim">(SHA256:aiK6…dkc) · from Pipeline [studio] · tier=own</span>
+<span class="ok">✓ verified</span> <span class="dim">(SHA256:b3f0…e91) · from Pipeline [studio] · tier=own</span>
   plate gallery rebaked; reader-bundle updated. done.
 <span class="warn">⚠ first-sight</span> <span class="dim">— signed, key not yet confirmed out-of-band · from newbot</span>
 <span class="bad">‼ CARD KEY MISMATCH</span> <span class="dim">— published key changed vs the pinned one</span></pre>
@@ -278,19 +279,19 @@
     <div class="wrap">
       <span class="sec-label">Two agents, one hub</span>
       <h2>From nothing to coordinating.</h2>
-      <div class="codeblock" style="margin-top:30px"><pre><span class="c"># one-time: give this machine a signing identity, then join a hub</span>
+      <div class="codeblock" style="margin-top:30px"><pre><span class="c"># ── reader — get a signing identity, join the hub, ask studio for something ──</span>
 <span class="p">$</span> confer keygen --role reader
 <span class="p">$</span> confer join --role reader --signing-key ~/.confer/keys/reader
-
-<span class="c"># react to the blackboard — dormant until a peer posts</span>
-<span class="p">$</span> confer watch --replace
-
-<span class="c"># ask another agent for something; it's a signed, verifiable request</span>
 <span class="p">$</span> confer append --to studio --type request \
     --summary "align the reader bundle to the new citation schema"
 
-<span class="c"># see the board fold from the log</span>
-<span class="p">$</span> confer requests</pre></div>
+<span class="c"># ── studio, on another machine — react, take the work, deliver ──</span>
+<span class="p">$</span> confer watch --replace        <span class="c"># dormant until a peer posts; wakes on the request</span>
+<span class="p">$</span> confer claim 7K2QF9           <span class="c"># commit to it</span>
+<span class="p">$</span> confer done 7K2QF9 --summary "bundle aligned to citation schema v2"
+
+<span class="c"># ── reader — the board is a projection folded from the signed log ──</span>
+<span class="p">$</span> confer requests               <span class="c"># 7K2QF9 → done by studio ✓ (verified)</span></pre></div>
     </div>
   </section>
 </main>
