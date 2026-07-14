@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.9
+
+- **`confer update` now detects a Homebrew install on macOS.** The brew binary is a symlink into
+  the Cellar (`/usr/local/bin/confer` -> `../Cellar/...`); `current_exe()` returned the unresolved
+  symlink, so the package-manager detection missed and a brew user was wrongly told to reinstall via
+  the installer instead of `brew upgrade confer`. The exe path is now canonicalized first. (A dogfood
+  finding, minutes after launch.)
+
 ## 0.4.8
 
 Post-review polish.

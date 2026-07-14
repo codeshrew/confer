@@ -3854,7 +3854,12 @@ fn cmd_update(check_only: bool) -> Result<()> {
 /// No dist receipt → a package manager owns this binary. Detect which from the running exe and
 /// print the precise upgrade command; never self-replace.
 fn delegate_to_package_manager() -> Result<()> {
+    // Canonicalize: a Homebrew install exposes the binary as a SYMLINK (e.g.
+    // /usr/local/bin/confer -> ../Cellar/confer/<v>/bin/confer on Intel macOS), and
+    // `current_exe()` returns the unresolved symlink, which wouldn't contain `/Cellar/`.
+    // Resolve it so the package-manager path detection actually fires (a dogfood finding).
     let exe = std::env::current_exe().unwrap_or_default();
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let p = exe.to_string_lossy();
     if p.contains("/Cellar/") || p.contains("/homebrew/") || p.contains("/usr/local/opt/") {
         println!("confer was installed via Homebrew — `confer update` won't replace it.");
