@@ -127,6 +127,39 @@
   .glyph h3 { font-family: var(--mono); font-size: 14px; margin: 8px 0 4px; letter-spacing: -.01em; }
   .glyph p { margin: 0; font-size: 13.5px; color: var(--ink-soft); line-height: 1.5; }
 
+  /* verifiable exchange — ambient loop + step the verdicts */
+  .xchg { margin: 42px 0 0; }
+  .xchg-stage { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 12px 8px; box-shadow: var(--shadow); }
+  .xchg-svg { width: 100%; height: auto; display: block; }
+  .xchg-svg .rail { stroke: var(--line); stroke-width: 2; stroke-dasharray: 2 7; }
+  .xchg-svg .node rect { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+  .xchg-svg .node.hub rect { stroke: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+  .xchg-svg .nlabel { fill: var(--ink); font-family: var(--mono); font-size: 15px; font-weight: 600; }
+  .xchg-svg .nsub { fill: var(--ink-faint); font-family: var(--mono); font-size: 10.5px; }
+  .xchg-svg .ntag { fill: var(--ink-faint); font-family: var(--mono); font-size: 11.5px; }
+  .xchg-svg .pkt rect { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; }
+  .xchg-svg .pkt .pkt-seal { stroke: var(--accent); stroke-width: 1.5; }
+  .xchg-svg .pkt { animation: pkt-travel 4.4s cubic-bezier(.55,.05,.45,1) infinite; }
+  @keyframes pkt-travel {
+    0%   { transform: translate(130px,86px); opacity: 0; }
+    9%   { opacity: 1; }
+    45%  { transform: translate(380px,86px); opacity: 1; }
+    55%  { transform: translate(380px,86px); opacity: 1; }
+    91%  { transform: translate(630px,86px); opacity: 1; }
+    100% { transform: translate(630px,86px); opacity: 0; }
+  }
+  .xchg-svg .verdict { font-family: var(--mono); font-size: 23px; font-weight: 700; fill: var(--ok); transition: fill .2s ease; }
+  .xchg-svg[data-v="warn"] .verdict { fill: var(--warn); }
+  .xchg-svg[data-v="bad"] .verdict { fill: var(--bad); }
+  .xchg-ctl { display: flex; gap: 7px; margin-top: 16px; flex-wrap: wrap; justify-content: center; }
+  .vbtn { font-family: var(--mono); font-size: 13px; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .vbtn.is-on[data-v="ok"] { color: var(--ok); background: var(--accent-wash); border-color: color-mix(in srgb, var(--ok) 42%, var(--line)); }
+  .vbtn.is-on[data-v="warn"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border-color: color-mix(in srgb, var(--warn) 42%, var(--line)); }
+  .vbtn.is-on[data-v="bad"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 42%, var(--line)); }
+  .xchg-cap { text-align: center; color: var(--ink-soft); font-size: 14.5px; max-width: 46em; margin: 16px auto 4px; line-height: 1.55; }
+  .xchg-cap b { color: var(--ink); font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) { .xchg-svg .pkt { animation: none; transform: translate(630px,86px); } }
+
   /* feature grid */
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 34px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
@@ -213,6 +246,46 @@
         <div class="glyph"><div class="mark bad">‼</div><h3>mismatch</h3><p>The published key changed vs. the pin. Loud, and permanent — the identity <em>is</em> the key; there's no silent re-key.</p></div>
         <div class="glyph"><div class="mark dot">·</div><h3>unverified</h3><p>Legacy or unsigned. Rendered as advisory data, never as if it were attested.</p></div>
       </div>
+
+      <!-- verifiable exchange: ambient loop + step the three verdicts -->
+      <figure class="xchg" aria-label="How a message travels the hub and earns a verdict on read">
+        <div class="xchg-stage">
+          <svg viewBox="0 0 760 190" class="xchg-svg" role="img" aria-label="reader signs a message, it lands in the git hub, studio verifies it against its local key pin">
+            <line class="rail" x1="150" y1="86" x2="610" y2="86" />
+            <!-- reader -->
+            <g class="node">
+              <rect x="70" y="62" width="120" height="48" rx="11" />
+              <text class="nlabel" x="130" y="91" text-anchor="middle">reader</text>
+            </g>
+            <text class="ntag" x="130" y="134" text-anchor="middle">signs with its key</text>
+            <!-- hub -->
+            <g class="node hub">
+              <rect x="300" y="54" width="160" height="64" rx="11" />
+              <text class="nlabel" x="380" y="82" text-anchor="middle">the hub</text>
+              <text class="nsub" x="380" y="101" text-anchor="middle">append-only git log</text>
+            </g>
+            <!-- studio -->
+            <g class="node">
+              <rect x="570" y="62" width="120" height="48" rx="11" />
+              <text class="nlabel" x="630" y="91" text-anchor="middle">studio</text>
+            </g>
+            <text class="ntag" x="630" y="134" text-anchor="middle">verifies against its pin</text>
+            <!-- travelling signed message (ambient) -->
+            <g class="pkt" aria-hidden="true">
+              <rect x="-15" y="-11" width="30" height="22" rx="4" />
+              <path class="pkt-seal" d="M-15 -6 L0 4 L15 -6" fill="none" />
+            </g>
+            <!-- the verdict, resolved on read -->
+            <text class="verdict" x="630" y="44" text-anchor="middle">✓</text>
+          </svg>
+        </div>
+        <div class="xchg-ctl" role="tablist" aria-label="What does studio's local key pin say about the sender?">
+          <button class="vbtn is-on" type="button" data-v="ok" role="tab" aria-selected="true">✓ verified</button>
+          <button class="vbtn" type="button" data-v="warn" role="tab" aria-selected="false">⚠ first-sight</button>
+          <button class="vbtn" type="button" data-v="bad" role="tab" aria-selected="false">‼ mismatch</button>
+        </div>
+        <figcaption class="xchg-cap">The signature matches the key <b>studio pinned on first sight</b> — so the content it reads is provably the content that was signed. The shared hub is never trusted; the pin is.</figcaption>
+      </figure>
     </div>
   </section>
 
@@ -335,6 +408,34 @@
       if (e.key === 'ArrowLeft') { e.preventDefault(); tabs[(i-1+tabs.length)%tabs.length].focus(); select(tabs[(i-1+tabs.length)%tabs.length]); }
     });
   });
+
+  // verifiable exchange — step through the three verdicts
+  (function () {
+    const svg = document.querySelector('.xchg-svg');
+    if (!svg) return;
+    const verdict = svg.querySelector('.verdict');
+    const cap = document.querySelector('.xchg-cap');
+    const vbtns = Array.from(document.querySelectorAll('.vbtn'));
+    const STATES = {
+      ok:   { ch: '✓', cap: 'The signature matches the key <b>studio pinned on first sight</b> — so the content it reads is provably the content that was signed. The shared hub is never trusted; the pin is.' },
+      warn: { ch: '⚠', cap: 'Signed, but <b>studio has never seen this key</b>. It renders as provisional — advisory, not attested — until confirmed out-of-band. No silent trust.' },
+      bad:  { ch: '‼', cap: 'The published key <b>does not match studio’s pin</b> — a possible impersonation or a rewritten card. Loud, permanent, and never silently accepted.' },
+    };
+    function pick(v) {
+      svg.setAttribute('data-v', v);
+      verdict.textContent = STATES[v].ch;
+      cap.innerHTML = STATES[v].cap;
+      vbtns.forEach(b => {
+        const on = b.dataset.v === v;
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    }
+    vbtns.forEach(b => {
+      b.addEventListener('click', () => pick(b.dataset.v));
+      b.addEventListener('mouseenter', () => pick(b.dataset.v));
+    });
+  })();
 </script>
 </body>
 </html>
