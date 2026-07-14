@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0
+
+Field-feedback release — closes the private-hub onboarding gaps two fleets hit cold-testing 0.5.0.
+
+- **`--ssh-key <path>` for git transport to a PRIVATE hub** (`init` / `clone` / `reconnect`). The
+  key authenticates the initial clone AND is pinned to the clone's local `core.sshCommand`, so a
+  fresh shell or the headless watch keeps reaching the hub without depending on your ambient
+  `~/.ssh` — closing the chicken-and-egg gap where the first clone fails and the fix lives *inside*
+  the clone that couldn't be created. `--signing-key` is now clearly the IDENTITY (commit-signing)
+  key; `--ssh-key` is the TRANSPORT key.
+- **`confer doctor` flags a clone whose transport isn't self-contained** — an SSH origin with no
+  pinned `core.sshCommand` works from your shell but is a silent time-bomb headless / on another
+  machine.
+- **`confer onboard` surfaces private-hub auth** (the deploy-key / GitHub-App decision), emits a
+  concrete paste-safe role instead of a `<your-role>` placeholder that broke when pasted, and
+  points at `--ssh-key`.
+- **`init` / `reconnect` no longer nest the working clone inside a work repo** — run from a project
+  dir, the clone goes to `$HOME/<hub>` instead of a committable-by-accident nested directory.
+- **`reconnect --hub <repo>` refuses a non-confer repo** — it would otherwise join and PUSH confer
+  commits to that repo's origin; now gated on the confer-hub scaffold markers.
+- **Hardening:** echoed role/hub values are terminal-sanitized (a value copied from an untrusted
+  message can't rewrite your screen); `init`'s one-command create no longer prints a redundant
+  "now publish it with `confer join`" hint after it has already joined.
+
 ## 0.5.0
 
 - **`confer onboard` — the literacy pointer for a cold agent.** The one thing to tell a fresh

@@ -26,10 +26,10 @@ mod screen;
 mod secrets;
 #[cfg(feature = "serve")]
 mod serve;
-mod verify;
-mod version;
 mod store;
 mod tiers;
+mod verify;
+mod version;
 mod watch;
 mod watchlock;
 
@@ -73,7 +73,11 @@ fn check_version(root: &std::path::Path) {
         // version, newer commit) fires on every dev build — pure noise across the fleet —
         // and stays reportable on demand via `confer version` / `confer status`.
         if a.outdated && a.grade != "rebuild" {
-            eprintln!("confer: {} — {} (adopt: confer reconnect --role <you>)", a.grade, update_hint(a.grade));
+            eprintln!(
+                "confer: {} — {} (adopt: confer reconnect --role <you>)",
+                a.grade,
+                update_hint(a.grade)
+            );
         }
     }
 }
@@ -215,9 +219,7 @@ enum Cmd {
         to_me: bool,
     },
     /// Print one full message (by id or id-prefix) — triage a summary, then open it.
-    Show {
-        id: String,
-    },
+    Show { id: String },
     /// List requests with their derived status (open/claimed/done/error).
     Requests {
         /// only requests not yet done/errored (open or claimed) — the active board
@@ -431,9 +433,15 @@ enum Cmd {
         /// one-line role description to register for --role
         #[arg(long)]
         desc: Option<String>,
-        /// SSH key to sign --role's commits (its pubkey is published in the card)
+        /// SSH key to sign --role's commits — the IDENTITY key (its pubkey is published in the
+        /// card). Proves WHO you are; see --ssh-key for the key that lets you REACH the repo.
         #[arg(long = "signing-key")]
         signing_key: Option<String>,
+        /// SSH key that AUTHENTICATES git transport to a PRIVATE hub (push/fetch), e.g. a deploy
+        /// key. Used for the clone AND written to the clone's local `core.sshCommand`, so a fresh
+        /// shell or the headless watch keeps working without depending on your ambient ~/.ssh.
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
         /// place the clone in confer's managed home (~/.confer/clones/…) instead of `dir`.
         #[arg(long)]
         managed: bool,
@@ -454,6 +462,9 @@ enum Cmd {
         desc: Option<String>,
         #[arg(long = "signing-key")]
         signing_key: Option<String>,
+        /// SSH key that authenticates git transport to a PRIVATE hub (see `init --ssh-key`).
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
         /// place the clone in confer's managed home (~/.confer/clones/…) instead of `dir`,
         /// keeping it out of your git workspace.
         #[arg(long)]
@@ -544,6 +555,11 @@ enum Cmd {
         /// host to record for this role (default: autodetected hostname)
         #[arg(long)]
         host: Option<String>,
+        /// SSH key that authenticates git transport to a PRIVATE hub (deploy key etc.) — used for
+        /// the clone if the hub isn't present yet, and pinned to the clone's `core.sshCommand` so
+        /// the headless watch keeps reaching the hub. See `init --ssh-key`.
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
     },
     /// Bootstrap literacy for a cold agent: three lines on what confer is + the SINGLE next
     /// command for your situation — `init` to START a fleet, `reconnect` to JOIN one. The one
@@ -565,9 +581,7 @@ enum Cmd {
     },
     /// Verify a message's commit signature against the sender role's LOCALLY PINNED
     /// key (TOFU, ~/.confer) — attribution / anti-spoof. See DESIGN.md.
-    Verify {
-        id: String,
-    },
+    Verify { id: String },
     /// Confirm a role's first-seen key OUT-OF-BAND: after checking its
     /// fingerprint by a trusted channel, mark the pin confirmed so it verifies as ✓ instead of
     /// the provisional ⚠ first-sight. Shows the pinned fingerprint if you pass no role.
@@ -725,7 +739,6 @@ fn id_matches(full: &str, q: &str) -> bool {
     !q.is_empty() && (full == q || full.ends_with(q) || full.starts_with(q))
 }
 
-
 /// A full ULID is 26 Crockford-base32 chars — used to accept an as-yet-unfetched
 /// canonical id in `resolve` without collapsing a short fragment.
 fn is_full_ulid(s: &str) -> bool {
@@ -745,7 +758,9 @@ fn resolve_unique<'a>(msgs: &'a [Message], query: &str) -> Result<&'a str> {
     match hits.len() {
         1 => Ok(hits[0]),
         0 => Err(anyhow!("no message matches id '{query}'")),
-        n => Err(anyhow!("id '{query}' is ambiguous — matches {n} messages; use a longer or full id")),
+        n => Err(anyhow!(
+            "id '{query}' is ambiguous — matches {n} messages; use a longer or full id"
+        )),
     }
 }
 
@@ -784,7 +799,11 @@ pub(crate) fn format_line(
     let kind = m.front.msg_type.to_uppercase();
     let ts = m.front.ts.get(11..16).unwrap_or(&m.front.ts);
     let who = roster::display(roster, &m.front.from);
-    let pri = if m.front.priority.as_deref() == Some("high") { "‼ " } else { "" };
+    let pri = if m.front.priority.as_deref() == Some("high") {
+        "‼ "
+    } else {
+        ""
+    };
     // Verification glyph immediately after the sender; omitted (empty) when not computed.
     let vg = trust.map(|t| format!(" {}", t.glyph())).unwrap_or_default();
     let summary = if full {
@@ -841,9 +860,13 @@ pub(crate) fn to_json(m: &Message) -> Result<String> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Join { role, host, display, desc, signing_key } => {
-            cmd_join(role, host, display, desc, signing_key)
-        }
+        Cmd::Join {
+            role,
+            host,
+            display,
+            desc,
+            signing_key,
+        } => cmd_join(role, host, display, desc, signing_key),
         Cmd::Append {
             msg_type,
             text,
@@ -914,18 +937,63 @@ fn main() -> Result<()> {
             blocked,
         } => cmd_requests(open, mine, role, json, backlog, blocked),
         Cmd::Thread { id, full } => cmd_thread(id, full),
-        Cmd::Init { url, dir, role, ssh, https, display, desc, signing_key, managed } => {
-            cmd_init(url, dir, role, scheme_from(ssh, https), display, desc, signing_key, false, managed)
-        }
-        Cmd::Clone { url, dir, role, ssh, https, display, desc, signing_key, managed } => {
-            cmd_init(url, dir, role, scheme_from(ssh, https), display, desc, signing_key, true, managed)
-        }
+        Cmd::Init {
+            url,
+            dir,
+            role,
+            ssh,
+            https,
+            display,
+            desc,
+            signing_key,
+            ssh_key,
+            managed,
+        } => cmd_init(
+            url,
+            dir,
+            role,
+            scheme_from(ssh, https),
+            display,
+            desc,
+            signing_key,
+            ssh_key,
+            false,
+            managed,
+        ),
+        Cmd::Clone {
+            url,
+            dir,
+            role,
+            ssh,
+            https,
+            display,
+            desc,
+            signing_key,
+            ssh_key,
+            managed,
+        } => cmd_init(
+            url,
+            dir,
+            role,
+            scheme_from(ssh, https),
+            display,
+            desc,
+            signing_key,
+            ssh_key,
+            true,
+            managed,
+        ),
         Cmd::Clones => cmd_clones(),
         Cmd::Where => cmd_where(),
-        Cmd::Keygen { role } => cmd_keygen(role),
+        Cmd::Keygen { role } => cmd_keygen(role, true),
         Cmd::Update { check } => cmd_update(check),
         Cmd::AdoptClone { path, force } => cmd_adopt_clone(path, force),
-        Cmd::Invite { role, host, ssh, https } => cmd_invite(role, host, scheme_from(ssh, https)),
+        Cmd::Invite {
+            role,
+            host,
+            ssh,
+            https,
+        } => cmd_invite(role, host, scheme_from(ssh, https)),
         Cmd::Repos { json } => cmd_repos(json),
         Cmd::Verify { id } => cmd_verify(id),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
@@ -940,11 +1008,25 @@ fn main() -> Result<()> {
             println!("{}", ghapp::token(&ghapp::load_config()?)?);
             Ok(())
         }
-        Cmd::AppConfig { app_id, key, installation_id, find_installation } => {
-            cmd_app_config(app_id, key, installation_id, find_installation)
-        }
-        Cmd::InstallSkill { dir, hub, role, no_autoheal } => cmd_install_skill(dir, hub, role, no_autoheal),
-        Cmd::Reconnect { role, hub, dir, host } => cmd_reconnect(role, hub, dir, host),
+        Cmd::AppConfig {
+            app_id,
+            key,
+            installation_id,
+            find_installation,
+        } => cmd_app_config(app_id, key, installation_id, find_installation),
+        Cmd::InstallSkill {
+            dir,
+            hub,
+            role,
+            no_autoheal,
+        } => cmd_install_skill(dir, hub, role, no_autoheal),
+        Cmd::Reconnect {
+            role,
+            hub,
+            dir,
+            host,
+            ssh_key,
+        } => cmd_reconnect(role, hub, dir, host, ssh_key),
         Cmd::Onboard { role, hub } => cmd_onboard(role, hub),
         Cmd::Version { json, check, pin } => cmd_version(json, check, pin),
         Cmd::Fleet { json } => cmd_fleet(json),
@@ -970,7 +1052,11 @@ fn main() -> Result<()> {
                 "low" => 0,
                 "normal" => 1,
                 "high" => 2,
-                other => return Err(anyhow!("invalid --min-priority '{other}': expected low | normal | high")),
+                other => {
+                    return Err(anyhow!(
+                        "invalid --min-priority '{other}': expected low | normal | high"
+                    ))
+                }
             };
             watch::run(watch::WatchOpts {
                 topic,
@@ -996,16 +1082,23 @@ fn main() -> Result<()> {
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
-        Cmd::Describe { role, desc, display, add_alias, remove_alias, force } => {
-            cmd_describe(role, desc, display, add_alias, remove_alias, force)
-        }
+        Cmd::Describe {
+            role,
+            desc,
+            display,
+            add_alias,
+            remove_alias,
+            force,
+        } => cmd_describe(role, desc, display, add_alias, remove_alias, force),
         Cmd::Retire { role, permanent } => {
             cmd_set_status(role, if permanent { "retired" } else { "dormant" })
         }
         Cmd::Resume { role } => cmd_set_status(role, "active"),
         Cmd::Who => cmd_who(),
         Cmd::Leave => {
-            eprintln!("confer leave: not yet implemented (planned: release lease + handoff marker)");
+            eprintln!(
+                "confer leave: not yet implemented (planned: release lease + handoff marker)"
+            );
             Ok(())
         }
     }
@@ -1069,7 +1162,10 @@ fn configure_signing(root: &std::path::Path, key: &std::path::Path) -> Result<St
 /// `pubkey : x` with a space, or a missing fence would otherwise disagree — red-team).
 fn card_pubkey(card_text: &str) -> Option<String> {
     let (map, _body) = parse_card(card_text);
-    map.get("pubkey").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    map.get("pubkey")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Compare two ssh pubkeys by algorithm + key material only (ignore the trailing comment) —
@@ -1096,7 +1192,11 @@ fn ensure_card_pubkey(root: &std::path::Path, role: &str, pubkey: &str) -> Resul
     // re-joining is a harmless no-op; a different key is refused (the read-side MISMATCH is the
     // suspenders — the hub is not server-validated, so this is a source-side UX guard, not a
     // boundary).
-    if let Some(existing) = map.get("pubkey").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(existing) = map
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         return if pubkey_material_eq(existing, pubkey) {
             Ok(false)
         } else {
@@ -1119,6 +1219,45 @@ fn ensure_card_pubkey(root: &std::path::Path, role: &str, pubkey: &str) -> Resul
 /// Warn (non-fatal) if the hub clone sits INSIDE another git repo — a repo-in-a-repo
 /// that the outer repo sees as a stray untracked dir, inviting accidental commits.
 /// The hub belongs as a SIBLING to work repos, not nested.
+/// Would a clone at `dir` nest inside another git work tree? (Any ancestor holds a `.git`.)
+fn is_nested_path(dir: &std::path::Path) -> bool {
+    let abs = if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|c| c.join(dir))
+            .unwrap_or_else(|_| dir.to_path_buf())
+    };
+    let mut p = abs.parent();
+    while let Some(a) = p {
+        if a.join(".git").exists() {
+            return true;
+        }
+        p = a.parent();
+    }
+    false
+}
+
+/// Choose a working-clone location that won't nest inside a work repo (#4 field feedback). An
+/// explicit `dir` is honored verbatim; otherwise, if the default `CWD/<basename>` would nest
+/// (agents run from their project dir), clone into `$HOME/<basename>` and say so.
+fn safe_clone_dir(dir: Option<String>, basename: &str) -> String {
+    if let Some(d) = dir {
+        return d;
+    }
+    if is_nested_path(std::path::Path::new(basename)) {
+        if let Ok(home) = config::home() {
+            let target = home.join(basename);
+            eprintln!(
+                "confer: inside a git repo — cloning to {} so it isn't nested in your working tree.",
+                target.display()
+            );
+            return target.to_string_lossy().into_owned();
+        }
+    }
+    basename.to_string()
+}
+
 fn warn_if_nested(hub: &std::path::Path) {
     let hub_abs = hub.canonicalize().unwrap_or_else(|_| hub.to_path_buf());
     let mut p = hub_abs.parent();
@@ -1212,7 +1351,10 @@ fn cmd_join(
             // (and re-signs) as this role — otherwise the committer email wouldn't
             // match the allowed_signers principal and verification would fail.
             gitcmd::check(&root, &["config", "user.name", &role])?;
-            gitcmd::check(&root, &["config", "user.email", &format!("{role}@confer.local")])?;
+            gitcmd::check(
+                &root,
+                &["config", "user.email", &format!("{role}@confer.local")],
+            )?;
             println!("signing: commits from this clone will be signed with {kp}");
             Some(pk)
         }
@@ -1226,7 +1368,10 @@ fn cmd_join(
             let _ = gitcmd::check(&root, &["config", "commit.gpgsign", "false"]);
             let _ = gitcmd::check(&root, &["config", "gpg.format", "ssh"]); // harmless; avoids gpg fallback
             let _ = gitcmd::check(&root, &["config", "user.name", &role]);
-            let _ = gitcmd::check(&root, &["config", "user.email", &format!("{role}@confer.local")]);
+            let _ = gitcmd::check(
+                &root,
+                &["config", "user.email", &format!("{role}@confer.local")],
+            );
             None
         }
     };
@@ -1240,7 +1385,10 @@ fn cmd_join(
     // peer's/attacker's pinned key (red-team).
     if let Some(pk) = &pubkey {
         let hk = config::hub_key(&root);
-        if matches!(keyring::pin_or_check(&hk, &role, pk, &now()), Ok(keyring::Pin::First) | Ok(keyring::Pin::Match)) {
+        if matches!(
+            keyring::pin_or_check(&hk, &role, pk, &now()),
+            Ok(keyring::Pin::First) | Ok(keyring::Pin::Match)
+        ) {
             let _ = keyring::confirm(&hk, &role);
         }
     }
@@ -1277,7 +1425,9 @@ fn cmd_join(
     let card_path = root.join("roles").join(format!("{role}.md"));
     if card_path.exists() {
         let msg = match &pubkey {
-            Some(pk) if ensure_card_pubkey(&root, &role, pk)? => Some("join: publish signing pubkey"),
+            Some(pk) if ensure_card_pubkey(&root, &role, pk)? => {
+                Some("join: publish signing pubkey")
+            }
             _ => None,
         };
         match msg {
@@ -1410,7 +1560,9 @@ fn parse_ref(s: &str) -> Result<schema::CodeRef> {
         ));
     }
     if path.chars().any(|c| c.is_control()) {
-        return Err(anyhow!("invalid --ref path '{path}': contains control characters"));
+        return Err(anyhow!(
+            "invalid --ref path '{path}': contains control characters"
+        ));
     }
     Ok(schema::CodeRef {
         repo: repo.to_string(),
@@ -1453,7 +1605,10 @@ fn recipient_advisory(
     if to.is_empty() && cc.is_empty() {
         return;
     }
-    let hub = root.file_name().and_then(|s| s.to_str()).unwrap_or("this hub");
+    let hub = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("this hub");
     let mut known: Vec<&str> = roster.keys().map(String::as_str).collect();
     known.sort_unstable();
     // Reachable peers = every joined role other than the sender.
@@ -1482,8 +1637,16 @@ fn recipient_advisory(
     }
 
     if !unknown.is_empty() {
-        let joined = if known.is_empty() { "(none yet)".to_string() } else { known.join(", ") };
-        let names = unknown.iter().map(|r| format!("'{r}'")).collect::<Vec<_>>().join(", ");
+        let joined = if known.is_empty() {
+            "(none yet)".to_string()
+        } else {
+            known.join(", ")
+        };
+        let names = unknown
+            .iter()
+            .map(|r| format!("'{r}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
         eprintln!(
             "confer: warning — {} {names} {} not joined hub '{hub}'; they won't see this until they join. Joined roles: {joined}. If you expected them here, you may be in the wrong hub.",
             if unknown.len() == 1 { "role" } else { "roles" },
@@ -1548,10 +1711,16 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     }
     if let Some(p) = &a.priority {
         if !matches!(p.as_str(), "low" | "normal" | "high") {
-            return Err(anyhow!("invalid --priority '{p}': expected low | normal | high"));
+            return Err(anyhow!(
+                "invalid --priority '{p}': expected low | normal | high"
+            ));
         }
     }
-    let refs = a.refs.iter().map(|s| parse_ref(s)).collect::<Result<Vec<_>>>()?;
+    let refs = a
+        .refs
+        .iter()
+        .map(|s| parse_ref(s))
+        .collect::<Result<Vec<_>>>()?;
     // A blank value counts as absent (an empty `--of`/`--supersedes` must not slip
     // past the required-field guard — see C1).
     let blank = |o: &Option<String>| o.as_deref().is_none_or(|s| s.trim().is_empty());
@@ -1559,18 +1728,34 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     if a.msg_type == "request" && a.to.is_empty() {
         return Err(anyhow!("--to <target> is required for type 'request'"));
     }
-    if matches!(a.msg_type.as_str(), "claim" | "done" | "error" | "blocked" | "defer") && blank(&a.of) {
-        return Err(anyhow!("--of <request-id> is required for type '{}'", a.msg_type));
+    if matches!(
+        a.msg_type.as_str(),
+        "claim" | "done" | "error" | "blocked" | "defer"
+    ) && blank(&a.of)
+    {
+        return Err(anyhow!(
+            "--of <request-id> is required for type '{}'",
+            a.msg_type
+        ));
     }
     if a.msg_type == "supersede" && blank(&a.supersedes) {
-        return Err(anyhow!("--supersedes <id> is required for type 'supersede'"));
+        return Err(anyhow!(
+            "--supersedes <id> is required for type 'supersede'"
+        ));
     }
     if a.summary.trim().is_empty() {
-        return Err(anyhow!("--summary must not be empty (it's the triage line peers read)"));
+        return Err(anyhow!(
+            "--summary must not be empty (it's the triage line peers read)"
+        ));
     }
     // Resolution — only on a terminal `done`; validate the small vocab.
     // `done` is the default and stores nothing; the others record *why* it closed.
-    let resolution = match a.resolution.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let resolution = match a
+        .resolution
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         None => None,
         Some(_) if a.msg_type != "done" => {
             return Err(anyhow!("--as <resolution> is only valid on --type done"));
@@ -1578,11 +1763,15 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         Some("done") => None,
         Some(r @ ("wont-do" | "dropped" | "duplicate" | "obsolete")) => Some(r.to_string()),
         Some(other) => {
-            return Err(anyhow!("invalid --as '{other}': expected wont-do | duplicate | obsolete"));
+            return Err(anyhow!(
+                "invalid --as '{other}': expected wont-do | duplicate | obsolete"
+            ));
         }
     };
     if a.defer && a.msg_type != "request" {
-        return Err(anyhow!("--defer is only valid on --type request (it's a backlog marker)"));
+        return Err(anyhow!(
+            "--defer is only valid on --type request (it's a backlog marker)"
+        ));
     }
 
     let topic = a.topic.unwrap_or_else(|| "general".to_string());
@@ -1590,10 +1779,14 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     // Slug validation (H2 — prevent path traversal / broken filenames).
     for (label, s) in [("role", role.as_str()), ("topic", topic.as_str())] {
         if !valid_slug(s) {
-            return Err(anyhow!("invalid {label} '{s}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"));
+            return Err(anyhow!(
+                "invalid {label} '{s}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"
+            ));
         }
         if is_reserved_name(s) {
-            return Err(anyhow!("'{s}' is reserved (the broadcast target) and can't be a {label}"));
+            return Err(anyhow!(
+                "'{s}' is reserved (the broadcast target) and can't be a {label}"
+            ));
         }
     }
     for r in a.to.iter().chain(a.cc.iter()) {
@@ -1609,7 +1802,9 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     // fragment, which would fold by prefix onto sibling ids forever (C2).
     let all = store::all_messages(&root)?;
     let resolve = |label: &str, v: &Option<String>| -> Result<Option<String>> {
-        let Some(raw) = v.as_ref() else { return Ok(None) };
+        let Some(raw) = v.as_ref() else {
+            return Ok(None);
+        };
         let s = raw.trim();
         if s.is_empty() {
             return Ok(None);
@@ -1617,9 +1812,9 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         match resolve_unique(&all, s) {
             Ok(id) => Ok(Some(id.to_string())),
             Err(_) if is_full_ulid(s) => Ok(Some(s.to_string())), // canonical, just not fetched yet
-            Err(_) if all.iter().any(|m| id_matches(&m.front.id, s)) => Err(anyhow!(
-                "--{label} '{s}' is ambiguous; use the full id"
-            )),
+            Err(_) if all.iter().any(|m| id_matches(&m.front.id, s)) => {
+                Err(anyhow!("--{label} '{s}' is ambiguous; use the full id"))
+            }
             Err(_) => Err(anyhow!(
                 "--{label} '{s}' matches no known message; fetch it first or pass the full id"
             )),
@@ -1653,7 +1848,15 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     // posting): warn if this targets a role that hasn't joined THIS hub, or `all`
     // resolves to just yourself. See DESIGN.md.
     let grps = groups::load(&root);
-    recipient_advisory(&root, &roster::load(&root), &grps, &role, &to, &a.cc, &a.summary);
+    recipient_advisory(
+        &root,
+        &roster::load(&root),
+        &grps,
+        &role,
+        &to,
+        &a.cc,
+        &a.summary,
+    );
 
     // Reference advisory (point-vs-carry): if a --ref points at a repo the
     // audience can't reach, they can't follow the pointer — nudge to inline the
@@ -1709,7 +1912,10 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     // summary-only note must opt in with --allow-empty-body — EXCEPT lifecycle
     // markers (claim/done/error/supersede), where the summary IS the payload, so
     // requiring a body just discourages closing requests.
-    let lifecycle = matches!(a.msg_type.as_str(), "claim" | "done" | "error" | "supersede" | "blocked" | "defer");
+    let lifecycle = matches!(
+        a.msg_type.as_str(),
+        "claim" | "done" | "error" | "supersede" | "blocked" | "defer"
+    );
     if !a.allow_empty_body && !lifecycle && matches!(body.trim(), "" | "-" | ".") {
         return Err(anyhow!(
             "refusing to send an empty message body (got {:?}) — pass --text \"…\" or pipe stdin; \
@@ -1737,7 +1943,9 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     // sanitized defensively (schema::sanitize_term), but block it at the source too so a
     // fleet message never carries them. `\n`/`\t` are fine in a body; the summary is a
     // one-liner so no control chars at all.
-    let ctrl_body = body.chars().find(|&c| c != '\n' && c != '\t' && c.is_control());
+    let ctrl_body = body
+        .chars()
+        .find(|&c| c != '\n' && c != '\t' && c.is_control());
     if let Some(c) = ctrl_body {
         return Err(anyhow!(
             "refusing to send — the body contains a control character (U+{:04X}). \
@@ -1802,7 +2010,9 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         }
         // Committed locally, push deferred — the message is SAFE and flushes on next sync.
         Ok(gitcmd::Committed::DeferredLocal) => {
-            eprintln!("confer: committed locally, hub push deferred; flushes on the next confer command");
+            eprintln!(
+                "confer: committed locally, hub push deferred; flushes on the next confer command"
+            );
             false
         }
         // NOT committed (e.g. the clone was busy). Remove the orphaned working-tree file and
@@ -1822,7 +2032,11 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         msg.front.msg_type,
         msg.front.summary.as_deref().unwrap_or("").chars().count(),
         msg.body.chars().count(),
-        if synced { "" } else { " [NOT synced — committed locally]" }
+        if synced {
+            ""
+        } else {
+            " [NOT synced — committed locally]"
+        }
     );
 
     // Claim-race check: on a broadcast request two agents can both
@@ -1848,7 +2062,10 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     if !synced {
         // Non-zero exit so a hook/loop can distinguish committed-locally from
         // reached-the-hub (audit S2) — the id above still identifies the message.
-        return Err(anyhow!("message {} committed locally but not synced to the hub", short_id(&id)));
+        return Err(anyhow!(
+            "message {} committed locally but not synced to the hub",
+            short_id(&id)
+        ));
     }
     Ok(())
 }
@@ -1885,7 +2102,10 @@ fn cmd_poll(p: PollArgs) -> Result<()> {
     // Commit-ordered incremental read: only messages added since the cursor.
     let grps = groups::load(&root);
     let msgs = store::messages_since(&root, since.as_deref())?;
-    let new: Vec<&Message> = msgs.iter().filter(|m| relevant(m, &me, &p, &grps)).collect();
+    let new: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| relevant(m, &me, &p, &grps))
+        .collect();
 
     // Stop-hook mode reads STDERR on exit 2; normal mode writes stdout (M2).
     let mut out: Box<dyn Write> = if p.hook {
@@ -1939,7 +2159,13 @@ fn relevant(m: &Message, me: &str, p: &PollArgs, groups: &groups::Groups) -> boo
 /// Wrap a rendered body in the untrusted-data envelope, annotating it with the heuristic
 /// screen's verdict (⚠) computed from the RAW body — not the framed markdown, whose
 /// `---\nfrom:` frontmatter would self-trigger format-injection. DESIGN.md §2 + §3.
-fn framed_body(display_md: &str, m: &Message, who: &str, trust: &verify::Trust, tier: Option<tiers::Tier>) -> String {
+fn framed_body(
+    display_md: &str,
+    m: &Message,
+    who: &str,
+    trust: &verify::Trust,
+    tier: Option<tiers::Tier>,
+) -> String {
     let v = screen::heuristic(&screen::Input {
         body: &m.body,
         from_role: &m.front.from,
@@ -1948,7 +2174,10 @@ fn framed_body(display_md: &str, m: &Message, who: &str, trust: &verify::Trust, 
     });
     let note = match v.level {
         screen::Level::Allow => None,
-        _ => Some(format!("⚠ possible injection ({})", v.category.unwrap_or("?"))),
+        _ => Some(format!(
+            "⚠ possible injection ({})",
+            v.category.unwrap_or("?")
+        )),
     };
     envelope::frame(display_md, who, &m.front.from, trust, tier, note.as_deref())
 }
@@ -1971,11 +2200,16 @@ fn cmd_show(id: String) -> Result<()> {
             let body = schema::sanitize_term(&m.to_markdown()?, true);
             println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
             // Supersession chain (the append-based "edit" model).
-            if let Some(newer) = msgs
-                .iter()
-                .find(|x| x.front.supersedes.as_deref().is_some_and(|s| id_matches(&m.front.id, s)))
-            {
-                println!("> ⚠ superseded by {} — see the newer message", short_id(&newer.front.id));
+            if let Some(newer) = msgs.iter().find(|x| {
+                x.front
+                    .supersedes
+                    .as_deref()
+                    .is_some_and(|s| id_matches(&m.front.id, s))
+            }) {
+                println!(
+                    "> ⚠ superseded by {} — see the newer message",
+                    short_id(&newer.front.id)
+                );
             }
             if let Some(old) = &m.front.supersedes {
                 println!("> (this supersedes {})", short_id(old));
@@ -2024,7 +2258,9 @@ fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
     if me.is_empty() {
-        return Err(anyhow!("no role — set one to have an inbox (join, or --role <you>)"));
+        return Err(anyhow!(
+            "no role — set one to have an inbox (join, or --role <you>)"
+        ));
     }
     // Checking your mail must show FRESH mail — integrate first (like poll/status),
     // else the working-tree fold is stale and the inbox lies by omission.
@@ -2042,7 +2278,11 @@ fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
         println!("inbox clear — no unread mail addressed to {me}.");
         return Ok(());
     }
-    println!("── {} unread for {me}{} ──\n", unread.len(), if peek { " (peek)" } else { "" });
+    println!(
+        "── {} unread for {me}{} ──\n",
+        unread.len(),
+        if peek { " (peek)" } else { "" }
+    );
     let mut vc = verify::Cache::default();
     for m in &unread {
         let t = verify::status(&root, &hub, &roster, &mut vc, m);
@@ -2068,7 +2308,9 @@ fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
     if me.is_empty() {
-        return Err(anyhow!("no role — set one to ack mail (join, or --role <you>)"));
+        return Err(anyhow!(
+            "no role — set one to ack mail (join, or --role <you>)"
+        ));
     }
     let hub = config::hub_key(&root);
     let msgs = store::all_messages(&root)?;
@@ -2077,7 +2319,10 @@ fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
         None => inbox::latest_id(&msgs).ok_or_else(|| anyhow!("no messages to ack"))?,
     };
     inbox::advance(&hub, &me, &target)?;
-    println!("acked — read frontier for {me} now at {}", short_id(&target));
+    println!(
+        "acked — read frontier for {me} now at {}",
+        short_id(&target)
+    );
     Ok(())
 }
 
@@ -2099,7 +2344,14 @@ fn superseded_set(msgs: &[Message]) -> HashSet<String> {
 /// Roles that have claimed a request, in fold order (first = current owner). More
 /// than one distinct role ⇒ a contested claim (a race on a broadcast request).
 /// See DESIGN.md.
-fn cmd_requests(open_only: bool, mine: bool, role: Option<String>, json: bool, backlog: bool, blocked_only: bool) -> Result<()> {
+fn cmd_requests(
+    open_only: bool,
+    mine: bool,
+    role: Option<String>,
+    json: bool,
+    backlog: bool,
+    blocked_only: bool,
+) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
     // The board is THE shared-state view — integrate first (like poll/inbox/status)
@@ -2107,7 +2359,9 @@ fn cmd_requests(open_only: bool, mine: bool, role: Option<String>, json: bool, b
     // FAILED (offline / timed out under load) is not an Err but leaves the board stale — surface
     // that so a stale view is never silently presented as current (a review finding).
     match gitcmd::integrate(&root) {
-        Ok(r) if !r.fetched => eprintln!("confer: couldn't refresh from the hub — the board below may be stale"),
+        Ok(r) if !r.fetched => {
+            eprintln!("confer: couldn't refresh from the hub — the board below may be stale")
+        }
         Err(e) => eprintln!("confer: hub sync failed ({e}); showing local state"),
         _ => {}
     }
@@ -2141,7 +2395,10 @@ fn cmd_requests(open_only: bool, mine: bool, role: Option<String>, json: bool, b
             let m = by_id[row.id.as_str()];
             let mut v = serde_json::to_value(&m.front)?;
             if let serde_json::Value::Object(map) = &mut v {
-                map.insert("status".into(), serde_json::Value::String(row.status.into()));
+                map.insert(
+                    "status".into(),
+                    serde_json::Value::String(row.status.into()),
+                );
                 map.insert("claimants".into(), serde_json::json!(row.claimants));
                 map.insert("age_secs".into(), serde_json::json!(row.age_secs));
                 if let Some(res) = &row.resolution {
@@ -2178,7 +2435,12 @@ fn cmd_requests(open_only: bool, mine: bool, role: Option<String>, json: bool, b
         let wip_s = if board.wip.is_empty() {
             "none".to_string()
         } else {
-            board.wip.iter().map(|(a, n)| format!("{a}×{n}")).collect::<Vec<_>>().join(", ")
+            board
+                .wip
+                .iter()
+                .map(|(a, n)| format!("{a}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         println!(
             "── flow: {} open · {} claimed · {} blocked · {} backlog · {} closed ──  WIP: {wip_s}",
@@ -2219,7 +2481,9 @@ fn cmd_thread(id: String, full: bool) -> Result<()> {
             // in-thread if this message is a member, or any of its links resolves
             // (strictly — exact/suffix, never leading prefix) to a member.
             let touches = set.contains(&m.front.id)
-                || links.iter().any(|l| set.iter().any(|s| id_ref_matches(s, l)));
+                || links
+                    .iter()
+                    .any(|l| set.iter().any(|s| id_ref_matches(s, l)));
             if touches {
                 set.insert(m.front.id.clone());
                 for l in &links {
@@ -2288,7 +2552,10 @@ fn cmd_read(last: Option<usize>, topic: Option<String>, full: bool, json: bool) 
                 render_targets(&roster, &m.front.to),
             );
             let body = schema::sanitize_term(&m.body, true);
-            println!("\n{hdr}\n{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+            println!(
+                "\n{hdr}\n{}",
+                framed_body(&body, m, who, &t, tiers::get(&hub_key))
+            );
         } else {
             let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
             println!("{}{sup}", format_line(&roster, m, false, Some(&t)));
@@ -2309,29 +2576,36 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
     let this_host = config::hostname().unwrap_or_default();
     let cur = BUILD_SHA;
     let info = watchlock::inspect(&hub, &me, 90);
-    let arm = format!("confer watch --role {} --replace", if me.is_empty() { "<role>" } else { &me });
+    let arm = format!(
+        "confer watch --role {} --replace",
+        if me.is_empty() { "<role>" } else { &me }
+    );
     // Placeholder for the None arms below (never read when info is Some).
     let i = info.as_ref();
-    let (state, detail, rec, healthy): (&str, String, String, bool) =
-        match watchlock::classify(&info, cur) {
-            watchlock::WatchState::NotWatching => (
-                "not-watching",
-                "no watcher running for this role on this machine".into(),
-                format!("arm it: {arm}"),
+    let (state, detail, rec, healthy): (&str, String, String, bool) = match watchlock::classify(
+        &info, cur,
+    ) {
+        watchlock::WatchState::NotWatching => (
+            "not-watching",
+            "no watcher running for this role on this machine".into(),
+            format!("arm it: {arm}"),
+            false,
+        ),
+        watchlock::WatchState::OtherHost => {
+            let i = i.unwrap();
+            (
+                "other-host",
+                format!(
+                    "a watcher for '{me}' is registered on host '{}' (you are on '{this_host}')",
+                    i.host
+                ),
+                format!("if this machine should run it, re-arm here: {arm}"),
                 false,
-            ),
-            watchlock::WatchState::OtherHost => {
-                let i = i.unwrap();
-                (
-                    "other-host",
-                    format!("a watcher for '{me}' is registered on host '{}' (you are on '{this_host}')", i.host),
-                    format!("if this machine should run it, re-arm here: {arm}"),
-                    false,
-                )
-            }
-            watchlock::WatchState::Stale => {
-                let i = i.unwrap();
-                (
+            )
+        }
+        watchlock::WatchState::Stale => {
+            let i = i.unwrap();
+            (
                     "stale",
                     format!(
                         "a watch lock exists (pid {}) but it's {} (last heartbeat {}s ago) — likely a compaction orphan",
@@ -2342,36 +2616,36 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
                     format!("reclaim it: {arm}"),
                     false,
                 )
-            }
-            watchlock::WatchState::Outdated => {
-                let i = i.unwrap();
-                (
-                    "outdated",
-                    format!(
-                        "watching (pid {}, confer {}, since {}) — but your binary is {cur}",
-                        i.pid,
-                        i.version.as_deref().unwrap_or("?"),
-                        i.started_at.as_deref().unwrap_or("?")
-                    ),
-                    format!("replace to adopt the new build: {arm}"),
-                    false,
-                )
-            }
-            watchlock::WatchState::Healthy => {
-                let i = i.unwrap();
-                (
-                    "healthy",
-                    format!(
-                        "watching (pid {}, confer {}, since {})",
-                        i.pid,
-                        i.version.as_deref().unwrap_or("?"),
-                        i.started_at.as_deref().unwrap_or("?")
-                    ),
-                    String::new(),
-                    true,
-                )
-            }
-        };
+        }
+        watchlock::WatchState::Outdated => {
+            let i = i.unwrap();
+            (
+                "outdated",
+                format!(
+                    "watching (pid {}, confer {}, since {}) — but your binary is {cur}",
+                    i.pid,
+                    i.version.as_deref().unwrap_or("?"),
+                    i.started_at.as_deref().unwrap_or("?")
+                ),
+                format!("replace to adopt the new build: {arm}"),
+                false,
+            )
+        }
+        watchlock::WatchState::Healthy => {
+            let i = i.unwrap();
+            (
+                "healthy",
+                format!(
+                    "watching (pid {}, confer {}, since {})",
+                    i.pid,
+                    i.version.as_deref().unwrap_or("?"),
+                    i.started_at.as_deref().unwrap_or("?")
+                ),
+                String::new(),
+                true,
+            )
+        }
+    };
 
     if json {
         let obj = serde_json::json!({
@@ -2384,7 +2658,10 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&obj)?);
     } else {
         let glyph = if healthy { "✓" } else { "⚠" };
-        println!("{glyph} watch [{}]: {state} — {detail}", if me.is_empty() { "<role>" } else { &me });
+        println!(
+            "{glyph} watch [{}]: {state} — {detail}",
+            if me.is_empty() { "<role>" } else { &me }
+        );
         if !rec.is_empty() {
             println!("  → {rec}");
         }
@@ -2398,7 +2675,9 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
 /// Path to the Claude Code settings.json to edit (user scope by default).
 fn settings_path(project: &Option<String>) -> Result<std::path::PathBuf> {
     match project {
-        Some(dir) => Ok(std::path::Path::new(dir).join(".claude").join("settings.json")),
+        Some(dir) => Ok(std::path::Path::new(dir)
+            .join(".claude")
+            .join("settings.json")),
         None => Ok(config::home()?.join(".claude").join("settings.json")),
     }
 }
@@ -2430,7 +2709,9 @@ fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()> {
     } else {
         serde_json::json!({})
     };
-    let obj = root.as_object_mut().ok_or_else(|| anyhow!("settings.json is not a JSON object"))?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("settings.json is not a JSON object"))?;
     let hooks = obj
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}))
@@ -2525,7 +2806,9 @@ fn cmd_session_heal() -> Result<()> {
     let me_role = std::env::var("CONFER_ROLE")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| field("cwd").and_then(|d| config::resolve_role(None, std::path::Path::new(&d)).ok()));
+        .or_else(|| {
+            field("cwd").and_then(|d| config::resolve_role(None, std::path::Path::new(&d)).ok())
+        });
     let cur = BUILD_SHA;
     let mut nudges: Vec<String> = Vec::new();
     let mut stale = 0usize;
@@ -2545,7 +2828,9 @@ fn cmd_session_heal() -> Result<()> {
             watchlock::WatchState::Stale => "stale (a compaction orphan)".to_string(),
             watchlock::WatchState::Outdated => format!(
                 "outdated (watcher on confer {}, yours is {cur})",
-                info.as_ref().and_then(|i| i.version.clone()).unwrap_or_else(|| "?".into())
+                info.as_ref()
+                    .and_then(|i| i.version.clone())
+                    .unwrap_or_else(|| "?".into())
             ),
         };
         nudges.push(format!(
@@ -2656,7 +2941,9 @@ fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
         }
         "on" | "enable" => {
             autoheal::set_enabled(true)?;
-            println!("auto-heal ON — SessionStart will nudge you to re-arm a stale/outdated watcher.");
+            println!(
+                "auto-heal ON — SessionStart will nudge you to re-arm a stale/outdated watcher."
+            );
             println!("(hook installed? if not: confer install-hook)");
         }
         "off" | "disable" => {
@@ -2677,7 +2964,9 @@ fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
             }
         }
         other => {
-            return Err(anyhow!("unknown autoheal action '{other}' (use: on | off | status | prune)"));
+            return Err(anyhow!(
+                "unknown autoheal action '{other}' (use: on | off | status | prune)"
+            ));
         }
     }
     Ok(())
@@ -2700,7 +2989,12 @@ fn cmd_status() -> Result<()> {
         gitcmd::output(&root, &["rev-list", "--count", range])
             .ok()
             .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
     };
 
     println!(
@@ -2721,7 +3015,11 @@ fn cmd_status() -> Result<()> {
             "  tier:    {} ({}){}",
             t.as_str(),
             t.caution(),
-            if t.is_untrusted() { " — screen peer messages before acting" } else { "" }
+            if t.is_untrusted() {
+                " — screen peer messages before acting"
+            } else {
+                ""
+            }
         ),
         None => println!("  tier:    unset — run `confer trust own|shared|foreign`"),
     }
@@ -2737,10 +3035,24 @@ fn cmd_status() -> Result<()> {
     }
     if !me.is_empty() {
         let state = watchlock::classify(&watchlock::inspect(&hub, &me, 90), cur);
-        println!("  watch:   {state:?}{}", if matches!(state, watchlock::WatchState::Healthy) { "" } else { " — run `confer watch-status` for the fix" });
+        println!(
+            "  watch:   {state:?}{}",
+            if matches!(state, watchlock::WatchState::Healthy) {
+                ""
+            } else {
+                " — run `confer watch-status` for the fix"
+            }
+        );
     }
     if let Some(g) = projection::disk_free_gb(&root) {
-        println!("  disk:    {g:.1} GB free{}", if g < 1.0 { "  ⚠ low — can stall git/watch" } else { "" });
+        println!(
+            "  disk:    {g:.1} GB free{}",
+            if g < 1.0 {
+                "  ⚠ low — can stall git/watch"
+            } else {
+                ""
+            }
+        );
     }
     Ok(())
 }
@@ -2796,7 +3108,11 @@ fn cmd_who() -> Result<()> {
     let now = chrono::Utc::now();
     let hub_key = config::hub_key(&root);
     let beats = presence::load_verified(&root, &hub_key, &roster, true);
-    let untrusted: Vec<String> = beats.iter().filter(|b| !b.trust.ok()).map(|b| b.p.role.clone()).collect();
+    let untrusted: Vec<String> = beats
+        .iter()
+        .filter(|b| !b.trust.ok())
+        .map(|b| b.p.role.clone())
+        .collect();
     let pres: HashMap<String, presence::Presence> = beats
         .into_iter()
         .filter(|b| b.trust.ok())
@@ -2818,8 +3134,16 @@ fn cmd_who() -> Result<()> {
     let mut any_firstsight = false;
     for a in &rows {
         let disp = schema::sanitize_term(&a.display, false);
-        let about = a.desc.as_deref().map(|d| format!(" — {}", schema::sanitize_term(d, false))).unwrap_or_default();
-        let expected = a.expected_host.as_deref().map(|h| format!(" (expected on {})", schema::sanitize_term(h, false))).unwrap_or_default();
+        let about = a
+            .desc
+            .as_deref()
+            .map(|d| format!(" — {}", schema::sanitize_term(d, false)))
+            .unwrap_or_default();
+        let expected = a
+            .expected_host
+            .as_deref()
+            .map(|h| format!(" (expected on {})", schema::sanitize_term(h, false)))
+            .unwrap_or_default();
         let seen = match (&a.last_ts, &a.last_host) {
             (Some(t), Some(host)) => format!("last posted {t} on {host}"),
             (Some(t), None) => format!("last posted {t}"),
@@ -2829,7 +3153,14 @@ fn cmd_who() -> Result<()> {
         let xh = if a.xhub.is_empty() {
             String::new()
         } else {
-            format!("  ≡ {}", a.xhub.iter().map(|(l, r)| format!("{l}:{r}")).collect::<Vec<_>>().join(", "))
+            format!(
+                "  ≡ {}",
+                a.xhub
+                    .iter()
+                    .map(|(l, r)| format!("{l}:{r}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
         let ct = verify::card_trust(&root, &hub_key, &roster, &mut vc, &a.id);
         let tg = ct.glyph(); // ·/✓/⚠/‼ — same vocabulary as the message feed
@@ -2839,7 +3170,10 @@ fn cmd_who() -> Result<()> {
             _ => {}
         }
         let cmark = match &ct {
-            verify::Trust::Mismatch { .. } => "  ‼ CARD KEY MISMATCH — this card was re-keyed; do not trust its name/host/desc".to_string(),
+            verify::Trust::Mismatch { .. } => {
+                "  ‼ CARD KEY MISMATCH — this card was re-keyed; do not trust its name/host/desc"
+                    .to_string()
+            }
             _ => String::new(),
         };
         // Honor a self-declared status ONLY when the card edit is verified (self-sovereign);
@@ -2847,7 +3181,10 @@ fn cmd_who() -> Result<()> {
         // agent that's Down reads as intentional (not a crash alarm); one still heartbeating is
         // flagged as a zombie.
         let status = if matches!(ct, verify::Trust::Verified { .. }) {
-            roster.get(&a.id).and_then(|r| r.status.as_deref()).filter(|s| *s != "active")
+            roster
+                .get(&a.id)
+                .and_then(|r| r.status.as_deref())
+                .filter(|s| *s != "active")
         } else {
             None
         };
@@ -2855,11 +3192,18 @@ fn cmd_who() -> Result<()> {
             Some(s) => {
                 let s = schema::sanitize_term(s, false);
                 let beating = matches!(&a.presence, Some(p) if presence::liveness(p, now) == presence::Live::Up);
-                if beating { format!("  ⟨{s}⟩ ⚠ still heartbeating") } else { format!("  ⟨{s}⟩") }
+                if beating {
+                    format!("  ⟨{s}⟩ ⚠ still heartbeating")
+                } else {
+                    format!("  ⟨{s}⟩")
+                }
             }
             None => String::new(),
         };
-        println!("{live}{tg} {disp}{about} [{}]{expected}{xh} — {seen}{smark}{cmark}", a.id);
+        println!(
+            "{live}{tg} {disp}{about} [{}]{expected}{xh} — {seen}{smark}{cmark}",
+            a.id
+        );
     }
     if any_firstsight {
         println!("  (⚠ = first-sight key, signed but NOT yet confirmed out-of-band — check the fingerprint, then `confer confirm-key <role>`)");
@@ -2938,14 +3282,22 @@ fn cmd_whois(phrase: String) -> Result<()> {
     let mut vc = verify::Cache::default();
     for (i, m) in matches.iter().take(4).enumerate() {
         let disp = schema::sanitize_term(roster::display(&roster, &m.id), false);
-        let about = roster.get(&m.id).and_then(|r| r.desc.as_deref()).map(|d| format!(" — {}", schema::sanitize_term(d, false))).unwrap_or_default();
+        let about = roster
+            .get(&m.id)
+            .and_then(|r| r.desc.as_deref())
+            .map(|d| format!(" — {}", schema::sanitize_term(d, false)))
+            .unwrap_or_default();
         let warn = match verify::card_trust(&root, &hub_key, &roster, &mut vc, &m.id) {
             verify::Trust::Mismatch { .. } => "  ‼ this card was RE-KEYED — the name/desc may be an impostor's; verify out-of-band before trusting".to_string(),
             verify::Trust::FirstSight { .. } => "  ⚠ first-sight key — confirm out-of-band (`confer confirm-key`) before trusting this name".to_string(),
             verify::Trust::Unverified { .. } => "  (· unverified card — name/desc advisory)".to_string(),
             verify::Trust::Verified { .. } => String::new(),
         };
-        println!("{} {disp} [{}]{about}{warn}", if i == 0 { "→" } else { " " }, m.id);
+        println!(
+            "{} {disp} [{}]{about}{warn}",
+            if i == 0 { "→" } else { " " },
+            m.id
+        );
     }
     Ok(())
 }
@@ -2962,7 +3314,11 @@ fn parse_card(raw: &str) -> (serde_yaml::Mapping, String) {
             in_body = true;
             continue;
         }
-        let (buf, nl) = if in_body { (&mut body, "\n") } else { (&mut yaml, "\n") };
+        let (buf, nl) = if in_body {
+            (&mut body, "\n")
+        } else {
+            (&mut yaml, "\n")
+        };
         buf.push_str(line);
         buf.push_str(nl);
     }
@@ -2981,10 +3337,14 @@ fn cmd_rename(name: String, role: Option<String>, force: bool) -> Result<()> {
     }
     // Resolve who + the current display up front (needed for the alias-preserve and the
     // rename broadcast). Best-effort: if we can't resolve, fall through to describe.
-    let (me, old) = match config::repo_root().and_then(|r| Ok((config::resolve_role(role.clone(), &r)?, r))) {
-        Ok((me, root)) => (Some(me.clone()), roster::display(&roster::load(&root), &me).to_string()),
-        Err(_) => (None, String::new()),
-    };
+    let (me, old) =
+        match config::repo_root().and_then(|r| Ok((config::resolve_role(role.clone(), &r)?, r))) {
+            Ok((me, root)) => (
+                Some(me.clone()),
+                roster::display(&roster::load(&root), &me).to_string(),
+            ),
+            Err(_) => (None, String::new()),
+        };
     // Register the new name AND keep the OLD display as an alias, so a name the owner has
     // been using still resolves after a rename (friendlier for voice — a review probe).
     let mut add = vec![name.to_lowercase()];
@@ -3044,7 +3404,9 @@ fn cmd_describe(
     let me = config::resolve_role(role, &root)?;
     let card_path = root.join("roles").join(format!("{me}.md"));
     if !card_path.exists() {
-        return Err(anyhow!("no role card roles/{me}.md — join first: confer join --role {me}"));
+        return Err(anyhow!(
+            "no role card roles/{me}.md — join first: confer join --role {me}"
+        ));
     }
     let _ = gitcmd::integrate(&root); // freshen the roster so collision checks see peers
     let roster = roster::load(&root);
@@ -3052,9 +3414,21 @@ fn cmd_describe(
     // Show current state when called with nothing to change.
     if desc.is_none() && display.is_none() && add_alias.is_empty() && remove_alias.is_empty() {
         let r = roster.get(&me);
-        println!("{me}: {} — {}", roster::display(&roster, &me), r.and_then(|r| r.desc.as_deref()).unwrap_or("(no description)"));
+        println!(
+            "{me}: {} — {}",
+            roster::display(&roster, &me),
+            r.and_then(|r| r.desc.as_deref())
+                .unwrap_or("(no description)")
+        );
         let al = r.map(|r| r.aliases.clone()).unwrap_or_default();
-        println!("aliases: {}", if al.is_empty() { "(none)".into() } else { al.join(", ") });
+        println!(
+            "aliases: {}",
+            if al.is_empty() {
+                "(none)".into()
+            } else {
+                al.join(", ")
+            }
+        );
         return Ok(());
     }
 
@@ -3074,8 +3448,14 @@ fn cmd_describe(
         }
         if !force {
             if let Some((who, s, why)) = alias::conflict(&roster, &me, d) {
-                let owner = if who.is_empty() { String::new() } else { format!(" '{s}' ({} [{who}])", roster::display(&roster, &who)) };
-                return Err(anyhow!("display '{d}' {why}{owner}; pick another or pass --force"));
+                let owner = if who.is_empty() {
+                    String::new()
+                } else {
+                    format!(" '{s}' ({} [{who}])", roster::display(&roster, &who))
+                };
+                return Err(anyhow!(
+                    "display '{d}' {why}{owner}; pick another or pass --force"
+                ));
             }
         }
         map.insert("display".into(), d.into());
@@ -3091,7 +3471,11 @@ fn cmd_describe(
     let mut aliases: Vec<String> = map
         .get("aliases")
         .and_then(|v| v.as_sequence())
-        .map(|s| s.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|s| {
+            s.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     for rm in &remove_alias {
         let before = aliases.len();
@@ -3130,7 +3514,10 @@ fn cmd_describe(
     if aliases.is_empty() {
         map.remove("aliases");
     } else {
-        let seq: serde_yaml::Sequence = aliases.iter().map(|a| serde_yaml::Value::String(a.clone())).collect();
+        let seq: serde_yaml::Sequence = aliases
+            .iter()
+            .map(|a| serde_yaml::Value::String(a.clone()))
+            .collect();
         map.insert("aliases".into(), serde_yaml::Value::Sequence(seq));
     }
 
@@ -3153,7 +3540,9 @@ fn cmd_describe(
         // NOT committed — undo the edit so the card isn't left dirty (a review finding, 0.2.1).
         Err(e) => {
             let _ = gitcmd::check(&root, &["checkout", "--", &format!("roles/{me}.md")]);
-            return Err(anyhow!("did NOT update roles/{me}.md — not committed ({e}); the clone may be busy. Retry."));
+            return Err(anyhow!(
+                "did NOT update roles/{me}.md — not committed ({e}); the clone may be busy. Retry."
+            ));
         }
     }
     Ok(())
@@ -3168,11 +3557,16 @@ fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
     let me = config::resolve_role(role, &root)?;
     let card_path = root.join("roles").join(format!("{me}.md"));
     if !card_path.exists() {
-        return Err(anyhow!("no role card roles/{me}.md — join first: confer join --role {me}"));
+        return Err(anyhow!(
+            "no role card roles/{me}.md — join first: confer join --role {me}"
+        ));
     }
     let _ = gitcmd::integrate(&root); // freshen the card first, so we edit HEAD's version (avoids a stale-card clobber/stuck-defer)
     let (mut map, body) = parse_card(&std::fs::read_to_string(&card_path)?);
-    let current = map.get("status").and_then(|v| v.as_str()).unwrap_or("active");
+    let current = map
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("active");
     if current == value {
         println!("{me} is already {value}.");
         return Ok(());
@@ -3209,7 +3603,9 @@ fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
         // later rebase or gets swept into an unrelated commit (a review finding, 0.2.1).
         Err(e) => {
             let _ = gitcmd::check(&root, &["checkout", "--", &format!("roles/{me}.md")]);
-            return Err(anyhow!("did NOT set status — not committed ({e}); the clone may be busy. Retry."));
+            return Err(anyhow!(
+                "did NOT set status — not committed ({e}); the clone may be busy. Retry."
+            ));
         }
     }
     Ok(())
@@ -3260,7 +3656,11 @@ fn parse_remote(input: &str) -> Remote {
     if let Some((_scheme, after)) = input.split_once("://") {
         let after = after.rsplit_once('@').map_or(after, |(_, h)| h); // strip user@
         if let Some((host, path)) = after.split_once('/') {
-            return gh_remote(raw, host, path.trim_end_matches('/').trim_end_matches(".git"));
+            return gh_remote(
+                raw,
+                host,
+                path.trim_end_matches('/').trim_end_matches(".git"),
+            );
         }
     }
     // bare owner/repo: exactly one slash, no scheme/colon, not a path
@@ -3271,7 +3671,12 @@ fn parse_remote(input: &str) -> Remote {
     {
         return gh_remote(raw, "github.com", input.trim_end_matches(".git"));
     }
-    Remote { raw, https: None, ssh: None, shorthand: None }
+    Remote {
+        raw,
+        https: None,
+        ssh: None,
+        shorthand: None,
+    }
 }
 
 fn gh_remote(raw: String, host: &str, path: &str) -> Remote {
@@ -3353,6 +3758,25 @@ fn clone_candidates(r: &Remote, scheme: Scheme) -> Vec<String> {
     }
 }
 
+/// Build a `GIT_SSH_COMMAND` / `core.sshCommand` value from a transport key path: force THIS key
+/// only (`IdentitiesOnly=yes`) and ignore any ssh-agent / 1Password identity (`IdentityAgent=none`)
+/// so a deploy key works headlessly regardless of the ambient agent. Expands a leading `~`, and
+/// single-quotes the path for the shell git runs the value through.
+fn git_ssh_command(key: &str) -> String {
+    let expanded = if key == "~" {
+        config::home()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| key.to_string())
+    } else if let Some(rest) = key.strip_prefix("~/") {
+        config::home()
+            .map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|_| key.to_string())
+    } else {
+        key.to_string()
+    };
+    format!("ssh -i '{expanded}' -o IdentitiesOnly=yes -o IdentityAgent=none")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_init(
     url: String,
@@ -3362,24 +3786,31 @@ fn cmd_init(
     display: Option<String>,
     desc: Option<String>,
     signing_key: Option<String>,
+    ssh_key: Option<String>,
     is_clone: bool,
     managed: bool,
 ) -> Result<()> {
     // Zero-dependency CREATE: a local-path url with nothing there yet becomes a fresh bare hub.
     let url = expand_local_hub(url)?;
     let remote = parse_remote(&url);
+    // Transport auth for a PRIVATE hub: build the `GIT_SSH_COMMAND` from --ssh-key. Used for the
+    // clone AND (below) pinned to the clone's local `core.sshCommand`, so the identity isn't
+    // ambient — a fresh shell or the headless watch keeps reaching the hub. (#1 field feedback.)
+    let ssh_cmd: Option<String> = ssh_key.as_deref().map(git_ssh_command);
     let name_src = remote.shorthand.clone().unwrap_or_else(|| url.clone());
-    let dir = dir.unwrap_or_else(|| {
-        name_src
-            .rsplit('/')
-            .next()
-            .unwrap_or("hub")
-            .trim_end_matches(".git")
-            .to_string()
-    });
+    let basename = name_src
+        .rsplit('/')
+        .next()
+        .unwrap_or("hub")
+        .trim_end_matches(".git")
+        .to_string();
+    // Don't nest the working clone inside a work repo when no dir was named (#4 field feedback).
+    let dir = safe_clone_dir(dir, &basename);
     let dir_path = std::path::PathBuf::from(&dir);
     if dir_path.exists() {
-        return Err(anyhow!("target '{dir}' already exists — remove it or pick another dir"));
+        return Err(anyhow!(
+            "target '{dir}' already exists — remove it or pick another dir"
+        ));
     }
 
     // Try each candidate URL in order; on auth/other failure fall back to the
@@ -3411,7 +3842,12 @@ fn cmd_init(
             args.push("--");
             args.push(cand);
             args.push(&dir);
-            let out = std::process::Command::new("git").args(&args).output()?;
+            let mut gclone = std::process::Command::new("git");
+            gclone.args(&args);
+            if let Some(sc) = &ssh_cmd {
+                gclone.env("GIT_SSH_COMMAND", sc); // authenticate the clone with the transport key
+            }
+            let out = gclone.output()?;
             if out.status.success() {
                 used = Some(cand.clone());
                 cloned = true;
@@ -3431,6 +3867,12 @@ fn cmd_init(
     }
     let url = used.ok_or_else(|| anyhow!("git clone failed: {last_err}"))?;
     let root = dir_path.canonicalize()?;
+
+    // Pin the transport key to THIS clone (local config) so it's self-contained: the next
+    // ls-remote/push/fetch — and the headless watch — reach the hub without ambient ~/.ssh.
+    if let Some(sc) = &ssh_cmd {
+        gitcmd::check(&root, &["config", "--local", "core.sshCommand", sc])?;
+    }
 
     // Determine emptiness from the HUB's branches (ls-remote), not the local
     // checkout — a bare hub's HEAD may point at an unborn branch and mislead us.
@@ -3501,11 +3943,10 @@ fn cmd_init(
     }
 
     // Health check.
-    let branch = String::from_utf8_lossy(
-        &gitcmd::output(&root, &["branch", "--show-current"])?.stdout,
-    )
-    .trim()
-    .to_string();
+    let branch =
+        String::from_utf8_lossy(&gitcmd::output(&root, &["branch", "--show-current"])?.stdout)
+            .trim()
+            .to_string();
     let msg_count = store::all_messages(&root)?.len();
     let roster = roster::load(&root);
     let roles = if roster.is_empty() {
@@ -3513,7 +3954,10 @@ fn cmd_init(
     } else {
         let mut ids: Vec<&String> = roster.keys().collect();
         ids.sort();
-        ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        ids.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     println!("hub ready: {url}");
     println!("  dir:      {}", root.display());
@@ -3525,7 +3969,11 @@ fn cmd_init(
     //. Set BEFORE join so an init's `own` isn't clobbered by join's default.
     let _ = tiers::set_default(
         &config::hub_key(&root),
-        if is_clone { tiers::Tier::Foreign } else { tiers::Tier::Own },
+        if is_clone {
+            tiers::Tier::Foreign
+        } else {
+            tiers::Tier::Own
+        },
     );
 
     if let Some(r) = role {
@@ -3533,7 +3981,9 @@ fn cmd_init(
         // turn that into an arbitrary-path existence probe) — don't lean on join/keygen catching
         // it downstream.
         if !valid_slug(&r) {
-            return Err(anyhow!("invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"));
+            return Err(anyhow!(
+                "invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"
+            ));
         }
         std::env::set_current_dir(&root)?;
         // Ensure a signing identity: the provided key, else the fleet-standard key for this role,
@@ -3545,7 +3995,7 @@ fn cmd_init(
             None => {
                 let kp = config::home()?.join(".confer").join("keys").join(&r);
                 if !kp.exists() {
-                    cmd_keygen(Some(r.clone())).map_err(|e| {
+                    cmd_keygen(Some(r.clone()), false).map_err(|e| {
                         anyhow!(
                             "could not mint a signing key for '{r}': {e}\n\
                              install ssh-keygen (openssh) and ensure ~/.confer/keys is writable, \
@@ -3562,7 +4012,12 @@ fn cmd_init(
         // that `onboard` points to. Skip under --managed: the clone relocates below, so the
         // skills' resolved paths + the arm-from-here advice would be stale; managed prints its own.
         if !managed {
-            let _ = cmd_install_skill(None, Some(root.to_string_lossy().to_string()), Some(r.clone()), false);
+            let _ = cmd_install_skill(
+                None,
+                Some(root.to_string_lossy().to_string()),
+                Some(r.clone()),
+                false,
+            );
             println!();
             println!("✅ fleet ready at {}", root.display());
             print_reactive_next(&r);
@@ -3576,7 +4031,10 @@ fn cmd_init(
         let _ = std::env::set_current_dir(config::home()?);
         let (dest, _) = migrate_to_managed(&root, true)?;
         println!("\nmanaged: this clone now lives at {}", dest.display());
-        println!("  watch from there: cd {} && confer watch --role <you>", dest.display());
+        println!(
+            "  watch from there: cd {} && confer watch --role <you>",
+            dest.display()
+        );
     }
     Ok(())
 }
@@ -3586,7 +4044,8 @@ fn cmd_init(
 /// against losing unpushed/uncommitted work (unless `force`), move it, and re-point autoheal.
 /// Returns (new path, moved?) — `moved=false` when it was already at its managed location.
 fn migrate_to_managed(src: &std::path::Path, force: bool) -> Result<(std::path::PathBuf, bool)> {
-    let src = std::fs::canonicalize(src).map_err(|e| anyhow!("cannot access {}: {e}", src.display()))?;
+    let src =
+        std::fs::canonicalize(src).map_err(|e| anyhow!("cannot access {}: {e}", src.display()))?;
     if !src.join(".confer").join("identity.json").is_file() {
         return Err(anyhow!(
             "{} is not a confer agent clone (no .confer/identity.json) — refusing to manage it",
@@ -3638,7 +4097,10 @@ fn migrate_to_managed(src: &std::path::Path, force: bool) -> Result<(std::path::
     // partial-failure, clean up any half-written debris at dest so it doesn't block future
     // adopt-clone/--managed for this identity (a review finding).
     if std::fs::rename(&src, &dest).is_err() {
-        let o = std::process::Command::new("mv").arg(&src).arg(&dest).output();
+        let o = std::process::Command::new("mv")
+            .arg(&src)
+            .arg(&dest)
+            .output();
         let failed = match &o {
             Ok(o) if o.status.success() => None,
             Ok(o) => Some(String::from_utf8_lossy(&o.stderr).trim().to_string()),
@@ -3695,7 +4157,13 @@ fn hub_slug_for(clone: &std::path::Path) -> String {
     origin
         .as_deref()
         .and_then(|u| parse_remote(u).shorthand)
-        .or_else(|| origin.as_deref().and_then(|u| u.rsplit('/').next().map(|s| s.trim_end_matches(".git").to_string())))
+        .or_else(|| {
+            origin.as_deref().and_then(|u| {
+                u.rsplit('/')
+                    .next()
+                    .map(|s| s.trim_end_matches(".git").to_string())
+            })
+        })
         .or_else(|| clone.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "hub".to_string())
 }
@@ -3711,9 +4179,12 @@ fn clone_move_safe(src: &std::path::Path) -> std::result::Result<(), String> {
     if dirty {
         return Err("uncommitted or untracked changes".to_string());
     }
-    let has_upstream = gitcmd::output(src, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let has_upstream = gitcmd::output(
+        src,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false);
     if !has_upstream {
         return Err("no upstream branch (this clone may be the only copy)".to_string());
     }
@@ -3737,8 +4208,13 @@ fn cmd_clones() -> Result<()> {
         println!("  or move one: confer adopt-clone <path>");
         return Ok(());
     }
-    clones.sort_by(|a, b| (a.hub_slug.as_str(), a.role.as_str()).cmp(&(b.hub_slug.as_str(), b.role.as_str())));
-    println!("managed clones ({}, under ~/.confer/clones/):", clones.len());
+    clones.sort_by(|a, b| {
+        (a.hub_slug.as_str(), a.role.as_str()).cmp(&(b.hub_slug.as_str(), b.role.as_str()))
+    });
+    println!(
+        "managed clones ({}, under ~/.confer/clones/):",
+        clones.len()
+    );
     for c in &clones {
         println!("  {:<20} {:<14} {}", c.hub_slug, c.role, c.path.display());
     }
@@ -3753,7 +4229,9 @@ fn cmd_where() -> Result<()> {
         .or_else(|| config::signing_key(&root).and_then(|k| read_pubkey(&k).ok()))
         .or_else(|| roster::pubkey(&roster::load(&root), &role).map(String::from));
     let Some(pubkey) = pubkey else {
-        return Err(anyhow!("no signing key/pubkey for '{role}' — a managed clone is keyed by identity"));
+        return Err(anyhow!(
+            "no signing key/pubkey for '{role}' — a managed clone is keyed by identity"
+        ));
     };
     let hub_key = config::hub_key(&root);
     match clonehome::resolve(&hub_key, &pubkey)? {
@@ -3762,7 +4240,10 @@ fn cmd_where() -> Result<()> {
             let expected = clonehome::clone_dir(&hub_slug_for(&root), &hub_key, &role, &pubkey)?;
             println!("not managed yet — this identity has no clone under ~/.confer/clones/.");
             println!("  its managed path would be: {}", expected.display());
-            println!("  move it in with:           confer adopt-clone {}", root.display());
+            println!(
+                "  move it in with:           confer adopt-clone {}",
+                root.display()
+            );
         }
     }
     Ok(())
@@ -3780,8 +4261,12 @@ fn cmd_adopt_clone(path: String, force: bool) -> Result<()> {
     println!("then, from the NEW path ({}):", dest.display());
     println!("  1. re-arm the watch:            confer watch --role {role} --replace");
     println!("  2. re-point skills + autoheal:  confer install-skill");
-    println!("     (the old hub path is gone, so the SessionStart hook + /confer-watch skill still");
-    println!("      point at it until you re-run install-skill — otherwise a future session goes deaf)");
+    println!(
+        "     (the old hub path is gone, so the SessionStart hook + /confer-watch skill still"
+    );
+    println!(
+        "      point at it until you re-run install-skill — otherwise a future session goes deaf)"
+    );
     Ok(())
 }
 
@@ -3790,7 +4275,7 @@ fn cmd_adopt_clone(path: String, force: bool) -> Result<()> {
 /// existing key (the identity IS the key, so overwriting one destroys an identity), and prints
 /// the `join --signing-key` line so a keyless agent can go from no-key to a verifiable, keyed
 /// identity (and thus a managed clone) without guessing the ssh-keygen convention.
-fn cmd_keygen(role: Option<String>) -> Result<()> {
+fn cmd_keygen(role: Option<String>, print_publish_hint: bool) -> Result<()> {
     // Role from --role, else the current clone's role (so `confer keygen` "just works" in a hub).
     let role = match role {
         Some(r) => r,
@@ -3831,7 +4316,10 @@ fn cmd_keygen(role: Option<String>) -> Result<()> {
         .output()
         .map_err(|e| anyhow!("could not run ssh-keygen: {e}"))?;
     if !out.status.success() {
-        return Err(anyhow!("ssh-keygen failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(anyhow!(
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     // ssh-keygen already writes the private key 0600, but be explicit — and surface a failure
     // rather than swallow it (a silent perm-set failure would leave the key too open).
@@ -3839,7 +4327,10 @@ fn cmd_keygen(role: Option<String>) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(&keypath, std::fs::Permissions::from_mode(0o600)) {
-            eprintln!("warning: could not set 0600 on {} ({e}) — tighten it by hand", keypath.display());
+            eprintln!(
+                "warning: could not set 0600 on {} ({e}) — tighten it by hand",
+                keypath.display()
+            );
         }
     }
     println!("minted an ed25519 signing key for '{role}':");
@@ -3848,10 +4339,20 @@ fn cmd_keygen(role: Option<String>) -> Result<()> {
     if let Ok(pk) = read_pubkey(&keypath) {
         println!("  {pk}");
     }
-    println!();
-    println!("publish it (from your hub clone) to get a verifiable, keyed identity:");
-    println!("  confer join --role {role} --signing-key {}", keypath.display());
-    println!("then your messages sign + verify, and `confer adopt-clone` (managed home) will work.");
+    // Suppress the "now publish it with `confer join`" hint when a caller (init's one-command
+    // create) is about to join immediately — printing it there reads as if the join were still
+    // pending when it isn't. Standalone `confer keygen` still shows it.
+    if print_publish_hint {
+        println!();
+        println!("publish it (from your hub clone) to get a verifiable, keyed identity:");
+        println!(
+            "  confer join --role {role} --signing-key {}",
+            keypath.display()
+        );
+        println!(
+            "then your messages sign + verify, and `confer adopt-clone` (managed home) will work."
+        );
+    }
     Ok(())
 }
 
@@ -3923,7 +4424,9 @@ fn delegate_to_package_manager() -> Result<()> {
         println!("confer was installed via Homebrew — `confer update` won't replace it.");
         println!("update with:  brew upgrade confer");
     } else if p.contains("/.cargo/bin/")
-        || std::env::var("CARGO_HOME").map(|c| !c.is_empty() && p.contains(&c)).unwrap_or(false)
+        || std::env::var("CARGO_HOME")
+            .map(|c| !c.is_empty() && p.contains(&c))
+            .unwrap_or(false)
     {
         println!("confer was installed via cargo — `confer update` won't replace it.");
         if which("cargo-binstall") {
@@ -3934,7 +4437,9 @@ fn delegate_to_package_manager() -> Result<()> {
             println!("  (tip: `cargo binstall confer-cli --force` is much faster, if you install cargo-binstall)");
         }
     } else {
-        println!("confer has no dist install receipt and isn't in a recognized package-manager path,");
+        println!(
+            "confer has no dist install receipt and isn't in a recognized package-manager path,"
+        );
         println!("so `confer update` can't safely replace it. Reinstall via the shell installer");
         println!("(curl … | sh) for self-update, or update through your package manager.");
     }
@@ -3949,7 +4454,9 @@ fn cmd_invite(role: Option<String>, host: Option<String>, scheme: Scheme) -> Res
     // vector once a human runs the block.
     if let Some(r) = &role {
         if !valid_slug(r) {
-            return Err(anyhow!("invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"));
+            return Err(anyhow!(
+                "invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"
+            ));
         }
     }
     let root = config::repo_root()?;
@@ -3970,7 +4477,11 @@ fn cmd_invite(role: Option<String>, host: Option<String>, scheme: Scheme) -> Res
         Scheme::Auto => remote.shorthand.clone().or_else(|| remote.https.clone()),
     }
     .unwrap_or_else(|| origin.clone());
-    let tool = if scheme == Scheme::Https { TOOL_REPO_HTTPS } else { TOOL_REPO_SSH };
+    let tool = if scheme == Scheme::Https {
+        TOOL_REPO_HTTPS
+    } else {
+        TOOL_REPO_SSH
+    };
 
     let pin_line = std::fs::read_to_string(root.join(".confer-version"))
         .ok()
@@ -3996,7 +4507,10 @@ fn cmd_invite(role: Option<String>, host: Option<String>, scheme: Scheme) -> Res
                 .to_string(),
         ),
     };
-    let host_flag = host.as_deref().map(|h| format!(" --host {h}")).unwrap_or_default();
+    let host_flag = host
+        .as_deref()
+        .map(|h| format!(" --host {h}"))
+        .unwrap_or_default();
 
     println!("──────── copy everything below into the new agent ────────\n");
     println!(
@@ -4045,20 +4559,36 @@ fn cmd_repos(json: bool) -> Result<()> {
                 }),
             );
         }
-        println!("{}", serde_json::to_string(&serde_json::Value::Object(map))?);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::Value::Object(map))?
+        );
         return Ok(());
     }
     if inv.is_empty() {
-        println!("no repos registered — add repos/<slug>.md (role/url/access/docs). See DESIGN.md.");
+        println!(
+            "no repos registered — add repos/<slug>.md (role/url/access/docs). See DESIGN.md."
+        );
         return Ok(());
     }
     let mut ids: Vec<&String> = inv.keys().collect();
     ids.sort();
     for id in ids {
         let r = &inv[id];
-        let access = if r.access.is_empty() { "all".to_string() } else { r.access.join(",") };
-        let url = r.url.clone().unwrap_or_else(|| "(private/unshared)".to_string());
-        let docs = r.docs.as_deref().map(|d| format!("  docs:{d}")).unwrap_or_default();
+        let access = if r.access.is_empty() {
+            "all".to_string()
+        } else {
+            r.access.join(",")
+        };
+        let url = r
+            .url
+            .clone()
+            .unwrap_or_else(|| "(private/unshared)".to_string());
+        let docs = r
+            .docs
+            .as_deref()
+            .map(|d| format!("  docs:{d}"))
+            .unwrap_or_default();
         println!("{id}  [{}]  access:{access}  {url}{docs}", r.role);
     }
     Ok(())
@@ -4083,7 +4613,11 @@ fn cmd_confirm_key(role: Option<String>) -> Result<()> {
             for id in ids {
                 if let Some(pk) = keyring::pinned(&hub_key, id) {
                     any = true;
-                    let mark = if keyring::confirmed(&hub_key, id) { "✓ confirmed        " } else { "⚠ first-sight (todo)" };
+                    let mark = if keyring::confirmed(&hub_key, id) {
+                        "✓ confirmed        "
+                    } else {
+                        "⚠ first-sight (todo)"
+                    };
                     println!("  {mark}  {id}  {}", crosshub::fingerprint(&pk));
                 }
             }
@@ -4094,7 +4628,9 @@ fn cmd_confirm_key(role: Option<String>) -> Result<()> {
         }
         Some(r) => {
             let Some(pk) = keyring::pinned(&hub_key, &r) else {
-                return Err(anyhow!("no pinned key for '{r}' yet — nothing to confirm (a key pins on first verify)"));
+                return Err(anyhow!(
+                    "no pinned key for '{r}' yet — nothing to confirm (a key pins on first verify)"
+                ));
             };
             let fp = crosshub::fingerprint(&pk);
             // Refuse to confirm a role whose card CURRENTLY publishes a different key than the pin
@@ -4125,7 +4661,10 @@ fn cmd_verify(id: String) -> Result<()> {
     let roster = roster::load(&root);
     let msgs = store::all_messages(&root)?;
     let target = resolve_unique(&msgs, &id)?.to_string();
-    let m = msgs.iter().find(|m| m.front.id == target).expect("resolved id is present");
+    let m = msgs
+        .iter()
+        .find(|m| m.front.id == target)
+        .expect("resolved id is present");
     let role = m.front.from.clone();
     let who = roster::display(&roster, &role).to_string();
     let short = short_id(&m.front.id).to_string();
@@ -4150,7 +4689,9 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
     }
     if fix {
         match doctor::fix(&root, &ssh_keygen_path()) {
-            Ok(applied) if applied.is_empty() => println!("confer doctor --fix: nothing to auto-repair.\n"),
+            Ok(applied) if applied.is_empty() => {
+                println!("confer doctor --fix: nothing to auto-repair.\n")
+            }
             Ok(applied) => {
                 for a in &applied {
                     println!("✓ fixed: {a}");
@@ -4161,6 +4702,27 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
         }
     }
     print!("{}", doctor::render(&doctor::audit(&root)));
+
+    // Transport self-containment (#1 field feedback): a headless watch — or this clone on another
+    // machine — must REACH the hub without the ambient ~/.ssh identity. Flag an SSH origin that has
+    // no pinned local `core.sshCommand`: it works today from your shell but is a silent time-bomb.
+    let origin = gitcmd::output(&root, &["config", "--get", "remote.origin.url"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if origin.starts_with("git@") || origin.starts_with("ssh://") {
+        let pinned = gitcmd::output(&root, &["config", "--local", "--get", "core.sshCommand"])
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false);
+        if pinned {
+            println!("✓ transport: self-contained — core.sshCommand is pinned to this clone.");
+        } else {
+            println!("⚠ transport: depends on your ambient ~/.ssh (no local core.sshCommand).");
+            println!("  A headless watch or another machine may fail to reach a PRIVATE hub. Pin the key:");
+            println!("    confer reconnect --role <you> --hub <origin> --ssh-key <path>");
+        }
+    }
     Ok(())
 }
 
@@ -4177,7 +4739,10 @@ fn cmd_screen(corpus: Option<String>, text: Option<String>) -> Result<()> {
             "\ncatch-rate:          {}/{} attacks flagged (screen+), {} with exact category",
             r.caught, r.attacks, r.cat_correct
         );
-        println!("false-positive-rate: {}/{} benign flagged", r.false_pos, r.benign);
+        println!(
+            "false-positive-rate: {}/{} benign flagged",
+            r.false_pos, r.benign
+        );
         println!("(heuristic is screen-level only; block-tier verdicts need the model screen — DESIGN.md §3)");
         return Ok(());
     }
@@ -4189,8 +4754,18 @@ fn cmd_screen(corpus: Option<String>, text: Option<String>) -> Result<()> {
             s
         }
     };
-    let v = screen::heuristic(&screen::Input { body: &body, from_role: "", tier: None, refs: vec![] });
-    println!("{}  {}  — {}", v.level.as_str(), v.category.unwrap_or("-"), v.reason);
+    let v = screen::heuristic(&screen::Input {
+        body: &body,
+        from_role: "",
+        tier: None,
+        refs: vec![],
+    });
+    println!(
+        "{}  {}  — {}",
+        v.level.as_str(),
+        v.category.unwrap_or("-"),
+        v.reason
+    );
     Ok(())
 }
 
@@ -4230,18 +4805,30 @@ fn cmd_seen(id: String) -> Result<()> {
     let _ = gitcmd::integrate(&root);
     let msgs = store::all_messages(&root)?;
     let target = resolve_unique(&msgs, &id)?.to_string();
-    let m = msgs.iter().find(|m| m.front.id == target).expect("resolved id is present");
+    let m = msgs
+        .iter()
+        .find(|m| m.front.id == target)
+        .expect("resolved id is present");
     let short = short_id(&m.front.id).to_string();
     let sender = m.front.from.clone();
 
     // The commit that ADDED this message file (same lookup as verify).
     let topic = m.front.topic.as_deref().unwrap_or("general");
     let file = store::message_path(&root, topic, &m.front.id, &sender, &m.front.ts);
-    let rel = file.strip_prefix(&root).unwrap_or(&file).to_string_lossy().to_string();
-    let log = gitcmd::output(&root, &["log", "--diff-filter=A", "--format=%H", "-1", "--", &rel])?;
+    let rel = file
+        .strip_prefix(&root)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .to_string();
+    let log = gitcmd::output(
+        &root,
+        &["log", "--diff-filter=A", "--format=%H", "-1", "--", &rel],
+    )?;
     let msg_sha = String::from_utf8_lossy(&log.stdout).trim().to_string();
     if msg_sha.is_empty() {
-        return Err(anyhow!("could not locate the commit that added {short} (fetch it first?)"));
+        return Err(anyhow!(
+            "could not locate the commit that added {short} (fetch it first?)"
+        ));
     }
 
     // Audience = to+cc expanded through groups; `all` → the whole roster. Exclude
@@ -4275,11 +4862,12 @@ fn cmd_seen(id: String) -> Result<()> {
     // role falls into "no heartbeat", the safe "can't confirm" outcome. A forged `cursor` must not
     // fake a receipt, so only SIGNED beats count here (not advisory unsigned ones).
     let hub_key = config::hub_key(&root);
-    let pres: HashMap<String, presence::Presence> = presence::load_verified(&root, &hub_key, &roster, true)
-        .into_iter()
-        .filter(|b| b.trust.is_signed())
-        .map(|b| (b.p.role.clone(), b.p))
-        .collect();
+    let pres: HashMap<String, presence::Presence> =
+        presence::load_verified(&root, &hub_key, &roster, true)
+            .into_iter()
+            .filter(|b| b.trust.is_signed())
+            .map(|b| (b.p.role.clone(), b.p))
+            .collect();
 
     let (mut seen, mut pending, mut no_hb): (Vec<String>, Vec<String>, Vec<String>) =
         (Vec::new(), Vec::new(), Vec::new());
@@ -4304,7 +4892,14 @@ fn cmd_seen(id: String) -> Result<()> {
         }
     }
     let line = |label: &str, v: &[String]| {
-        println!("  {label} {}", if v.is_empty() { "(none)".to_string() } else { v.join(", ") });
+        println!(
+            "  {label} {}",
+            if v.is_empty() {
+                "(none)".to_string()
+            } else {
+                v.join(", ")
+            }
+        );
     };
     line("✓ seen:   ", &seen);
     line("… pending:", &pending);
@@ -4354,9 +4949,19 @@ fn cmd_app_config(
     }
     println!(
         "app_id:          {}\nkey:             {}\ninstallation_id: {}",
-        if c.app_id.is_empty() { "(unset)" } else { &c.app_id },
-        if c.key_path.is_empty() { "(unset)" } else { &c.key_path },
-        c.installation_id.map(|i| i.to_string()).unwrap_or_else(|| "(unset)".into()),
+        if c.app_id.is_empty() {
+            "(unset)"
+        } else {
+            &c.app_id
+        },
+        if c.key_path.is_empty() {
+            "(unset)"
+        } else {
+            &c.key_path
+        },
+        c.installation_id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "(unset)".into()),
     );
     if !changed {
         println!("\nwire the credential helper: git config credential.\"https://github.com\".helper \"!confer credential\"");
@@ -4448,11 +5053,12 @@ fn cmd_require(req: Option<String>, bump: bool) -> Result<()> {
         let roster = roster::load(&root);
         let hub_key = config::hub_key(&root);
         // Only SIGNED beats — a forged `build` on an advisory unsigned beat must not skew the floor.
-        let agents: Vec<presence::Presence> = presence::load_verified(&root, &hub_key, &roster, true)
-            .into_iter()
-            .filter(|b| b.trust.is_signed())
-            .map(|b| b.p)
-            .collect();
+        let agents: Vec<presence::Presence> =
+            presence::load_verified(&root, &hub_key, &roster, true)
+                .into_iter()
+                .filter(|b| b.trust.is_signed())
+                .map(|b| b.p)
+                .collect();
         let now = chrono::Utc::now();
         let live: Vec<version::BuildId> = agents
             .iter()
@@ -4460,7 +5066,9 @@ fn cmd_require(req: Option<String>, bump: bool) -> Result<()> {
             .filter_map(|a| a.build.as_ref().map(|b| version::BuildId::parse(b)))
             .collect();
         let Some(min) = version::min_version(&live) else {
-            return Err(anyhow!("no live agent published a semver build — nothing to bump the floor to"));
+            return Err(anyhow!(
+                "no live agent published a semver build — nothing to bump the floor to"
+            ));
         };
         // --bump ADVANCES only. If any live agent is below the current floor, the lowest
         // live build is below it too — bumping to it would LOWER the floor. Refuse and say
@@ -4474,7 +5082,11 @@ fn cmd_require(req: Option<String>, bump: bool) -> Result<()> {
             }
         }
         let newreq = format!(">={min}");
-        if hub_require(&root).map(|r| r.to_string()) == semver::VersionReq::parse(&newreq).ok().map(|r| r.to_string()) {
+        if hub_require(&root).map(|r| r.to_string())
+            == semver::VersionReq::parse(&newreq)
+                .ok()
+                .map(|r| r.to_string())
+        {
             println!("floor already at the lowest live build ({min}) — nothing to bump.");
             return Ok(());
         }
@@ -4482,7 +5094,8 @@ fn cmd_require(req: Option<String>, bump: bool) -> Result<()> {
     }
     match req {
         Some(r) => {
-            let parsed = semver::VersionReq::parse(&r).map_err(|e| anyhow!("invalid requirement '{r}': {e}"))?;
+            let parsed = semver::VersionReq::parse(&r)
+                .map_err(|e| anyhow!("invalid requirement '{r}': {e}"))?;
             write_require(&root, &parsed.to_string())
         }
         None => {
@@ -4547,7 +5160,11 @@ fn cmd_fleet(json: bool) -> Result<()> {
         })
         .collect();
     // Live first, then by role.
-    rows.sort_by(|x, y| (x.live != presence::Live::Up).cmp(&(y.live != presence::Live::Up)).then(x.role.cmp(&y.role)));
+    rows.sort_by(|x, y| {
+        (x.live != presence::Live::Up)
+            .cmp(&(y.live != presence::Live::Up))
+            .then(x.role.cmp(&y.role))
+    });
 
     if json {
         let arr: Vec<serde_json::Value> = rows
@@ -4562,18 +5179,26 @@ fn cmd_fleet(json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string(&serde_json::json!({
-            "pin": pin.as_ref().map(|p| p.label()),
-            "requires": require.as_ref().map(|r| r.to_string()),
-            "agents": arr,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "pin": pin.as_ref().map(|p| p.label()),
+                "requires": require.as_ref().map(|r| r.to_string()),
+                "agents": arr,
+            }))?
+        );
         return Ok(());
     }
 
     println!(
         "fleet version audit — hub pins {}{}",
-        pin.as_ref().map(|p| p.label()).unwrap_or_else(|| "(none)".into()),
-        require.as_ref().map(|r| format!(" · requires {r}")).unwrap_or_default()
+        pin.as_ref()
+            .map(|p| p.label())
+            .unwrap_or_else(|| "(none)".into()),
+        require
+            .as_ref()
+            .map(|r| format!(" · requires {r}"))
+            .unwrap_or_default()
     );
     if rows.is_empty() {
         println!("  (no agent presence yet — peers publish their build on the watch heartbeat)");
@@ -4581,11 +5206,23 @@ fn cmd_fleet(json: bool) -> Result<()> {
     }
     for r in &rows {
         let g = presence::glyph(&r.live);
-        let bl = r.build.as_ref().map(|b| b.label()).unwrap_or_else(|| "unknown".into());
+        let bl = r
+            .build
+            .as_ref()
+            .map(|b| b.label())
+            .unwrap_or_else(|| "unknown".into());
         // Flag only a genuine SEMVER-behind build; a sha-only "rebuild" can't be graded
         // ahead-vs-behind without ancestry, so it's not an alarm.
-        let flag = if matches!(r.grade, "patch" | "minor" | "major") { format!("  [{} behind]", r.grade) } else { String::new() };
-        let cflag = if r.compat == Some(false) { "  ✗ BELOW FLOOR" } else { "" };
+        let flag = if matches!(r.grade, "patch" | "minor" | "major") {
+            format!("  [{} behind]", r.grade)
+        } else {
+            String::new()
+        };
+        let cflag = if r.compat == Some(false) {
+            "  ✗ BELOW FLOOR"
+        } else {
+            ""
+        };
         println!("  {g} {:<16} {:<12} {bl}{flag}{cflag}", r.role, r.host);
     }
 
@@ -4594,10 +5231,16 @@ fn cmd_fleet(json: bool) -> Result<()> {
     // it's ancestry-free and doesn't false-positive an ahead-of-pin build as "behind".
     // Agents that haven't published a build yet are called out separately,
     // not lumped in as "behind".
-    let live: Vec<&Row> = rows.iter().filter(|r| r.live == presence::Live::Up).collect();
+    let live: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.live == presence::Live::Up)
+        .collect();
     let known: Vec<&&Row> = live.iter().filter(|r| r.build.is_some()).collect();
     let unknown = live.len() - known.len();
-    let mut builds: Vec<String> = known.iter().filter_map(|r| r.build.as_ref().map(|b| b.label())).collect();
+    let mut builds: Vec<String> = known
+        .iter()
+        .filter_map(|r| r.build.as_ref().map(|b| b.label()))
+        .collect();
     builds.sort();
     builds.dedup();
     println!("\n{} agent(s), {} live.", rows.len(), live.len());
@@ -4611,7 +5254,11 @@ fn cmd_fleet(json: bool) -> Result<()> {
     }
     // Floor compat + auto-bump hint.
     if let Some(r) = &require {
-        let below: Vec<&str> = live.iter().filter(|x| x.compat == Some(false)).map(|x| x.role.as_str()).collect();
+        let below: Vec<&str> = live
+            .iter()
+            .filter(|x| x.compat == Some(false))
+            .map(|x| x.role.as_str())
+            .collect();
         if below.is_empty() {
             println!("✓ all live agents satisfy the floor {r}.");
         } else {
@@ -4626,7 +5273,10 @@ fn cmd_fleet(json: bool) -> Result<()> {
     if !any_below {
         if let Some(min) = version::min_version(&live_builds) {
             let suggested = format!(">={min}");
-            let already = require.as_ref().map(|r| r.to_string()) == semver::VersionReq::parse(&suggested).ok().map(|r| r.to_string());
+            let already = require.as_ref().map(|r| r.to_string())
+                == semver::VersionReq::parse(&suggested)
+                    .ok()
+                    .map(|r| r.to_string());
             if !already {
                 println!("↑ every live agent is ≥ {min} — raise the floor with `confer require --bump` (sets {suggested}).");
             }
@@ -4708,7 +5358,12 @@ fn cmd_version(json: bool, check: bool, pin: bool) -> Result<()> {
                 "current" => println!("hub pin: {} — current", p.label()),
                 "ahead" => println!("hub pin: {} — you're ahead (fine)", p.label()),
                 _ => {
-                    println!("hub pin: {} — {} ({})", p.label(), a.grade, update_hint(a.grade));
+                    println!(
+                        "hub pin: {} — {} ({})",
+                        p.label(),
+                        a.grade,
+                        update_hint(a.grade)
+                    );
                     println!("adopt:   confer reconnect --role <you>   (or: git pull && cargo build --release)");
                 }
             },
@@ -4893,7 +5548,13 @@ Drive on an interval: /loop 45s /confer-poll
 /// Bulletproof (re)connect. Idempotent: resolve-or-clone the hub, (re)join, install
 /// the full reactive stack (skills + auto-heal hook), then print the one remaining
 /// agent-driven step (arm `/confer-watch`). Safe whether cold or stale.
-fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>, host: Option<String>) -> Result<()> {
+fn cmd_reconnect(
+    role: Option<String>,
+    hub: Option<String>,
+    dir: Option<String>,
+    host: Option<String>,
+    ssh_key: Option<String>,
+) -> Result<()> {
     // 1. Resolve the hub clone — reuse an existing one, or clone from a URL (clone
     //    only; we do the join ourselves below so --host applies uniformly).
     let root: std::path::PathBuf = match &hub {
@@ -4901,9 +5562,9 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
         Some(h) => {
             let remote = parse_remote(h);
             let name_src = remote.shorthand.clone().unwrap_or_else(|| h.clone());
-            let clonedir = dir.clone().unwrap_or_else(|| {
-                name_src.rsplit('/').next().unwrap_or("hub").trim_end_matches(".git").to_string()
-            });
+            let basename = name_src.rsplit('/').next().unwrap_or("hub").trim_end_matches(".git").to_string();
+            // Don't nest inside a work repo when no --dir was given (#4) — agents run from a project dir.
+            let clonedir = safe_clone_dir(dir.clone(), &basename);
             // Resolve to absolute BEFORE cloning — cmd_init changes the process cwd,
             // which would break a later relative-path canonicalize.
             let clonedir_abs = if std::path::Path::new(&clonedir).is_absolute() {
@@ -4912,7 +5573,7 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
                 std::env::current_dir()?.join(&clonedir)
             };
             if !clonedir_abs.join(".git").exists() {
-                cmd_init(h.clone(), Some(clonedir.clone()), None, Scheme::Auto, None, None, None, true, false)?;
+                cmd_init(h.clone(), Some(clonedir.clone()), None, Scheme::Auto, None, None, None, ssh_key.clone(), true, false)?;
             }
             clonedir_abs.canonicalize().unwrap_or(clonedir_abs)
         }
@@ -4927,6 +5588,31 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
     std::env::set_var("CONFER_HUB", &root);
     warn_if_nested(&root);
 
+    // Guard (#B): refuse to write confer state into a repo that ISN'T a confer hub. `reconnect
+    // --hub <any .git>` would otherwise join + PUSH confer commits to that repo's real origin. A
+    // confer hub carries the scaffold markers (a fresh clone gets them from `init` above); a random
+    // work repo has none. 0.5.0 made `reconnect --hub <pasted value>` a headline command, so gate it.
+    let is_confer_hub = root.join(".confer-version").exists()
+        || root.join("threads").is_dir()
+        || root.join("roles").is_dir();
+    if !is_confer_hub {
+        return Err(anyhow!(
+            "{} is a git repo but not a confer hub (no threads/ · roles/ · .confer-version) — \
+             refusing to join and push confer state into it. Point --hub at your confer hub, or run \
+             `confer init <url> --role <you>` to create one.",
+            root.display()
+        ));
+    }
+
+    // Pin transport auth to this clone (idempotent) — covers an EXISTING clone that predates the
+    // key, and re-asserts it after a fresh clone. Keeps the headless watch's transport self-contained.
+    if let Some(k) = &ssh_key {
+        let _ = gitcmd::check(
+            &root,
+            &["config", "--local", "core.sshCommand", &git_ssh_command(k)],
+        );
+    }
+
     // 2. Refresh + (re)join with the requested host (idempotent).
     let _ = gitcmd::integrate(&root); // pull latest, best-effort
     if let Some(r) = &role {
@@ -4937,7 +5623,12 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
     }
 
     // 3. Full reactive stack: skills + auto-heal hook (idempotent; migrates legacy names).
-    cmd_install_skill(None, Some(root.to_string_lossy().to_string()), role.clone(), false)?;
+    cmd_install_skill(
+        None,
+        Some(root.to_string_lossy().to_string()),
+        role.clone(),
+        false,
+    )?;
 
     // 4. The one remaining, agent-driven step.
     let r = role.unwrap_or_else(|| "<you>".into());
@@ -4952,9 +5643,14 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
 /// idempotent do-commands end the same way. (install-skill wires the CC convenience; the
 /// poll-loop is the mechanism that works on ANY harness — name both so no path is CC-only.)
 fn print_reactive_next(role: &str) {
+    // A role can arrive from a value an agent copied out of an untrusted peer message — strip any
+    // terminal control sequences before echoing it (#D defense-in-depth).
+    let role = schema::sanitize_term(role, false);
     println!("   final step — arm your reactive watch:  run  /confer-watch");
     println!("   (headless / no Monitor tool:  confer watch --role {role} --replace)");
-    println!("   (not Claude Code:  loop  `confer poll --role {role}`  inside your agent's run loop)");
+    println!(
+        "   (not Claude Code:  loop  `confer poll --role {role}`  inside your agent's run loop)"
+    );
 }
 
 /// The literacy pointer for a cold agent: what confer is + the ONE next command for the
@@ -4963,10 +5659,16 @@ fn print_reactive_next(role: &str) {
 /// INTO a live hub, filled from hub state); `onboard` self-bootstraps a create-or-join when
 /// there is no hub and no inviter yet.
 fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
-    let r = role.as_deref().unwrap_or("<your-role>");
+    // A concrete, paste-safe default role — NEVER a `<...>` placeholder (a shell chokes on `<`/`>`,
+    // so a pasted command would silently fail). The user swaps it for a meaningful role id. Sanitize
+    // both echoed values: an agent may pass a --role/--hub copied from an untrusted message (#D).
+    let r = schema::sanitize_term(role.as_deref().unwrap_or("agent"), false);
+    let hub = hub.as_deref().map(|h| schema::sanitize_term(h, false));
     println!("confer — a git-native coordination layer for AI agents.");
     println!("A \"fleet\" is one private git repo (the hub). Each agent joins it with a signed");
-    println!("identity and coordinates by appending signed, verifiable messages — no server, no db.");
+    println!(
+        "identity and coordinates by appending signed, verifiable messages — no server, no db."
+    );
     println!();
     match hub.as_deref() {
         Some(h) => {
@@ -4974,23 +5676,46 @@ fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
             println!();
             println!("    confer reconnect --role {r} --hub {h}");
             println!();
-            println!("That clones the hub, joins as {r}, wires your reactive layer, and tells you to");
+            println!(
+                "That clones the hub, joins as {r}, wires your reactive layer, and tells you to"
+            );
             println!("arm the watch. Idempotent — safe to re-run after a restart or a compaction.");
+            println!(
+                "Private hub authed by a deploy key (not your default SSH)? add:  --ssh-key <path>"
+            );
         }
         None => {
             println!("You have no fleet yet. START one with a single command (local, zero-setup):");
             println!();
             println!("    confer init ~/confer/team.git --role {r}");
             println!();
-            println!("That scaffolds a local hub, mints your signing key, joins as {r}, and wires your");
+            println!(
+                "That scaffolds a local hub, mints your signing key, joins as {r}, and wires your"
+            );
             println!("reactive layer — one idempotent command, no GitHub or network needed.");
             println!();
-            println!("For agents on OTHER machines to join, start the hub on a PRIVATE repo instead:");
-            println!("    confer init your-org/your-hub --role {r}     # a private GitHub/GitLab repo");
-            println!("    # each peer then runs:  confer onboard --role <peer> --hub your-org/your-hub");
+            println!(
+                "For agents on OTHER machines to join, start the hub on a PRIVATE repo instead:"
+            );
+            println!(
+                "    confer init your-org/your-hub --role {r}     # a private GitHub/GitLab repo"
+            );
+            println!("    # each peer then runs:  confer reconnect --role frontend --hub your-org/your-hub");
+            println!();
+            println!("Private-hub auth — a headless watch needs non-interactive push credentials:");
+            println!(
+                "  • deploy key / non-default SSH:  add  --ssh-key <path>  (pinned to the clone)"
+            );
+            println!(
+                "  • HTTPS + a GitHub App token:    see  confer credential / app-config --help"
+            );
+            println!("  • `confer doctor` flags a clone whose transport isn't self-contained");
         }
     }
     println!();
+    if role.is_none() {
+        println!("(`{r}` is a placeholder — replace it with a role id for this agent: any lowercase name.)");
+    }
     println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch`.");
     println!("On any other agent, loop `confer poll --role {r}` in your run loop instead.");
     Ok(())
@@ -5018,7 +5743,9 @@ fn expand_local_hub(url: String) -> Result<String> {
         // Only create a hub in a NEW or EMPTY dir — never scatter git plumbing into an existing
         // non-repo directory (e.g. a fat-fingered `confer init ~/.ssh --role x`).
         if expanded.exists()
-            && std::fs::read_dir(&expanded).map(|mut d| d.next().is_some()).unwrap_or(true)
+            && std::fs::read_dir(&expanded)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(true)
         {
             return Err(anyhow!(
                 "{} already exists and is not a confer hub — pick an empty path for a new local \
@@ -5044,7 +5771,12 @@ fn expand_local_hub(url: String) -> Result<String> {
     Ok(expanded.to_string_lossy().into_owned())
 }
 
-fn cmd_install_skill(dir: Option<String>, hub: Option<String>, role: Option<String>, no_autoheal: bool) -> Result<()> {
+fn cmd_install_skill(
+    dir: Option<String>,
+    hub: Option<String>,
+    role: Option<String>,
+    no_autoheal: bool,
+) -> Result<()> {
     let bin = std::env::current_exe()?.to_string_lossy().to_string();
     let hub_root = match hub {
         Some(h) => std::fs::canonicalize(&h).unwrap_or_else(|_| std::path::PathBuf::from(h)),
@@ -5072,17 +5804,26 @@ fn cmd_install_skill(dir: Option<String>, hub: Option<String>, role: Option<Stri
     // (commands resolve the caller's role from the hub clone they're run in), so co-resident agents
     // no longer clobber each other by baking their own role into a shared `confer-watch/SKILL.md`
     // (design/32). Only {CONFER} (the machine's binary path, shared by co-resident agents) is baked.
-    for (name, tmpl) in [("confer-watch", WATCH_SKILL), ("confer-poll", CHECK_BLACKBOARD_SKILL)] {
+    for (name, tmpl) in [
+        ("confer-watch", WATCH_SKILL),
+        ("confer-poll", CHECK_BLACKBOARD_SKILL),
+    ] {
         let d = dir.join(name);
         std::fs::create_dir_all(&d)?;
         std::fs::write(d.join("SKILL.md"), fill(tmpl))?;
     }
-    println!("wrote {}/{{confer-watch,confer-poll}}/SKILL.md", dir.display());
+    println!(
+        "wrote {}/{{confer-watch,confer-poll}}/SKILL.md",
+        dir.display()
+    );
     // Migrate: remove OUR pre-namespacing skill dirs so an agent doesn't keep both /watch and
     // /confer-watch. Only remove ones clearly OURS (mention confer) — never an unrelated skill.
     for legacy in ["watch", "check-blackboard"] {
         let sk = dir.join(legacy).join("SKILL.md");
-        if std::fs::read_to_string(&sk).map(|s| s.contains("confer")).unwrap_or(false) {
+        if std::fs::read_to_string(&sk)
+            .map(|s| s.contains("confer"))
+            .unwrap_or(false)
+        {
             let _ = std::fs::remove_dir_all(dir.join(legacy));
             println!("  migrated: removed legacy /{legacy}");
         }
@@ -5101,10 +5842,15 @@ fn cmd_install_skill(dir: Option<String>, hub: Option<String>, role: Option<Stri
                 let _ = autoheal::set_enabled(true);
                 println!("  auto-heal: installed SessionStart hook → {} and enabled (confer autoheal off to disable)", settings.display());
             }
-            Err(e) => eprintln!("  auto-heal: skipped (couldn't edit {}: {e})", settings.display()),
+            Err(e) => eprintln!(
+                "  auto-heal: skipped (couldn't edit {}: {e})",
+                settings.display()
+            ),
         }
     }
-    println!("use: /confer-watch (Monitor, reactive/dormant) or /loop 45s /confer-poll (poll fallback).");
+    println!(
+        "use: /confer-watch (Monitor, reactive/dormant) or /loop 45s /confer-poll (poll fallback)."
+    );
     Ok(())
 }
 
@@ -5117,7 +5863,17 @@ mod tests {
         for ok in ["carol", "cover-restoration", "a1", "x", "all"] {
             assert!(valid_slug(ok), "{ok} should be valid");
         }
-        for bad in ["", "-x", "A", "a/b", "../x", "a b", "a_b", "a.", &"a".repeat(65)] {
+        for bad in [
+            "",
+            "-x",
+            "A",
+            "a/b",
+            "../x",
+            "a b",
+            "a_b",
+            "a.",
+            &"a".repeat(65),
+        ] {
             assert!(!valid_slug(bad), "{bad:?} should be invalid");
         }
     }
@@ -5228,11 +5984,20 @@ mod tests {
     fn parse_remote_canonicalizes_github_forms() {
         let ssh = "git@github.com:codeshrew/team-hub.git";
         let https = "https://github.com/codeshrew/team-hub.git";
-        for input in [ssh, https, "https://github.com/codeshrew/team-hub", "codeshrew/team-hub"] {
+        for input in [
+            ssh,
+            https,
+            "https://github.com/codeshrew/team-hub",
+            "codeshrew/team-hub",
+        ] {
             let r = parse_remote(input);
             assert_eq!(r.ssh.as_deref(), Some(ssh), "ssh from {input}");
             assert_eq!(r.https.as_deref(), Some(https), "https from {input}");
-            assert_eq!(r.shorthand.as_deref(), Some("codeshrew/team-hub"), "shorthand from {input}");
+            assert_eq!(
+                r.shorthand.as_deref(),
+                Some("codeshrew/team-hub"),
+                "shorthand from {input}"
+            );
         }
         // non-GitHub host: still splits both schemes, but no shorthand
         let gl = parse_remote("git@gitlab.com:team/hub.git");
@@ -5268,13 +6033,22 @@ mod tests {
     #[test]
     fn clone_candidates_respect_scheme_and_fallback() {
         let r = parse_remote("codeshrew/team-hub");
-        assert_eq!(clone_candidates(&r, Scheme::Ssh), vec![r.ssh.clone().unwrap()]);
-        assert_eq!(clone_candidates(&r, Scheme::Https), vec![r.https.clone().unwrap()]);
+        assert_eq!(
+            clone_candidates(&r, Scheme::Ssh),
+            vec![r.ssh.clone().unwrap()]
+        );
+        assert_eq!(
+            clone_candidates(&r, Scheme::Https),
+            vec![r.https.clone().unwrap()]
+        );
         // Auto always yields both (order is a hint; fallback is the guarantee)
         assert_eq!(clone_candidates(&r, Scheme::Auto).len(), 2);
         // local path: only the raw candidate, no fallback
         let local = parse_remote("/srv/hubs/x.git");
-        assert_eq!(clone_candidates(&local, Scheme::Auto), vec!["/srv/hubs/x.git".to_string()]);
+        assert_eq!(
+            clone_candidates(&local, Scheme::Auto),
+            vec!["/srv/hubs/x.git".to_string()]
+        );
     }
 
     #[test]
