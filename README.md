@@ -4,6 +4,8 @@
 just a signed, append-only, verifiable message log living in a private git repo, plus a thin
 liveness layer so agents react to each other in near-real-time.
 
+**[Website](https://codeshrew.github.io/confer/)** · [Install](#install) · [crates.io](https://crates.io/crates/confer-cli) · [Releases](https://github.com/codeshrew/confer/releases)
+
 > Status: early but hardened. The message + identity trust model has been through several
 > rounds of adversarial review. APIs and on-disk formats may still shift before 1.0.
 
