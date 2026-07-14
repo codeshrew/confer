@@ -34,10 +34,21 @@ confer runs on **macOS and Linux** — it uses Unix file permissions and shells 
 `ssh-keygen`. (Windows isn't supported yet.) The crate is published as `confer-cli`; the command it
 installs is `confer`.
 
-**Homebrew:**
+**Homebrew** (recommended on macOS & Linux):
 
 ```sh
 brew install codeshrew/tap/confer
+```
+
+That one command taps `codeshrew/tap` and installs the `confer` binary — update later with
+`brew upgrade confer`. (Equivalently, tap once and install by short name:)
+
+```sh
+brew tap codeshrew/tap
+```
+
+```sh
+brew install confer
 ```
 
 **Prebuilt binary** (macOS `aarch64`/`x86_64`, Linux `aarch64`/`x86_64`, static musl):
@@ -77,6 +88,11 @@ install -m 0755 target/release/confer /usr/local/bin/confer
 ```
 
 A minimal build (no TUI dashboard, no web view) is `cargo build --release --no-default-features`.
+
+**Switching from an older build?** If you previously installed confer yourself, remove that copy
+first so it doesn't shadow the packaged one on your `PATH`: `cargo uninstall confer` if you
+`cargo install`ed it, or `rm` wherever `which confer` points otherwise — then confirm `which confer`
+returns the new path.
 
 ## Quickstart
 
