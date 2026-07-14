@@ -3536,7 +3536,8 @@ fn init_ssh_key_pins_transport_to_the_clone() {
     let home = tmp("home");
     let work = tmp("work");
     let hub = home.join("hub").join("team.git");
-    let key = tmp("key").join("deploy"); // path needn't exist for the config write
+    let key = tmp("key").join("deploy");
+    std::fs::write(&key, "fake-key-material").unwrap(); // must be a real file (validated)
     let o = Command::new(BIN)
         .env("HOME", &home)
         .current_dir(&work)
@@ -3694,5 +3695,55 @@ fn init_redirects_clone_out_of_a_work_tree() {
     assert!(
         !work.join("team").exists(),
         "clone must NOT be nested inside the work tree"
+    );
+}
+
+/// The --ssh-key path flows into core.sshCommand / GIT_SSH_COMMAND (git runs it through a shell),
+/// so a path with a single-quote (or a non-existent file) must be REFUSED, not pinned — else it's
+/// a command-injection vector (same class as the 0.5.0 clone RCE).
+#[test]
+fn ssh_key_rejects_injection_and_missing_file() {
+    let home = tmp("home");
+    let work = tmp("work");
+    let hub = home.join("hub").join("team.git");
+    // 1. single-quote injection attempt
+    let inject = Command::new(BIN)
+        .env("HOME", &home)
+        .current_dir(&work)
+        .args([
+            "init",
+            hub.to_str().unwrap(),
+            "--role",
+            "backend",
+            "--ssh-key",
+            "/tmp/x'; touch /tmp/PWN; '",
+        ])
+        .output()
+        .unwrap();
+    assert!(!ok(&inject), "a single-quote in --ssh-key must be refused");
+    assert!(
+        err(&inject).contains("single-quote or control"),
+        "expected injection refusal:\n{}",
+        err(&inject)
+    );
+    // 2. non-existent key file
+    let missing = Command::new(BIN)
+        .env("HOME", &home)
+        .current_dir(&work)
+        .args([
+            "init",
+            hub.to_str().unwrap(),
+            "--role",
+            "backend",
+            "--ssh-key",
+            "/no/such/key",
+        ])
+        .output()
+        .unwrap();
+    assert!(!ok(&missing), "a non-existent --ssh-key must be refused");
+    assert!(
+        err(&missing).contains("not a readable key file"),
+        "expected missing-file refusal:\n{}",
+        err(&missing)
     );
 }

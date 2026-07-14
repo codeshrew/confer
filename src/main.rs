@@ -3777,6 +3777,33 @@ fn git_ssh_command(key: &str) -> String {
     format!("ssh -i '{expanded}' -o IdentitiesOnly=yes -o IdentityAgent=none")
 }
 
+/// Reject a transport-key path that isn't a real key file or that carries a character which would
+/// break out of the single-quoted `core.sshCommand` / `GIT_SSH_COMMAND` value git runs through a
+/// shell — a `'` (or a control char) is a command-injection vector (cf. the 0.5.0 clone RCE).
+fn validate_transport_key(path: &str) -> Result<()> {
+    if path.contains('\'') || path.chars().any(|c| c.is_control()) {
+        return Err(anyhow!(
+            "--ssh-key path contains a single-quote or control character — use a plain filesystem path"
+        ));
+    }
+    let expanded = if path == "~" {
+        config::home().unwrap_or_else(|_| std::path::PathBuf::from(path))
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        config::home()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    if !expanded.is_file() {
+        return Err(anyhow!(
+            "--ssh-key {}: not a readable key file",
+            expanded.display()
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_init(
     url: String,
@@ -3796,6 +3823,9 @@ fn cmd_init(
     // Transport auth for a PRIVATE hub: build the `GIT_SSH_COMMAND` from --ssh-key. Used for the
     // clone AND (below) pinned to the clone's local `core.sshCommand`, so the identity isn't
     // ambient — a fresh shell or the headless watch keeps reaching the hub. (#1 field feedback.)
+    if let Some(k) = &ssh_key {
+        validate_transport_key(k)?;
+    }
     let ssh_cmd: Option<String> = ssh_key.as_deref().map(git_ssh_command);
     let name_src = remote.shorthand.clone().unwrap_or_else(|| url.clone());
     let basename = name_src
@@ -5555,6 +5585,9 @@ fn cmd_reconnect(
     host: Option<String>,
     ssh_key: Option<String>,
 ) -> Result<()> {
+    if let Some(k) = &ssh_key {
+        validate_transport_key(k)?;
+    }
     // 1. Resolve the hub clone — reuse an existing one, or clone from a URL (clone
     //    only; we do the join ourselves below so --host applies uniformly).
     let root: std::path::PathBuf = match &hub {
