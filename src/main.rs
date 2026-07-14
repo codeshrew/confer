@@ -545,6 +545,18 @@ enum Cmd {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Bootstrap literacy for a cold agent: three lines on what confer is + the SINGLE next
+    /// command for your situation — `init` to START a fleet, `reconnect` to JOIN one. The one
+    /// thing to tell a fresh agent is "run `confer onboard`"; from there it's literate and has an
+    /// idempotent command to run. Agent-agnostic — needs no skill/plugin, works on any harness.
+    Onboard {
+        /// the role you'll take (default: a `<your-role>` placeholder in the printed command)
+        #[arg(long)]
+        role: Option<String>,
+        /// a hub to JOIN (git URL / `owner/repo`). Omit to be told how to START a new fleet.
+        #[arg(long)]
+        hub: Option<String>,
+    },
     /// List the repos this hub is "about" (role, access, url, docs) — the
     /// inventory that `--ref` points into. See DESIGN.md.
     Repos {
@@ -933,6 +945,7 @@ fn main() -> Result<()> {
         }
         Cmd::InstallSkill { dir, hub, role, no_autoheal } => cmd_install_skill(dir, hub, role, no_autoheal),
         Cmd::Reconnect { role, hub, dir, host } => cmd_reconnect(role, hub, dir, host),
+        Cmd::Onboard { role, hub } => cmd_onboard(role, hub),
         Cmd::Version { json, check, pin } => cmd_version(json, check, pin),
         Cmd::Fleet { json } => cmd_fleet(json),
         Cmd::Require { req, bump } => cmd_require(req, bump),
@@ -3352,6 +3365,8 @@ fn cmd_init(
     is_clone: bool,
     managed: bool,
 ) -> Result<()> {
+    // Zero-dependency CREATE: a local-path url with nothing there yet becomes a fresh bare hub.
+    let url = expand_local_hub(url)?;
     let remote = parse_remote(&url);
     let name_src = remote.shorthand.clone().unwrap_or_else(|| url.clone());
     let dir = dir.unwrap_or_else(|| {
@@ -3511,8 +3526,32 @@ fn cmd_init(
 
     if let Some(r) = role {
         std::env::set_current_dir(&root)?;
+        // Ensure a signing identity: the provided key, else the fleet-standard key for this role,
+        // MINTING it if absent — so a create yields a signed, verifiable identity by default
+        // (no keyless/unsigned join for the one-command path).
+        let signing_key = match signing_key {
+            Some(k) => Some(k),
+            None => {
+                let kp = config::home()?.join(".confer").join("keys").join(&r);
+                if !kp.exists() {
+                    if let Err(e) = cmd_keygen(Some(r.clone())) {
+                        eprintln!("confer: keygen skipped ({e}) — joining without a signing key");
+                    }
+                }
+                kp.exists().then(|| kp.to_string_lossy().into_owned())
+            }
+        };
         println!();
-        cmd_join(r, None, display, desc, signing_key)?;
+        cmd_join(r.clone(), None, display, desc, signing_key)?;
+        // Full reactive stack (mirrors `reconnect`), so `init --role` is the one-command CREATE
+        // that `onboard` points to. Skip under --managed: the clone relocates below, so the
+        // skills' resolved paths + the arm-from-here advice would be stale; managed prints its own.
+        if !managed {
+            let _ = cmd_install_skill(None, Some(root.to_string_lossy().to_string()), Some(r.clone()), false);
+            println!();
+            println!("✅ fleet ready at {}", root.display());
+            print_reactive_next(&r);
+        }
     } else {
         println!("next: cd {dir} && confer join --role <your-role>");
     }
@@ -4881,9 +4920,94 @@ fn cmd_reconnect(role: Option<String>, hub: Option<String>, dir: Option<String>,
     let r = role.unwrap_or_else(|| "<you>".into());
     println!();
     println!("✅ reconnected to hub {}", root.display());
-    println!("   final step — arm your reactive watch:  run  /confer-watch");
-    println!("   (headless / no Monitor tool:  confer watch --role {r} --replace)");
+    print_reactive_next(&r);
     Ok(())
+}
+
+/// Print the final reactive-arming step, agent-agnostically. Claude Code arms `/confer-watch`;
+/// any other agent loops `confer poll`. Shared by `reconnect` and `init --role` so the two
+/// idempotent do-commands end the same way. (install-skill wires the CC convenience; the
+/// poll-loop is the mechanism that works on ANY harness — name both so no path is CC-only.)
+fn print_reactive_next(role: &str) {
+    println!("   final step — arm your reactive watch:  run  /confer-watch");
+    println!("   (headless / no Monitor tool:  confer watch --role {role} --replace)");
+    println!("   (not Claude Code:  loop  `confer poll --role {role}`  inside your agent's run loop)");
+}
+
+/// The literacy pointer for a cold agent: what confer is + the ONE next command for the
+/// caller's situation. Agent-agnostic — a fresh agent runs this, learns confer, and gets a
+/// single idempotent command to run next. Deliberately NOT `invite` (that onboards a newcomer
+/// INTO a live hub, filled from hub state); `onboard` self-bootstraps a create-or-join when
+/// there is no hub and no inviter yet.
+fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
+    let r = role.as_deref().unwrap_or("<your-role>");
+    println!("confer — a git-native coordination layer for AI agents.");
+    println!("A \"fleet\" is one private git repo (the hub). Each agent joins it with a signed");
+    println!("identity and coordinates by appending signed, verifiable messages — no server, no db.");
+    println!();
+    match hub.as_deref() {
+        Some(h) => {
+            println!("You were pointed at a fleet. JOIN it with one command:");
+            println!();
+            println!("    confer reconnect --role {r} --hub {h}");
+            println!();
+            println!("That clones the hub, joins as {r}, wires your reactive layer, and tells you to");
+            println!("arm the watch. Idempotent — safe to re-run after a restart or a compaction.");
+        }
+        None => {
+            println!("You have no fleet yet. START one with a single command (local, zero-setup):");
+            println!();
+            println!("    confer init ~/confer/team.git --role {r}");
+            println!();
+            println!("That scaffolds a local hub, mints your signing key, joins as {r}, and wires your");
+            println!("reactive layer — one idempotent command, no GitHub or network needed.");
+            println!();
+            println!("For agents on OTHER machines to join, start the hub on a PRIVATE repo instead:");
+            println!("    confer init your-org/your-hub --role {r}     # a private GitHub/GitLab repo");
+            println!("    # each peer then runs:  confer onboard --role <peer> --hub your-org/your-hub");
+        }
+    }
+    println!();
+    println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch`.");
+    println!("On any other agent, loop `confer poll --role {r}` in your run loop instead.");
+    Ok(())
+}
+
+/// If `url` is a local filesystem path (starts with `/`, `~`, or `.`) that isn't a git repo
+/// yet, create a bare hub there and return the expanded absolute path — the zero-dependency
+/// CREATE path (no gh auth / no network). git runs without a shell, so a leading `~` is expanded
+/// here. Remote URLs (`owner/repo`, `git@…`, `https://…`) pass through unchanged.
+fn expand_local_hub(url: String) -> Result<String> {
+    let is_local = matches!(url.chars().next(), Some('/') | Some('~') | Some('.'));
+    if !is_local {
+        return Ok(url);
+    }
+    let expanded: std::path::PathBuf = if url == "~" {
+        config::home()?
+    } else if let Some(rest) = url.strip_prefix("~/") {
+        config::home()?.join(rest)
+    } else {
+        std::path::PathBuf::from(&url)
+    };
+    // Already a repo (bare hub has HEAD; a worktree has .git)? Leave it — clone handles it.
+    let is_repo = expanded.join("HEAD").exists() || expanded.join(".git").exists();
+    if !is_repo {
+        std::fs::create_dir_all(&expanded)
+            .map_err(|e| anyhow!("cannot create local hub dir {}: {e}", expanded.display()))?;
+        let out = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&expanded)
+            .output()
+            .map_err(|e| anyhow!("could not run `git init --bare`: {e}"))?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "git init --bare failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        eprintln!("confer: created a local bare hub at {}", expanded.display());
+    }
+    Ok(expanded.to_string_lossy().into_owned())
 }
 
 fn cmd_install_skill(dir: Option<String>, hub: Option<String>, role: Option<String>, no_autoheal: bool) -> Result<()> {

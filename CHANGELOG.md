@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+- **`confer onboard` — the literacy pointer for a cold agent.** The one thing to tell a fresh
+  agent is "run `confer onboard`": it prints three lines on what confer is plus the SINGLE next
+  command for its situation — `confer init …` to start a fleet, `confer reconnect …` to join one.
+  Agent-agnostic (no skill/plugin needed), so an agent that's never seen confer becomes literate
+  and has one idempotent command to run. Closes the "installed the binary, but my agent asks
+  'what's confer?'" gap.
+- **`confer init <path> --role R` now does the whole create in one idempotent command.** It was
+  scaffold-only; now it also mints the role's signing key if absent, joins (signed), installs the
+  reactive skills, and prints the arm-watch step — mirroring how `reconnect` does the join side.
+  A bare local path with nothing there (`confer init ~/confer/team.git --role backend`) creates a
+  **local bare hub** first: the zero-dependency create path — no GitHub, no auth, no network.
+- **The reactive step degrades for non-Claude agents.** `onboard` / `init` / `reconnect` now name
+  the agent-agnostic fallback — loop `confer poll --role R` — alongside the Claude Code
+  `/confer-watch` convenience, so "arm your reactive layer" is no longer Claude-Code-only.
+
 ## 0.4.10
 
 - **`confer update` self-updates a standalone install again.** It looked for the dist install

@@ -1760,3 +1760,65 @@ fn install_skill_is_generic_no_coresident_clobber() {
     assert!(first.contains("watch --replace"), "arms via the role-auto-resolving `watch --replace`");
     let _ = std::fs::remove_dir_all(&sk);
 }
+
+/// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
+/// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
+#[test]
+fn onboard_points_to_init_for_create_and_reconnect_for_join() {
+    let home = tmp("home");
+    let create = Command::new(BIN)
+        .env("HOME", &home)
+        .args(["onboard", "--role", "backend"])
+        .output()
+        .expect("run confer onboard");
+    assert!(ok(&create), "onboard (create) failed: {}", err(&create));
+    let s = out(&create);
+    assert!(s.contains("confer init"), "create path must point at `confer init`:\n{s}");
+    assert!(s.contains("--role backend"), "create path carries the role:\n{s}");
+    assert!(s.contains("confer poll --role backend"), "names the non-Claude reactive fallback:\n{s}");
+
+    let join = Command::new(BIN)
+        .env("HOME", &home)
+        .args(["onboard", "--role", "docs", "--hub", "your-org/your-hub"])
+        .output()
+        .expect("run confer onboard --hub");
+    assert!(ok(&join), "onboard (join) failed: {}", err(&join));
+    let j = out(&join);
+    assert!(
+        j.contains("confer reconnect --role docs --hub your-org/your-hub"),
+        "join path must point at the idempotent `reconnect` one-liner:\n{j}"
+    );
+}
+
+/// The one-command CREATE: `init <local-path> --role R` makes a fresh local bare hub, mints
+/// the role's signing key if absent, joins (signed), and prints the reactive-arm step — so
+/// `onboard`'s create pointer resolves to a single idempotent command with zero setup.
+#[test]
+fn init_local_path_creates_bare_hub_and_keys_and_joins() {
+    let home = tmp("home");
+    let work = tmp("work");
+    let hub_path = home.join("hub").join("team.git");
+    let created = Command::new(BIN)
+        .env("HOME", &home)
+        .current_dir(&work)
+        .args(["init", hub_path.to_str().unwrap(), "--role", "backend"])
+        .output()
+        .expect("run confer init <local>");
+    assert!(ok(&created), "init (local create) failed: {}\n{}", err(&created), out(&created));
+
+    // a bare hub was created at the local path
+    assert!(hub_path.join("HEAD").exists(), "local bare hub not created at {}", hub_path.display());
+    // the role's signing key was minted (keygen-if-no-key)
+    assert!(
+        home.join(".confer").join("keys").join("backend").exists(),
+        "signing key for 'backend' was not minted"
+    );
+    // the working clone joined: a signed role card exists
+    assert!(
+        work.join("team").join("roles").join("backend.md").exists(),
+        "role card roles/backend.md missing — join did not complete"
+    );
+    let s = out(&created);
+    assert!(s.contains("fleet ready"), "missing the create confirmation:\n{s}");
+    assert!(s.contains("confer poll --role backend"), "missing the non-Claude reactive fallback:\n{s}");
+}
