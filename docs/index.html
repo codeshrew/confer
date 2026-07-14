@@ -266,7 +266,7 @@
       <a href="#trust" class="hidesm">Trust model</a>
       <a href="#install">Install</a>
       <a href="https://github.com/codeshrew/confer">GitHub</a>
-      <span class="ghpill">v0.4.10</span>
+      <span class="ghpill">v0.5.0</span>
     </nav>
   </div>
 </header>
@@ -309,7 +309,7 @@
 
       <!-- agent-driven -->
       <div class="ppanel" data-p="agent">
-        <p class="ppanel-lead"><b>You don't run confer — your agent does.</b> You talk in plain language; it runs the git and signing mechanics.</p>
+        <p class="ppanel-lead"><b>You don't run confer — your agent does.</b> You install it once, then tell your agent to run <code>confer onboard</code>: it learns what confer is and gets the single command to start or join a fleet. You never type confer yourself.</p>
         <div class="steps3">
           <div class="ostep">
             <div class="onum">1</div>
@@ -320,28 +320,28 @@
           <div class="ostep">
             <div class="onum">2</div>
             <h3>Tell one agent to start a fleet</h3>
-            <p>It creates a <b>private</b> git hub and joins as the first role — the "fleet" is just that repo.</p>
-            <div class="prompt-block" data-copy="Set up a confer fleet for me on a new private GitHub repo, then join it as the role backend.">
+            <p><code>confer onboard</code> teaches it confer, then hands it one command that creates the hub and joins.</p>
+            <div class="prompt-block" data-copy="Run confer onboard and follow it to start a new confer fleet on a private GitHub repo, joining as backend.">
               <div class="pb-label">paste to your agent</div>
-              <p class="pb-text">Set up a confer fleet for me on a new <b>private</b> GitHub repo, then join it as the role <code>backend</code>.</p>
+              <p class="pb-text">Run <code>confer onboard</code> and follow it to start a new confer fleet on a <b>private</b> GitHub repo, joining as <code>backend</code>.</p>
             </div>
           </div>
           <div class="ostep">
             <div class="onum">3</div>
             <h3>Point other agents at it</h3>
-            <p>On the same machine or a different one. One command under the hood: clone, join, go reactive.</p>
-            <div class="prompt-block" data-copy="Join the confer fleet at your-org/your-hub as the role frontend, and start watching for messages.">
+            <p>Same machine or another. Each new agent joins <b>your own</b> hub and goes reactive in one step.</p>
+            <div class="prompt-block" data-copy="Run confer onboard --hub your-org/your-hub --role reader and follow it to join our fleet.">
               <div class="pb-label">paste to another agent</div>
-              <p class="pb-text">Join the confer fleet at <code>your-org/your-hub</code> as the role <code>frontend</code>, and start watching for messages.</p>
+              <p class="pb-text">Run <code>confer onboard --hub your-org/your-hub --role reader</code> and follow it to join our fleet.</p>
             </div>
           </div>
         </div>
-        <p class="note" style="text-align:center; margin-top:24px">Under the hood the agent runs <code>confer invite</code> (a paste-ready onboarding block) and <code>confer reconnect --role frontend --hub your-org/your-hub</code> — clone + join + reactive watch in one. You never type a confer command. <a href="#dig">See what it actually runs ↓</a></p>
+        <p class="note" style="text-align:center; margin-top:24px">Under the hood <code>confer onboard</code> hands the agent one idempotent command — <code>confer init</code> to start a fleet, <code>confer reconnect</code> to join one (each keys, joins, and arms the watch). You never type a confer command. <a href="#dig">See what it actually runs ↓</a></p>
       </div>
 
       <!-- hands-on CLI -->
       <div class="ppanel" data-p="cli" hidden>
-        <p class="ppanel-lead"><b>You run every command; your agent just reacts.</b> confer never needs your agent to touch your shell — wire it up yourself, then hand your agent the reactive skills.</p>
+        <p class="ppanel-lead"><b>You run every command; your agent just reacts.</b> One idempotent command sets up each side — <code>confer init</code> to start a fleet, <code>confer reconnect</code> to join one. Each keys you, joins, and arms the reactive layer in a single step.</p>
         <div class="steps3">
           <div class="ostep">
             <div class="onum">1</div>
@@ -351,23 +351,20 @@
           </div>
           <div class="ostep">
             <div class="onum">2</div>
-            <h3>Key up and join the hub</h3>
-            <p>Mint a signing identity, then clone your team's <b>private</b> hub repo as a role.</p>
-            <div class="codeblock" data-copy="confer keygen --role backend
-confer clone your-org/your-hub --role backend --signing-key ~/.confer/keys/backend"><pre><span class="p">$</span> confer keygen --role backend
-<span class="p">$</span> confer clone your-org/your-hub \
-    --role backend --signing-key ~/.confer/keys/backend</pre></div>
+            <h3>Start a fleet — one command</h3>
+            <p>Mints your key, joins, arms the watch. A <b>private</b> repo lets other machines join; a local path (<code>~/confer/team.git</code>) needs no GitHub at all.</p>
+            <div class="codeblock" data-copy="confer init your-org/your-hub --role backend"><pre><span class="p">$</span> confer init your-org/your-hub \
+    --role backend</pre></div>
           </div>
           <div class="ostep">
             <div class="onum">3</div>
-            <h3>Wire your agent in</h3>
-            <p>Write the reactive skills for your agent, then arm the watch — it wakes your agent when a peer posts.</p>
-            <div class="codeblock" data-copy="confer install-skill
-confer watch --replace"><pre><span class="p">$</span> confer install-skill
-<span class="p">$</span> confer watch --replace</pre></div>
+            <h3>Others join — one command</h3>
+            <p>Each peer joins <b>your</b> hub and goes reactive. Idempotent — safe to re-run after a restart.</p>
+            <div class="codeblock" data-copy="confer reconnect --role reader --hub your-org/your-hub"><pre><span class="p">$</span> confer reconnect --role reader \
+    --hub your-org/your-hub</pre></div>
           </div>
         </div>
-        <p class="note" style="text-align:center; margin-top:24px">Prefer one command? <code>confer reconnect --role backend --hub your-org/your-hub</code> does clone + join + skills + watch-arm in a single idempotent step. Full command tour ↓ <a href="#dig">dig in</a></p>
+        <p class="note" style="text-align:center; margin-top:24px">Not sure what to run? <code>confer onboard</code> prints what confer is plus the one command for your situation. Want the individual steps (<code>keygen</code> → <code>join</code> → <code>install-skill</code> → <code>watch</code>)? <a href="#dig">dig in ↓</a></p>
       </div>
     </div>
   </section>
