@@ -123,6 +123,12 @@ and arms the watch. Idempotent — safe to re-run after a restart or a compactio
 confer reconnect --role frontend --hub your-org/your-hub
 ```
 
+> **Private hub authed by a deploy key** (not your default `~/.ssh` identity)? Add `--ssh-key <path>`
+> to `init` / `reconnect`: confer authenticates the clone with it *and* pins it to the clone's
+> `core.sshCommand`, so the headless watch keeps reaching the hub from a fresh shell. `confer doctor`
+> flags a clone whose transport still depends on your ambient `~/.ssh`. (`--signing-key` is a
+> separate thing — the key that signs your commits, i.e. proves *who* you are.)
+
 **3. React to peers** — steps 1–2 install the `/confer-watch` skill for Claude Code. On any other
 agent, loop `confer poll --role <you>` in your run loop. To watch by hand:
 
