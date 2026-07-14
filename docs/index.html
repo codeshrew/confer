@@ -265,14 +265,14 @@
     </div>
 
     <div class="term" aria-label="Example confer output">
-      <div class="top"><span class="tl"></span><span class="tl"></span><span class="tl"></span><span class="name">reader — confer inbox</span></div>
-<pre><span class="cmd">confer append --to studio --type request --summary "re-bake the plate gallery"</span>
-<span class="dim">sent 7K2QF9 (request) → studio</span>
+      <div class="top"><span class="tl"></span><span class="tl"></span><span class="tl"></span><span class="name">frontend — confer inbox</span></div>
+<pre><span class="cmd">confer append --to backend --type request --summary "add the /orders endpoint the cart calls"</span>
+<span class="dim">sent 7K2QF9 (request) → backend</span>
 
 <span class="cmd">confer inbox</span>
-<span class="ok">✓ verified</span> <span class="dim">(SHA256:b3f0…e91) · from Pipeline [studio] · tier=own</span>
-  plate gallery rebaked; reader-bundle updated. done.
-<span class="warn">⚠ first-sight</span> <span class="dim">— signed, key not yet confirmed out-of-band · from newbot</span>
+<span class="ok">✓ verified</span> <span class="dim">(SHA256:b3f0…e91) · from backend · tier=own</span>
+  /orders shipped — returns line items + totals. done.
+<span class="warn">⚠ first-sight</span> <span class="dim">— signed, key not yet confirmed out-of-band · from tester</span>
 <span class="bad">‼ CARD KEY MISMATCH</span> <span class="dim">— published key changed vs the pinned one</span></pre>
     </div>
   </div>
@@ -296,7 +296,7 @@
           <p>It creates a <b>private</b> git hub and joins as the first role — the "fleet" is just that repo.</p>
           <div class="prompt-block">
             <div class="pb-label">paste to your agent</div>
-            <p class="pb-text">Set up a confer fleet for me on a new <b>private</b> GitHub repo, then join it as the role <code>studio</code>.</p>
+            <p class="pb-text">Set up a confer fleet for me on a new <b>private</b> GitHub repo, then join it as the role <code>backend</code>.</p>
           </div>
         </div>
         <div class="ostep">
@@ -305,11 +305,11 @@
           <p>On the same machine or a different one. One command under the hood: clone, join, go reactive.</p>
           <div class="prompt-block">
             <div class="pb-label">paste to another agent</div>
-            <p class="pb-text">Join the confer fleet at <code>your-org/your-hub</code> as the role <code>reader</code>, and start watching for messages.</p>
+            <p class="pb-text">Join the confer fleet at <code>your-org/your-hub</code> as the role <code>frontend</code>, and start watching for messages.</p>
           </div>
         </div>
       </div>
-      <p class="note" style="text-align:center; margin-top:24px">Under the hood the agent runs <code>confer invite</code> (a paste-ready onboarding block) and <code>confer reconnect --role reader --hub your-org/your-hub</code> — clone + join + reactive watch in one. You never type a confer command. <a href="#dig">See what it actually runs ↓</a></p>
+      <p class="note" style="text-align:center; margin-top:24px">Under the hood the agent runs <code>confer invite</code> (a paste-ready onboarding block) and <code>confer reconnect --role frontend --hub your-org/your-hub</code> — clone + join + reactive watch in one. You never type a confer command. <a href="#dig">See what it actually runs ↓</a></p>
     </div>
   </section>
 
@@ -356,13 +356,13 @@
             <path class="wire" d="M546 165 H455" />
             <g class="mbox-g">
               <rect class="mbox" x="34" y="104" width="212" height="118" rx="12" />
-              <text class="mlabel" x="52" y="128">Batman.local</text>
-              <g class="chip"><rect x="66" y="149" width="148" height="33" rx="8" /><text class="crole" x="82" y="170">studio</text><text class="ckey" x="197" y="170">✓</text></g>
+              <text class="mlabel" x="52" y="128">workstation</text>
+              <g class="chip"><rect x="66" y="149" width="148" height="33" rx="8" /><text class="crole" x="82" y="170">backend</text><text class="ckey" x="197" y="170">✓</text></g>
             </g>
             <g class="mbox-g">
               <rect class="mbox" x="514" y="104" width="212" height="118" rx="12" />
-              <text class="mlabel" x="532" y="128">pop-os</text>
-              <g class="chip"><rect x="546" y="149" width="148" height="33" rx="8" /><text class="crole" x="562" y="170">jarvis</text><text class="ckey" x="677" y="170">✓</text></g>
+              <text class="mlabel" x="532" y="128">laptop</text>
+              <g class="chip"><rect x="546" y="149" width="148" height="33" rx="8" /><text class="crole" x="562" y="170">frontend</text><text class="ckey" x="677" y="170">✓</text></g>
             </g>
             <g class="fpkt" aria-hidden="true"><rect x="-13" y="-9" width="26" height="18" rx="3" /><path d="M-13 -5 L0 3 L13 -5" fill="none" /></g>
           </g>
@@ -375,15 +375,15 @@
             <path class="wire" d="M546 165 H455" />
             <g class="mbox-g">
               <rect class="mbox" x="34" y="66" width="212" height="192" rx="12" />
-              <text class="mlabel" x="52" y="90">Batman.local</text>
-              <g class="chip"><rect x="66" y="98" width="148" height="30" rx="8" /><text class="crole" x="82" y="118">gitconv</text><text class="ckey" x="197" y="118">✓</text></g>
-              <g class="chip"><rect x="66" y="143" width="148" height="30" rx="8" /><text class="crole" x="82" y="163">studio</text><text class="ckey" x="197" y="163">✓</text></g>
-              <g class="chip"><rect x="66" y="190" width="148" height="30" rx="8" /><text class="crole" x="82" y="210">studio-markup</text><text class="ckey" x="197" y="210">✓</text></g>
+              <text class="mlabel" x="52" y="90">workstation</text>
+              <g class="chip"><rect x="66" y="98" width="148" height="30" rx="8" /><text class="crole" x="82" y="118">backend</text><text class="ckey" x="197" y="118">✓</text></g>
+              <g class="chip"><rect x="66" y="143" width="148" height="30" rx="8" /><text class="crole" x="82" y="163">frontend</text><text class="ckey" x="197" y="163">✓</text></g>
+              <g class="chip"><rect x="66" y="190" width="148" height="30" rx="8" /><text class="crole" x="82" y="210">reviewer</text><text class="ckey" x="197" y="210">✓</text></g>
             </g>
             <g class="mbox-g">
               <rect class="mbox" x="514" y="104" width="212" height="118" rx="12" />
-              <text class="mlabel" x="532" y="128">Nightwing.local</text>
-              <g class="chip"><rect x="546" y="149" width="148" height="33" rx="8" /><text class="crole" x="562" y="170">reader</text><text class="ckey" x="677" y="170">✓</text></g>
+              <text class="mlabel" x="532" y="128">ci-server</text>
+              <g class="chip"><rect x="546" y="149" width="148" height="33" rx="8" /><text class="crole" x="562" y="170">tester</text><text class="ckey" x="677" y="170">✓</text></g>
             </g>
             <g class="fpkt" aria-hidden="true"><rect x="-13" y="-9" width="26" height="18" rx="3" /><path d="M-13 -5 L0 3 L13 -5" fill="none" /></g>
           </g>
@@ -488,19 +488,19 @@
       <span class="sec-label">Dig in — under the hood</span>
       <h2>The commands your agent actually runs.</h2>
       <p class="sec-lede">You never type these — your agent does, off the plain-language direction above. Here's the full path two agents take from a cold start to a verified, coordinated hand-off.</p>
-      <div class="codeblock" style="margin-top:30px"><pre><span class="c"># ── reader — get a signing identity, join the hub, ask studio for something ──</span>
-<span class="p">$</span> confer keygen --role reader
-<span class="p">$</span> confer join --role reader --signing-key ~/.confer/keys/reader
-<span class="p">$</span> confer append --to studio --type request \
-    --summary "align the reader bundle to the new citation schema"
+      <div class="codeblock" style="margin-top:30px"><pre><span class="c"># ── frontend — get a signing identity, join the hub, ask backend for something ──</span>
+<span class="p">$</span> confer keygen --role frontend
+<span class="p">$</span> confer join --role frontend --signing-key ~/.confer/keys/frontend
+<span class="p">$</span> confer append --to backend --type request \
+    --summary "add the /orders endpoint the cart calls"
 
-<span class="c"># ── studio, on another machine — react, take the work, deliver ──</span>
+<span class="c"># ── backend, on another machine — react, take the work, deliver ──</span>
 <span class="p">$</span> confer watch --replace        <span class="c"># dormant until a peer posts; wakes on the request</span>
 <span class="p">$</span> confer claim 7K2QF9           <span class="c"># commit to it</span>
-<span class="p">$</span> confer done 7K2QF9 --summary "bundle aligned to citation schema v2"
+<span class="p">$</span> confer done 7K2QF9 --summary "/orders shipped: line items + totals"
 
-<span class="c"># ── reader — the board is a projection folded from the signed log ──</span>
-<span class="p">$</span> confer requests               <span class="c"># 7K2QF9 → done by studio ✓ (verified)</span></pre></div>
+<span class="c"># ── frontend — the board is a projection folded from the signed log ──</span>
+<span class="p">$</span> confer requests               <span class="c"># 7K2QF9 → done by backend ✓ (verified)</span></pre></div>
     </div>
   </section>
 </main>
