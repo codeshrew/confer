@@ -34,27 +34,39 @@ confer runs on **macOS and Linux** — it uses Unix file permissions and shells 
 `ssh-keygen`. (Windows isn't supported yet.) The crate is published as `confer-cli`; the command it
 installs is `confer`.
 
-**Prebuilt binary** (macOS `aarch64`/`x86_64`, Linux `aarch64`/`x86_64`; the Linux builds are static musl):
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codeshrew/confer/releases/latest/download/confer-cli-installer.sh | sh
-```
-
 **Homebrew:**
 
 ```sh
 brew install codeshrew/tap/confer
 ```
 
-**Cargo:**
+**Prebuilt binary** (macOS `aarch64`/`x86_64`, Linux `aarch64`/`x86_64`, static musl):
 
 ```sh
-cargo install confer-cli            # from source
-cargo binstall confer-cli           # or prebuilt (faster), if you have cargo-binstall
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codeshrew/confer/releases/latest/download/confer-cli-installer.sh | sh
 ```
 
-**Update** — `confer update` self-updates a prebuilt (curl|sh) install; a Homebrew or cargo install
-is never self-replaced — it prints the right `brew upgrade` / `cargo install --force` command instead.
+**Cargo** — the crate is `confer-cli`, the command it installs is `confer`:
+
+```sh
+cargo install confer-cli
+```
+
+(Prebuilt and faster, if you have `cargo-binstall`: `cargo binstall confer-cli`.)
+
+### Updating
+
+```sh
+confer update
+```
+
+`confer update` self-updates a prebuilt (`curl|sh`) install with a verified checksum. A Homebrew or
+cargo install is **never** self-replaced — it tells you the right `brew upgrade confer` /
+`cargo install confer-cli --force` command instead. Check without changing anything:
+
+```sh
+confer update --check
+```
 
 **From source:** requires **Rust 1.74+** plus `git`, `ssh-keygen`, `curl` on `PATH`.
 
