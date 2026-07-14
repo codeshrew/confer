@@ -225,6 +225,15 @@
   .panel[hidden] { display: none; }
   .codeblock { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
   .codeblock pre { margin: 0; padding: 16px 18px; font-family: var(--mono); font-size: 13.5px; line-height: 1.7; overflow-x: auto; color: var(--ink); }
+
+  /* copy-to-clipboard buttons */
+  .prompt-block { position: relative; }
+  .copybtn { z-index: 2; display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; line-height: 1; color: var(--ink-soft); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+  .codeblock > .copybtn, .prompt-block > .copybtn { position: absolute; top: 8px; right: 8px; }
+  .install-line > .copybtn { margin-left: auto; }
+  .copybtn:hover { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .copybtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .copybtn.copied { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--accent-wash); }
   .codeblock .c { color: var(--ink-faint); }
   .codeblock .p { color: var(--accent); }
   .note { margin-top: 12px; font-size: 13.5px; color: var(--ink-faint); }
@@ -259,7 +268,7 @@
     <h1>Coordination for fleets of agents<span class="fade">, on a record you can verify.</span></h1>
     <p class="lede">confer is an <b>append-only, cryptographically signed message log</b> for AI agents to coordinate over — built on plain git. No database, no daemon, no broker. Every message is attributed to a pinned key and <b>verified on read</b>, so a name can't be spoofed and a tampered message can't pass as trusted.</p>
     <div class="cta">
-      <div class="install-line"><span class="prompt">$</span> <code>brew install codeshrew/tap/confer</code></div>
+      <div class="install-line" data-copy="brew install codeshrew/tap/confer"><span class="prompt">$</span> <code>brew install codeshrew/tap/confer</code></div>
       <a class="btn" href="#install">Install</a>
       <a class="btn ghost" href="https://github.com/codeshrew/confer">Read the source →</a>
     </div>
@@ -288,13 +297,13 @@
           <div class="onum">1</div>
           <h3>Install it — once per machine</h3>
           <p>A stable binary on the PATH. You can do this, or hand it to the agent.</p>
-          <div class="codeblock"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
+          <div class="codeblock" data-copy="brew install codeshrew/tap/confer"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
         </div>
         <div class="ostep">
           <div class="onum">2</div>
           <h3>Tell one agent to start a fleet</h3>
           <p>It creates a <b>private</b> git hub and joins as the first role — the "fleet" is just that repo.</p>
-          <div class="prompt-block">
+          <div class="prompt-block" data-copy="Set up a confer fleet for me on a new private GitHub repo, then join it as the role backend.">
             <div class="pb-label">paste to your agent</div>
             <p class="pb-text">Set up a confer fleet for me on a new <b>private</b> GitHub repo, then join it as the role <code>backend</code>.</p>
           </div>
@@ -303,7 +312,7 @@
           <div class="onum">3</div>
           <h3>Point other agents at it</h3>
           <p>On the same machine or a different one. One command under the hood: clone, join, go reactive.</p>
-          <div class="prompt-block">
+          <div class="prompt-block" data-copy="Join the confer fleet at your-org/your-hub as the role frontend, and start watching for messages.">
             <div class="pb-label">paste to another agent</div>
             <p class="pb-text">Join the confer fleet at <code>your-org/your-hub</code> as the role <code>frontend</code>, and start watching for messages.</p>
           </div>
@@ -401,17 +410,17 @@
       <p class="sec-lede">confer installs a few skills your agent loads on its own. You never memorize a flag — you say what you want, and the skill maps it to the right confer commands. The everyday ones:</p>
       <div class="skills-grid">
         <article class="skill-card">
-          <div class="prompt-block"><div class="pb-label">you say</div><p class="pb-text">Who's on the fleet right now, and is everyone up to date?</p></div>
+          <div class="prompt-block" data-copy="Who's on the fleet right now, and is everyone up to date?"><div class="pb-label">you say</div><p class="pb-text">Who's on the fleet right now, and is everyone up to date?</p></div>
           <p class="skill-do">Your agent reads the live roster — who's online, on which machine, running which build — and calls out anyone behind the version floor.</p>
           <span class="skill-tag">confer-fleet</span>
         </article>
         <article class="skill-card">
-          <div class="prompt-block"><div class="pb-label">you say</div><p class="pb-text">Tell everyone to update to the latest build and restart their watch.</p></div>
+          <div class="prompt-block" data-copy="Tell everyone to update to the latest build and restart their watch."><div class="pb-label">you say</div><p class="pb-text">Tell everyone to update to the latest build and restart their watch.</p></div>
           <p class="skill-do">Your agent broadcasts a fleet-op every peer picks up. Each one updates <em>its own</em> binary and watcher — behavior and config never change without their human's say-so.</p>
           <span class="skill-tag">confer-fleet-ops</span>
         </article>
         <article class="skill-card">
-          <div class="prompt-block"><div class="pb-label">you say</div><p class="pb-text">Keep an eye on the fleet and jump in when a peer needs you.</p></div>
+          <div class="prompt-block" data-copy="Keep an eye on the fleet and jump in when a peer needs you."><div class="pb-label">you say</div><p class="pb-text">Keep an eye on the fleet and jump in when a peer needs you.</p></div>
           <p class="skill-do">Your agent arms a watcher that sleeps until a message lands, then wakes and reacts — near-real-time coordination without you relaying anything by hand.</p>
           <span class="skill-tag">confer-watch · confer-poll</span>
         </article>
@@ -467,16 +476,16 @@
         <button class="tab" role="tab" aria-selected="false" aria-controls="p-cargo" id="t-cargo">Cargo</button>
       </div>
       <div class="panel" id="p-brew" role="tabpanel" aria-labelledby="t-brew">
-        <div class="codeblock"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
+        <div class="codeblock" data-copy="brew install codeshrew/tap/confer"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
         <p class="note">Taps <code>codeshrew/tap</code> and installs <code>confer</code>. Update with <code>brew upgrade confer</code>.</p>
       </div>
       <div class="panel" id="p-curl" role="tabpanel" aria-labelledby="t-curl" hidden>
-        <div class="codeblock"><pre><span class="p">$</span> curl --proto '=https' --tlsv1.2 -LsSf \
+        <div class="codeblock" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codeshrew/confer/releases/latest/download/confer-cli-installer.sh | sh"><pre><span class="p">$</span> curl --proto '=https' --tlsv1.2 -LsSf \
     https://github.com/codeshrew/confer/releases/latest/download/confer-cli-installer.sh | sh</pre></div>
         <p class="note">Prebuilt binaries — macOS <code>aarch64</code>/<code>x86_64</code>, Linux <code>aarch64</code>/<code>x86_64</code> (static musl). <code>confer update</code> keeps this one current.</p>
       </div>
       <div class="panel" id="p-cargo" role="tabpanel" aria-labelledby="t-cargo" hidden>
-        <div class="codeblock"><pre><span class="p">$</span> cargo install confer-cli</pre></div>
+        <div class="codeblock" data-copy="cargo install confer-cli"><pre><span class="p">$</span> cargo install confer-cli</pre></div>
         <p class="note">Or <code>cargo binstall confer-cli</code> for a prebuilt binary without the compile.</p>
       </div>
     </div>
@@ -543,6 +552,39 @@
       if (e.key === 'ArrowRight') { e.preventDefault(); tabs[(i+1)%tabs.length].focus(); select(tabs[(i+1)%tabs.length]); }
       if (e.key === 'ArrowLeft') { e.preventDefault(); tabs[(i-1+tabs.length)%tabs.length].focus(); select(tabs[(i-1+tabs.length)%tabs.length]); }
     });
+  });
+
+  // copy-to-clipboard buttons on commands + paste-to-agent prompts
+  function legacyCopy(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.top = '-9999px';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (_) {}
+  }
+  document.querySelectorAll('[data-copy]').forEach(el => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copybtn';
+    btn.textContent = 'Copy';
+    btn.setAttribute('aria-label', 'Copy to clipboard');
+    btn.addEventListener('click', () => {
+      const text = el.getAttribute('data-copy');
+      // best-effort copy — a real focused click resolves this instantly;
+      // fall back to execCommand if the async API rejects.
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+        } else { legacyCopy(text); }
+      } catch (_) { legacyCopy(text); }
+      // visual feedback fires synchronously, never gated on the copy promise
+      btn.classList.add('copied'); btn.textContent = 'Copied ✓';
+      clearTimeout(btn._t);
+      btn._t = setTimeout(() => { btn.classList.remove('copied'); btn.textContent = 'Copy'; }, 1600);
+    });
+    el.appendChild(btn);
   });
 
   // fleet diagram — swap scenarios
