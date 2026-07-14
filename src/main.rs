@@ -3762,31 +3762,10 @@ fn clone_candidates(r: &Remote, scheme: Scheme) -> Vec<String> {
 /// only (`IdentitiesOnly=yes`) and ignore any ssh-agent / 1Password identity (`IdentityAgent=none`)
 /// so a deploy key works headlessly regardless of the ambient agent. Expands a leading `~`, and
 /// single-quotes the path for the shell git runs the value through.
-fn git_ssh_command(key: &str) -> String {
-    let expanded = if key == "~" {
-        config::home()
-            .map(|h| h.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| key.to_string())
-    } else if let Some(rest) = key.strip_prefix("~/") {
-        config::home()
-            .map(|h| h.join(rest).to_string_lossy().into_owned())
-            .unwrap_or_else(|_| key.to_string())
-    } else {
-        key.to_string()
-    };
-    format!("ssh -i '{expanded}' -o IdentitiesOnly=yes -o IdentityAgent=none")
-}
-
-/// Reject a transport-key path that isn't a real key file or that carries a character which would
-/// break out of the single-quoted `core.sshCommand` / `GIT_SSH_COMMAND` value git runs through a
-/// shell — a `'` (or a control char) is a command-injection vector (cf. the 0.5.0 clone RCE).
-fn validate_transport_key(path: &str) -> Result<()> {
-    if path.contains('\'') || path.chars().any(|c| c.is_control()) {
-        return Err(anyhow!(
-            "--ssh-key path contains a single-quote or control character — use a plain filesystem path"
-        ));
-    }
-    let expanded = if path == "~" {
+/// Expand a leading `~`/`~/` in a key path to $HOME. Shared by validate + git_ssh_command so the
+/// string that is VALIDATED is exactly the string that gets single-quoted into the ssh command.
+fn expand_key_path(path: &str) -> std::path::PathBuf {
+    if path == "~" {
         config::home().unwrap_or_else(|_| std::path::PathBuf::from(path))
     } else if let Some(rest) = path.strip_prefix("~/") {
         config::home()
@@ -3794,12 +3773,38 @@ fn validate_transport_key(path: &str) -> Result<()> {
             .unwrap_or_else(|_| std::path::PathBuf::from(path))
     } else {
         std::path::PathBuf::from(path)
-    };
-    if !expanded.is_file() {
+    }
+}
+
+/// Build a `GIT_SSH_COMMAND` / `core.sshCommand` value from a transport key: force THIS key only
+/// (`IdentitiesOnly=yes`), ignore any ssh-agent / 1Password identity (`IdentityAgent=none`), and
+/// stay non-interactive (`BatchMode=yes`) so a passphrase / host-key prompt FAILS FAST instead of
+/// hanging a headless clone (#3). The expanded path is single-quoted for the shell git runs it in.
+fn git_ssh_command(key: &str) -> String {
+    let expanded = expand_key_path(key);
+    format!(
+        "ssh -i '{}' -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes",
+        expanded.display()
+    )
+}
+
+/// Reject a transport-key path that isn't a real key file or that carries a character which would
+/// break out of the single-quoted `core.sshCommand` / `GIT_SSH_COMMAND` value git runs through a
+/// shell — a `'` (or a control char) is a command-injection vector (cf. the 0.5.0 clone RCE).
+/// Reject a transport-key path whose EXPANDED string (what actually gets single-quoted into
+/// `core.sshCommand` / `GIT_SSH_COMMAND`) carries a `'` or control char — a `'` can enter via
+/// `$HOME` expansion AFTER the raw arg passed, so validate the same string `git_ssh_command`
+/// quotes, not the raw arg (#1, red-team). Also require the key to be a real file.
+fn validate_transport_key(path: &str) -> Result<()> {
+    let expanded = expand_key_path(path);
+    let s = expanded.to_string_lossy();
+    if s.contains('\'') || s.chars().any(|c| c.is_control()) {
         return Err(anyhow!(
-            "--ssh-key {}: not a readable key file",
-            expanded.display()
+            "--ssh-key path (expanded: {s}) contains a single-quote or control character — use a plain filesystem path"
         ));
+    }
+    if !expanded.is_file() {
+        return Err(anyhow!("--ssh-key {s}: not a readable key file"));
     }
     Ok(())
 }
@@ -3874,6 +3879,9 @@ fn cmd_init(
             args.push(&dir);
             let mut gclone = std::process::Command::new("git");
             gclone.args(&args);
+            // Never block on an interactive prompt during a headless clone (#3): null stdin, and
+            // (with BatchMode in GIT_SSH_COMMAND) a passphrase/host-key prompt fails fast, not hangs.
+            gclone.stdin(std::process::Stdio::null());
             if let Some(sc) = &ssh_cmd {
                 gclone.env("GIT_SSH_COMMAND", sc); // authenticate the clone with the transport key
             }
@@ -5625,13 +5633,14 @@ fn cmd_reconnect(
     // --hub <any .git>` would otherwise join + PUSH confer commits to that repo's real origin. A
     // confer hub carries the scaffold markers (a fresh clone gets them from `init` above); a random
     // work repo has none. 0.5.0 made `reconnect --hub <pasted value>` a headline command, so gate it.
-    let is_confer_hub = root.join(".confer-version").exists()
-        || root.join("threads").is_dir()
-        || root.join("roles").is_dir();
-    if !is_confer_hub {
+    // Require the AUTHORITATIVE marker `.confer-version` (every real hub scaffolds it — a fresh
+    // one gets it from `init` above). Do NOT accept a bare `roles/` or `threads/` dir: those are
+    // common dir names (an Ansible repo has `roles/`), so an OR over them false-accepts non-confer
+    // repos — the exact misdirection this gate exists to block (red-team #2, reproduced).
+    if !root.join(".confer-version").exists() {
         return Err(anyhow!(
-            "{} is a git repo but not a confer hub (no threads/ · roles/ · .confer-version) — \
-             refusing to join and push confer state into it. Point --hub at your confer hub, or run \
+            "{} is a git repo but not a confer hub (no .confer-version marker) — refusing to join \
+             and push confer state into it. Point --hub at your confer hub, or run \
              `confer init <url> --role <you>` to create one.",
             root.display()
         ));

@@ -3627,6 +3627,10 @@ fn reconnect_refuses_a_non_confer_hub() {
         .status
         .success());
     std::fs::write(notahub.join("README.md"), "just a project").unwrap();
+    // A `roles/` dir (common — an Ansible repo has one) must NOT count as a confer hub (#2 fix):
+    // the gate requires the authoritative `.confer-version` marker, not a bare dir name.
+    std::fs::create_dir_all(notahub.join("roles")).unwrap();
+    std::fs::write(notahub.join("roles").join(".gitkeep"), "").unwrap();
     git(&notahub, &["add", "-A"]);
     git(&notahub, &["commit", "-q", "-m", "x"]);
     let o = Command::new(BIN)
@@ -3745,5 +3749,35 @@ fn ssh_key_rejects_injection_and_missing_file() {
         err(&missing).contains("not a readable key file"),
         "expected missing-file refusal:\n{}",
         err(&missing)
+    );
+}
+
+/// #1 (red-team fix): a `'` that enters via ~ EXPANSION ($HOME contains a quote) must be refused —
+/// validation runs on the expanded string that git_ssh_command single-quotes, not the raw arg.
+#[test]
+fn ssh_key_rejects_a_quote_introduced_by_home_expansion() {
+    let evil = tmp("evilhome").join("ho'me");
+    std::fs::create_dir_all(&evil).unwrap();
+    std::fs::write(evil.join("k"), "key-material").unwrap();
+    let work = tmp("work");
+    let hub = evil.join("hub").join("team.git");
+    let o = Command::new(BIN)
+        .env("HOME", &evil)
+        .current_dir(&work)
+        .args([
+            "init",
+            hub.to_str().unwrap(),
+            "--role",
+            "backend",
+            "--ssh-key",
+            "~/k",
+        ])
+        .output()
+        .unwrap();
+    assert!(!ok(&o), "a ' introduced by $HOME expansion must be refused");
+    assert!(
+        err(&o).contains("single-quote or control"),
+        "expected expanded-path refusal:\n{}",
+        err(&o)
     );
 }
