@@ -1738,3 +1738,25 @@ fn keygen_mints_a_0600_key_and_refuses_to_clobber_an_identity() {
     assert!(msg.contains("already exists"), "must say the identity key already exists: {msg}");
     assert_eq!(std::fs::read(&key).unwrap(), before, "the existing identity key is untouched");
 }
+
+/// design/32: the `/confer-watch` skill is role-AGNOSTIC (its commands resolve the caller's role
+/// from the hub clone it's run in), so two co-resident agents sharing one skills dir write
+/// IDENTICAL content — no last-writer-wins clobber that bakes one agent's role into a shared file
+/// (which could have a compacted session arm --role <other> and steal the other's watch).
+#[test]
+fn install_skill_is_generic_no_coresident_clobber() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let sk = tmp("skills");
+    let watch = sk.join("confer-watch").join("SKILL.md");
+
+    assert!(ok(&a.confer(&["install-skill", "--dir", sk.to_str().unwrap(), "--role", "alpha", "--no-autoheal"])));
+    let first = std::fs::read_to_string(&watch).unwrap();
+    assert!(ok(&a.confer(&["install-skill", "--dir", sk.to_str().unwrap(), "--role", "beta", "--no-autoheal"])));
+    let second = std::fs::read_to_string(&watch).unwrap();
+
+    assert_eq!(first, second, "skill must be identical regardless of --role (generic → no clobber)");
+    assert!(!first.contains("--role alpha") && !first.contains("--role beta"), "no baked role");
+    assert!(first.contains("watch --replace"), "arms via the role-auto-resolving `watch --replace`");
+    let _ = std::fs::remove_dir_all(&sk);
+}

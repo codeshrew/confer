@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.10
+
+- **`confer update` self-updates a standalone install again.** It looked for the dist install
+  receipt under the binary name (`new_for("confer")`), but dist writes it under the **package**
+  name (`~/.config/confer-cli/…`), so a `curl | sh` install never found its receipt and fell through
+  to the package-manager delegate (wrongly telling a standalone user to `cargo install …`). Now
+  `new_for("confer-cli")`. (A standalone-canary finding; the receipt/axoupdater/checksum machinery
+  was already proven — only the lookup name was wrong.)
+- **One generic `/confer-watch` skill instead of a per-agent one.** `install-skill` baked the agent's
+  role + hub path into the skill text; on a machine with multiple co-resident agents sharing
+  `~/.claude/skills`, last-writer-wins **clobbered** a peer's skill — and a compacted session
+  following the wrong one could arm `--role <peer>` and steal its watch. The skill is now
+  role-agnostic (commands resolve the caller's role from the hub clone they're run in), so every
+  agent writes identical content — no clobber, no per-role skill proliferation.
+
 ## 0.4.9
 
 - **`confer update` now detects a Homebrew install on macOS.** The brew binary is a symlink into
