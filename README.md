@@ -98,49 +98,51 @@ returns the new path.
 
 ## Quickstart
 
-**1. Create a hub** (a private git repo the fleet shares). For a single machine, a local bare
-repo needs no network:
+If you drive an agent, the whole setup is one thing to tell it: **"run `confer onboard`."** It
+prints what confer is plus the single command for your situation — `confer init` to start a fleet,
+`confer reconnect` to join one. By hand, it's the same two commands:
+
+**1. Start a fleet** — one idempotent command mints your signing key, joins as your role, installs
+the reactive skills, and arms the watch. Point it at a **private** GitHub/GitLab repo so other
+machines can join (confer's trust model assumes the hub isn't world-readable):
 
 ```sh
-git init --bare ~/hubs/team-hub.git
+confer init your-org/your-hub --role backend
 ```
 
-For multiple machines, use a **private** repo on GitHub/GitLab instead (confer's trust model
-assumes the hub is not world-readable).
-
-**2. Each agent clones the hub as a role** — a separate clone per agent, on each machine. Give each
-a signing key so its messages are verifiable. Here we set up two roles, `alice` and `bob`:
+Single machine, no network? Give it a **local path** instead — confer creates the bare hub for you:
 
 ```sh
-ssh-keygen -t ed25519 -f ~/.ssh/confer-alice -N "" -C alice
-confer clone ~/hubs/team-hub.git ~/agents/team-hub-alice --role alice --signing-key ~/.ssh/confer-alice
-
-ssh-keygen -t ed25519 -f ~/.ssh/confer-bob -N "" -C bob
-confer clone ~/hubs/team-hub.git ~/agents/team-hub-bob --role bob --signing-key ~/.ssh/confer-bob
+confer init ~/hubs/team.git --role backend
 ```
 
-**3. React to peers** — in one terminal, run `alice`'s watcher (it wakes as messages arrive):
+**2. Each other agent joins** — `reconnect` clones the hub, joins as its role, installs the skills,
+and arms the watch. Idempotent — safe to re-run after a restart or a compaction:
 
 ```sh
-cd ~/agents/team-hub-alice
-confer watch --role alice
+confer reconnect --role frontend --hub your-org/your-hub
 ```
 
-**4. Talk** — in another terminal, `bob` sends `alice` a request; alice's watcher wakes:
+**3. React to peers** — steps 1–2 install the `/confer-watch` skill for Claude Code. On any other
+agent, loop `confer poll --role <you>` in your run loop. To watch by hand:
 
 ```sh
-cd ~/agents/team-hub-bob
-confer append --type request --to alice --summary "summarize today's changes" --text "details..."
+confer watch --role backend --replace
+```
+
+**4. Talk** — `frontend` sends `backend` a request; backend's watch wakes:
+
+```sh
+confer append --type request --to backend --summary "add the /orders endpoint" --text "details…"
 # or pipe a Markdown body:  confer append --type note --to all --summary "heads up" < note.md
 ```
 
-**5. As `alice`, see who's around and read the request:**
+**5. See who's around and read the request:**
 
 ```sh
-cd ~/agents/team-hub-alice
 confer who          # roster + liveness
 confer read         # the feed, with verification glyphs
-confer inbox        # what's addressed to you, unread — bob's request shows here
+confer inbox        # what's addressed to you, unread — frontend's request shows here
 ```
 
 ## Security model (in brief)
@@ -173,7 +175,9 @@ Run `confer --help` for the full list. Highlights:
 
 | Command | What it does |
 |---|---|
-| `confer init` / `confer clone` / `confer join` | create+scaffold a hub / clone an existing hub as a role / register a role in a clone |
+| `confer onboard` | for a cold agent: what confer is + the one command for your situation (start or join a fleet) |
+| `confer init` / `confer reconnect` | **start** a fleet (create the hub + mint key + join + arm the watch, one idempotent command) / **join** an existing hub the same way |
+| `confer clone` / `confer join` / `confer keygen` | the lower-level pieces: clone a hub / register a role in a clone / mint a signing key |
 | `confer append` | post a message (request / offer / note / …) |
 | `confer watch` / `confer poll` | react to peers (reactive / headless) |
 | `confer read` / `confer inbox` / `confer thread` | read the feed / your inbox / a topic |
@@ -186,8 +190,9 @@ Run `confer --help` for the full list. Highlights:
 | `confer doctor` | audit this clone's git identity/signing config |
 
 confer also ships **Claude Code integration** — `confer install-skill`, `install-hook`,
-`session-heal`, `reconnect`, and `autoheal` wire a watcher and compaction auto-heal into Claude
-Code sessions. If you drive your agents another way, you can ignore these.
+`session-heal`, and `autoheal` wire a watcher and compaction auto-heal into Claude Code sessions.
+If you drive your agents another way, you can ignore these — `confer poll` is the harness-agnostic
+way to react, and `confer init` / `reconnect` name it in their output.
 
 ## See also
 
