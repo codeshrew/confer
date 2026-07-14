@@ -3405,6 +3405,10 @@ fn cmd_init(
             if filter {
                 args.push("--filter=blob:none");
             }
+            // `--` before the positionals: `cand`/`dir` are caller/onboarding-supplied, so
+            // without it a hostile `--upload-pack=<cmd>`-shaped url is parsed by git as a FLAG
+            // (arg-injection → RCE with a file:///ssh:// target that invokes upload-pack).
+            args.push("--");
             args.push(cand);
             args.push(&dir);
             let out = std::process::Command::new("git").args(&args).output()?;
@@ -3525,20 +3529,31 @@ fn cmd_init(
     );
 
     if let Some(r) = role {
+        // Fail fast on a bad role id BEFORE it reaches `keys.join(&r)` (an absolute `r` would
+        // turn that into an arbitrary-path existence probe) — don't lean on join/keygen catching
+        // it downstream.
+        if !valid_slug(&r) {
+            return Err(anyhow!("invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"));
+        }
         std::env::set_current_dir(&root)?;
         // Ensure a signing identity: the provided key, else the fleet-standard key for this role,
-        // MINTING it if absent — so a create yields a signed, verifiable identity by default
-        // (no keyless/unsigned join for the one-command path).
+        // MINTING it if absent — so a create yields a signed, verifiable identity by default. A
+        // keygen FAILURE is a HARD ERROR, never a silent keyless join: the "signed by default"
+        // guarantee this path advertises must not degrade quietly. Pass --signing-key to bypass.
         let signing_key = match signing_key {
             Some(k) => Some(k),
             None => {
                 let kp = config::home()?.join(".confer").join("keys").join(&r);
                 if !kp.exists() {
-                    if let Err(e) = cmd_keygen(Some(r.clone())) {
-                        eprintln!("confer: keygen skipped ({e}) — joining without a signing key");
-                    }
+                    cmd_keygen(Some(r.clone())).map_err(|e| {
+                        anyhow!(
+                            "could not mint a signing key for '{r}': {e}\n\
+                             install ssh-keygen (openssh) and ensure ~/.confer/keys is writable, \
+                             or pass --signing-key <path> to use an existing key"
+                        )
+                    })?;
                 }
-                kp.exists().then(|| kp.to_string_lossy().into_owned())
+                Some(kp.to_string_lossy().into_owned())
             }
         };
         println!();
@@ -3929,6 +3944,14 @@ fn delegate_to_package_manager() -> Result<()> {
 /// Print a paste-ready onboarding invite for a cold agent, filled from live hub
 /// state (origin URL, `.confer-version` pin, role-collision check). See DESIGN.md.
 fn cmd_invite(role: Option<String>, host: Option<String>, scheme: Scheme) -> Result<()> {
+    // Validate the role like every other role command: it's embedded into a paste-ready block
+    // containing literal shell commands, so an unvalidated value is a metacharacter-injection
+    // vector once a human runs the block.
+    if let Some(r) = &role {
+        if !valid_slug(r) {
+            return Err(anyhow!("invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"));
+        }
+    }
     let root = config::repo_root()?;
     let origin = gitcmd::output(&root, &["config", "--get", "remote.origin.url"])?;
     if !origin.status.success() {
@@ -4992,6 +5015,17 @@ fn expand_local_hub(url: String) -> Result<String> {
     // Already a repo (bare hub has HEAD; a worktree has .git)? Leave it — clone handles it.
     let is_repo = expanded.join("HEAD").exists() || expanded.join(".git").exists();
     if !is_repo {
+        // Only create a hub in a NEW or EMPTY dir — never scatter git plumbing into an existing
+        // non-repo directory (e.g. a fat-fingered `confer init ~/.ssh --role x`).
+        if expanded.exists()
+            && std::fs::read_dir(&expanded).map(|mut d| d.next().is_some()).unwrap_or(true)
+        {
+            return Err(anyhow!(
+                "{} already exists and is not a confer hub — pick an empty path for a new local \
+                 hub, or point at an existing hub URL",
+                expanded.display()
+            ));
+        }
         std::fs::create_dir_all(&expanded)
             .map_err(|e| anyhow!("cannot create local hub dir {}: {e}", expanded.display()))?;
         let out = std::process::Command::new("git")

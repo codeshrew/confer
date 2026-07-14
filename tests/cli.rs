@@ -1822,3 +1822,29 @@ fn init_local_path_creates_bare_hub_and_keys_and_joins() {
     assert!(s.contains("fleet ready"), "missing the create confirmation:\n{s}");
     assert!(s.contains("confer poll --role backend"), "missing the non-Claude reactive fallback:\n{s}");
 }
+
+/// Regression (red-team 0.5.0): the `git clone` in `init` must put `--` before the positionals,
+/// so a hostile hub url shaped like a git flag (`--upload-pack=<cmd>`) is treated as a repository
+/// name, never executed. Reproduces the confirmed arg-injection RCE PoC and asserts it's closed.
+#[test]
+fn init_does_not_execute_an_upload_pack_argument_injection() {
+    let home = tmp("home");
+    let work = tmp("work");
+    let realparent = tmp("realrepo");
+    let realrepo = realparent.join("r.git");
+    assert!(git(&realparent, &["init", "--bare", "-q", realrepo.to_str().unwrap()]).status.success());
+    let markerdir = tmp("marker");
+    let marker = markerdir.join("PWNED");
+    let inject = format!("--upload-pack=touch {}; git-upload-pack", marker.display());
+    let target = format!("file://{}", realrepo.display());
+    // `--` after the subcommand makes clap pass the hostile flag through as the url positional
+    // (one of the reachability paths); without the fix git would parse it and run upload-pack.
+    let o = Command::new(BIN)
+        .env("HOME", &home)
+        .current_dir(&work)
+        .args(["init", "--", &inject, &target])
+        .output()
+        .expect("run confer init (injection attempt)");
+    assert!(!marker.exists(), "ARG-INJECTION RCE: injected --upload-pack command executed");
+    assert!(!ok(&o), "a hostile flag-shaped url must not clone successfully");
+}

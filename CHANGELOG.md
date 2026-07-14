@@ -16,6 +16,12 @@
 - **The reactive step degrades for non-Claude agents.** `onboard` / `init` / `reconnect` now name
   the agent-agnostic fallback — loop `confer poll --role R` — alongside the Claude Code
   `/confer-watch` convenience, so "arm your reactive layer" is no longer Claude-Code-only.
+- **Hardening (pre-release red-team).** `git clone` now passes `--` before the url/dir positionals,
+  so a hub value shaped like a git flag (`--upload-pack=…`) can't inject git options — an
+  argument-injection → RCE reachable via the copy-paste onboard/reconnect UX (regression test
+  added). `init --role` now **fails closed** if it can't mint a signing key rather than silently
+  founding an unsigned fleet. Local-hub create refuses a non-empty, non-repo directory instead of
+  scattering git plumbing into it. `invite` validates its role like every other role command.
 
 ## 0.4.10
 
