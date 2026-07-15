@@ -3788,41 +3788,32 @@ fn ssh_key_rejects_a_quote_introduced_by_home_expansion() {
 fn hubs_lists_one_path_per_distinct_hub() {
     let home = tmp("home");
     let work = tmp("work");
-    // two separate local hubs, each joined + managed
-    for name in ["alpha", "beta"] {
-        let hub = home.join("hubs").join(format!("{name}.git"));
-        let o = Command::new(BIN)
-            .env("HOME", &home)
-            .current_dir(&work)
-            .args([
-                "init",
-                hub.to_str().unwrap(),
-                "--role",
-                "backend",
-                "--managed",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            ok(&o),
-            "init --managed {name} failed: {}\n{}",
-            err(&o),
-            out(&o)
-        );
-    }
-    let hubs = Command::new(BIN)
+    // hub alpha: MANAGED (via --managed → lands in ~/.confer/clones).
+    let alpha = home.join("hubs").join("alpha.git");
+    assert!(ok(&Command::new(BIN)
         .env("HOME", &home)
-        .args(["hubs"])
+        .current_dir(&work)
+        .args(["init", alpha.to_str().unwrap(), "--role", "backend", "--managed"])
         .output()
-        .unwrap();
+        .unwrap()));
+    // hub beta: AD-HOC (explicit dir under ~/git, NOT managed) — must still be discovered by its
+    // .confer-version marker, else a fleet skill would silently omit it (the regression jarvis caught).
+    let beta = home.join("hubs").join("beta.git");
+    let gitroot = home.join("git");
+    std::fs::create_dir_all(&gitroot).unwrap();
+    assert!(ok(&Command::new(BIN)
+        .env("HOME", &home)
+        .current_dir(&gitroot)
+        .args(["init", beta.to_str().unwrap(), "beta-adhoc", "--role", "frontend"])
+        .output()
+        .unwrap()));
+
+    let hubs = Command::new(BIN).env("HOME", &home).args(["hubs"]).output().unwrap();
     assert!(ok(&hubs), "confer hubs failed: {}", err(&hubs));
     let s = out(&hubs);
     let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        2,
-        "expected one path per distinct hub, got:\n{s}"
-    );
+    assert_eq!(lines.len(), 2, "expected managed + ad-hoc hub, got:\n{s}");
+    assert!(lines.iter().any(|l| l.contains("beta-adhoc")), "ad-hoc clone must be discovered:\n{s}");
     for l in &lines {
         assert!(
             std::path::Path::new(l).join(".confer-version").exists(),

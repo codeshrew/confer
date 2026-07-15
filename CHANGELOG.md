@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.3
+
+- **`confer hubs` now discovers ad-hoc clones, not just managed ones.** 0.6.2's `confer hubs` read
+  only the managed home (`~/.confer/clones/`), so a clone made with `init <url> <dir>` (an explicit
+  dir outside the managed home) was **silently omitted** — a portable fleet skill would quietly drop
+  that hub, the same wrong-but-confident failure as a hardcoded path. It now unions managed clones
+  with ad-hoc ones discovered by their `.confer-version` marker in common dev roots (`~/git`, `~/src`,
+  …) and the cwd, deduped by hub origin. (Caught on a box with an ad-hoc hub clone.)
+
 ## 0.6.2
 
 - **`confer hubs`** — prints one clone path per *distinct* managed hub (deduped), one per line: the

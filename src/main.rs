@@ -4264,30 +4264,83 @@ fn cmd_clones() -> Result<()> {
     Ok(())
 }
 
-/// One clone path per DISTINCT hub (deduped by the hub dir, i.e. the clone's parent), one per line
-/// — the discovery primitive a portable multi-hub skill iterates so it never hardcodes a machine
-/// path. Any clone of a hub gives that hub's fleet view, so we emit just one per hub.
+/// One clone path per DISTINCT hub (deduped), one per line — the discovery primitive a portable
+/// multi-hub skill iterates so it never hardcodes a machine path. Unions MANAGED clones with AD-HOC
+/// ones discovered by their `.confer-version` marker (an `init <url> <dir>` clone outside the managed
+/// home) — a fleet view that SILENTLY omits a hub is the same "wrong-but-confident" failure as the
+/// bug this replaces. Deduped by hub IDENTITY (origin), so a managed + ad-hoc clone of one hub is
+/// one line, and N co-resident roles collapse too.
 fn cmd_hubs() -> Result<()> {
-    let clones = clonehome::list();
+    let mut candidates: Vec<std::path::PathBuf> =
+        clonehome::list().into_iter().map(|c| c.path).collect();
+    candidates.extend(discover_marker_clones());
+
     let mut seen = std::collections::BTreeSet::new();
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    for c in clones {
-        // dedup by the hub directory (`~/.confer/clones/<hub-slug>-<hubtag>/`) — the parent of the
-        // per-role clone — so N co-resident roles on one hub collapse to a single line.
-        let hub_dir = c
-            .path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| c.path.clone());
-        if seen.insert(hub_dir) {
-            paths.push(c.path);
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for path in candidates {
+        if !path.join(".confer-version").is_file() {
+            continue; // only real hub clones
+        }
+        // hub identity: the origin's github shorthand (git@ / https collapse to owner/repo), else the
+        // raw origin url, else the canonical path (a local bare hub with no remote).
+        let ident = gitcmd::output(&path, &["config", "--get", "remote.origin.url"])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|u| parse_remote(&u).shorthand.unwrap_or(u))
+            .unwrap_or_else(|| {
+                path.canonicalize().unwrap_or_else(|_| path.clone()).to_string_lossy().into_owned()
+            });
+        if seen.insert(ident) {
+            out.push(path);
         }
     }
-    paths.sort();
-    for p in &paths {
+    out.sort();
+    for p in &out {
         println!("{}", p.display());
     }
     Ok(())
+}
+
+/// Discover ad-hoc hub clones (NOT under the managed home) by their `.confer-version` marker, in a
+/// bounded set of common dev roots + the cwd — so `confer hubs` doesn't silently drop an
+/// `init <url> <dir>` clone. Cheap + deterministic: fixed roots, shallow depth, skips heavy dirs.
+fn discover_marker_clones() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(home) = config::home() {
+        for r in ["git", "src", "code", "projects", "dev", "work"] {
+            find_hub_markers(&home.join(r), 2, &mut out);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        find_hub_markers(&cwd, 1, &mut out);
+    }
+    out
+}
+
+fn find_hub_markers(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+    if dir.join(".confer-version").is_file() {
+        out.push(dir.to_path_buf());
+        return; // it's a hub clone — don't descend into it
+    }
+    if depth == 0 {
+        return;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target" | "vendor")
+            {
+                continue;
+            }
+            find_hub_markers(&e.path(), depth - 1, out);
+        }
+    }
 }
 
 /// Print the managed-home path for this clone's identity (`confer where`).
