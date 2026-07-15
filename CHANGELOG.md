@@ -12,6 +12,15 @@
   `join` and `reconnect` funnel through one write-side check, so pointing `reconnect --hub <PATH>`
   at another role's clone is refused too. `reconnect` now also propagates a join precondition
   failure instead of printing "✅ reconnected" over a join that didn't happen.
+  - The guard **fails closed**: an unreadable / corrupt / role-less `identity.json` (e.g. a torn
+    write from a crash) is refused, not fallen through — only a genuinely absent file is a fresh
+    clone. `identity.json` is now written **atomically** (temp+rename, matching tiers/presence/
+    keyring), removing the torn-file window that could blind the guard.
+  - `identity.json` is written **before** the git-config mutations, so a join that fails partway
+    never leaves the clone committing as a role confer didn't record.
+  - The `.git/config.lock` contention from a concurrent watch / SessionStart auto-reconnect is now
+    retried (previously only `index.lock` was), so the stricter `reconnect` error propagation can't
+    turn a transient lock into a hard "no skills, no watch" abort of the auto-heal path.
 
 ## 0.6.3
 

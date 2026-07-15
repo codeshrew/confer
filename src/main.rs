@@ -1172,6 +1172,30 @@ fn configure_signing(root: &std::path::Path, key: &std::path::Path) -> Result<St
     Ok(pubkey)
 }
 
+/// Write `contents` to `path` atomically: write a sibling temp file, fsync it, then rename over the
+/// target. A crash / OOM-kill / disk-full mid-write leaves the PREVIOUS file intact (or none),
+/// never a half-written one — so a reader (e.g. the re-role guard, which must fail closed on a
+/// corrupt identity) can trust the file is either the old valid state or the new one. Mirrors how
+/// `tiers`/`presence`/`keyring` persist state; the pid-suffixed temp name avoids collisions.
+fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("no parent dir for {}", path.display()))?;
+    std::fs::create_dir_all(dir)?;
+    let fname = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("state");
+    let tmp = dir.join(format!(".{fname}.tmp.{}", std::process::id()));
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(contents.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// The `pubkey:` value published in a role card's FRONTMATTER, if any. Parses via `parse_card`
 /// exactly like the read side (`roster::parse_role`) — never a raw line-scan, so the write-side
 /// 1:1 check can't diverge from what verification actually reads (a `pubkey:` in the body, a
@@ -1345,58 +1369,114 @@ fn cmd_join(
     let session = ulid::Ulid::new().to_string();
     let host = host.or_else(config::hostname).unwrap_or_default();
     let confer_dir = root.join(".confer");
+    let identity_path = confer_dir.join("identity.json");
+
+    // Serialize the read-check-write of identity.json against a concurrent join on the SAME clone
+    // (the SessionStart auto-heal fires `reconnect` while a manual reconnect may also run) — a
+    // bounded flock; best-effort like presence/keyring (proceed if it times out). Held until the
+    // atomic identity write below so the guard's decision can't be raced.
+    let _idlock = config::state_lock(&confer_dir.join("identity.lock"));
+
     // One clone = one role, permanently. If this working copy is ALREADY bound to a DIFFERENT
     // role, re-roling it here is an identity clobber: the clone keeps its CURRENT signing key, so
     // that one key would back two role-ids on the hub and the prior role's future posts from this
-    // clone would surface under the new label — silently. (Field-reported on 0.6.0.) A warning
-    // isn't enough; refuse by default, and make a deliberate re-role take --force. The clean path
-    // for a new role is a SEPARATE clone, not relabeling this one.
-    if let Ok(txt) = std::fs::read_to_string(confer_dir.join("identity.json")) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-            if let Some(prev) = v.get("role").and_then(|r| r.as_str()) {
-                if prev != role {
-                    if !force {
-                        return Err(anyhow!(
-                            "this clone already belongs to role '{prev}' — refusing to re-role it \
-                             to '{role}'. It would keep {prev}'s signing key, binding one key to \
-                             two roles and making {prev}'s posts from here appear as '{role}'. For \
-                             a new role, make a SEPARATE clone: \
-                             `confer clone <hub> --role {role} --managed`. To re-role THIS clone \
-                             anyway (it keeps the current key), pass --force."
-                        ));
-                    }
+    // clone would surface under the new label — silently. (Field-reported on 0.6.0.) Refuse by
+    // default; a deliberate re-role takes --force. The clean path for a new role is a SEPARATE
+    // clone, not relabeling this one.
+    //
+    // FAIL CLOSED: a control whose whole point is "refuse by default" must not default to PROCEED
+    // when it can't determine the bound role. Only a genuinely ABSENT identity.json is a fresh
+    // clone; an unreadable / corrupt / role-less file (e.g. a torn write from a crash) is refused,
+    // not fallen through. (Red-team, Jarvis: the old if-let/if-let/if-let skipped the guard on any
+    // read/parse failure and re-roled silently, with not even the --force warning.)
+    match std::fs::read_to_string(&identity_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // fresh clone — nothing bound yet
+        Err(e) => {
+            return Err(anyhow!(
+                "cannot read this clone's identity (.confer/identity.json: {e}) — refusing to \
+                 (re-)role it, since I can't verify it isn't already bound to another role. \
+                 Inspect the file, or pass --force to override."
+            ));
+        }
+        Ok(txt) => {
+            let prev = serde_json::from_str::<serde_json::Value>(&txt)
+                .ok()
+                .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(str::to_string));
+            match prev {
+                None if !force => {
+                    return Err(anyhow!(
+                        ".confer/identity.json exists but names no role (corrupt or partial write?) \
+                         — refusing to (re-)role this clone without --force. Inspect the file, or \
+                         re-create the clone."
+                    ));
+                }
+                Some(prev) if prev != role && !force => {
+                    return Err(anyhow!(
+                        "this clone already belongs to role '{prev}' — refusing to re-role it to \
+                         '{role}'. It would keep {prev}'s signing key, binding one key to two roles \
+                         and making {prev}'s posts from here appear as '{role}'. For a new role, \
+                         make a SEPARATE clone: `confer clone <hub> --role {role} --managed`. To \
+                         re-role THIS clone anyway (it keeps the current key), pass --force."
+                    ));
+                }
+                Some(prev) if prev != role => {
                     eprintln!(
                         "confer: --force re-roling this clone from '{prev}' to '{role}' — it keeps \
                          the current signing key, so both role-ids are backed by the same identity \
                          (they are now linked; see DESIGN.md)."
                     );
                 }
+                _ => {} // same role (idempotent re-join), or --force over a role-less file
             }
         }
     }
-    // Configure per-agent commit signing if a key was given (overrides any global
-    // 1Password signer for this clone) and stash the pubkey to publish.
-    let pubkey = match &signing_key {
+
+    // Compute the signing pubkey with a PURE read (no git-config side effect) so it can go into
+    // identity.json — which we write FIRST, before any git-config mutation. #2 (red-team, Jarvis):
+    // configure_signing + the user.name/email sets used to run BEFORE the identity write with no
+    // rollback, so a failed join left the clone committing as a role confer never recorded. The
+    // durable identity record must land before the reconfiguration.
+    let pubkey: Option<String> = match &signing_key {
+        Some(kp) => Some(read_pubkey(std::path::Path::new(kp))?),
+        None => None,
+    };
+    let mut identity = serde_json::json!({
+        "role": role, "session": session, "host": host, "joined_at": now(),
+    });
+    if let Some(kp) = &signing_key {
+        identity["signing_key"] = serde_json::Value::String(kp.clone());
+    }
+    // Record the pubkey so the managed-clone-home resolver can verify a clone's identity by KEY,
+    // not just its (public, replayable) path tag.
+    if let Some(pk) = &pubkey {
+        identity["pubkey"] = serde_json::Value::String(pk.clone());
+    }
+    // Atomic (temp+rename): a crash mid-write leaves the PREVIOUS valid identity.json intact, never
+    // a torn file — so the fail-closed guard above can always trust what it reads (mirrors how
+    // tiers/presence/keyring persist state). The plain fs::write here was the root cause that let a
+    // corrupt file blind the guard.
+    write_atomic(&identity_path, &serde_json::to_string_pretty(&identity)?)?;
+
+    // NOW the git-config mutations (signing + committer identity), AFTER the identity is durable.
+    match &signing_key {
         Some(kp) => {
-            let pk = configure_signing(&root, std::path::Path::new(kp))?;
-            // Pin the committer identity in the clone config so a rebase re-commits
-            // (and re-signs) as this role — otherwise the committer email wouldn't
-            // match the allowed_signers principal and verification would fail.
+            configure_signing(&root, std::path::Path::new(kp))?;
+            // Pin the committer identity in the clone config so a rebase re-commits (and re-signs)
+            // as this role — otherwise the committer email wouldn't match the allowed_signers
+            // principal and verification would fail.
             gitcmd::check(&root, &["config", "user.name", &role])?;
             gitcmd::check(
                 &root,
                 &["config", "user.email", &format!("{role}@confer.local")],
             )?;
             println!("signing: commits from this clone will be signed with {kp}");
-            Some(pk)
         }
         None => {
-            // No agent key → do NOT inherit the human's personal git signer (wrong
-            // identity, and it breaks the moment their 1Password locks).
-            // Turn commit signing OFF for this clone and
-            // attribute commits to the role. confer's message-level attribution /
-            // verification is the identity model; git commit signatures
-            // are orthogonal and must never be the human's personal key.
+            // No agent key → do NOT inherit the human's personal git signer (wrong identity, and it
+            // breaks the moment their 1Password locks). Turn commit signing OFF for this clone and
+            // attribute commits to the role. confer's message-level attribution / verification is
+            // the identity model; git commit signatures are orthogonal and must never be the
+            // human's personal key.
             let _ = gitcmd::check(&root, &["config", "commit.gpgsign", "false"]);
             let _ = gitcmd::check(&root, &["config", "gpg.format", "ssh"]); // harmless; avoids gpg fallback
             let _ = gitcmd::check(&root, &["config", "user.name", &role]);
@@ -1404,9 +1484,8 @@ fn cmd_join(
                 &root,
                 &["config", "user.email", &format!("{role}@confer.local")],
             );
-            None
         }
-    };
+    }
     warn_if_nested(&root);
     let sign = signing_key.is_some();
 
@@ -1424,23 +1503,6 @@ fn cmd_join(
             let _ = keyring::confirm(&hk, &role);
         }
     }
-
-    std::fs::create_dir_all(&confer_dir)?;
-    let mut identity = serde_json::json!({
-        "role": role, "session": session, "host": host, "joined_at": now(),
-    });
-    if let Some(kp) = &signing_key {
-        identity["signing_key"] = serde_json::Value::String(kp.clone());
-    }
-    // Record the pubkey so the managed-clone-home resolver can verify a clone's identity by KEY,
-    // not just its (public, replayable) path tag.
-    if let Some(pk) = &pubkey {
-        identity["pubkey"] = serde_json::Value::String(pk.clone());
-    }
-    std::fs::write(
-        confer_dir.join("identity.json"),
-        serde_json::to_string_pretty(&identity)?,
-    )?;
     // Joining an existing hub defaults it to `foreign` — but only if no tier
     // is set, so `init`'s `own` (set before it calls join) and an explicit `confer trust`
     // both win.

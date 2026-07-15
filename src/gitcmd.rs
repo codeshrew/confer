@@ -34,11 +34,19 @@ fn run(root: &Path, args: &[&str]) -> Result<Output> {
     run_to(root, args, git_timeout())
 }
 
-/// True if a git invocation failed specifically because another process holds the
-/// per-clone `.git/index.lock` (a local index-write collision) — the transient case
-/// worth retrying, as opposed to a real error.
-fn is_index_lock_contention(out: &Output) -> bool {
-    !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("index.lock")
+/// True if a git invocation failed because another process holds a per-clone git lock — either the
+/// `.git/index.lock` (an index-write collision) or the config lock (`git config` reports it as
+/// "could not lock config file" / `config.lock`). Both are TRANSIENT: confer runs a background
+/// watch/poll and the SessionStart auto-heal fires `reconnect`, so a lock collision at session
+/// start (e.g. the auto-reconnect writing `user.name` while a manual op runs) is an ordinary
+/// coincidence, not a real error — worth a bounded retry, not a hard fail. A read-only op never
+/// creates either lock, so this only ever affects writers.
+fn is_lock_contention(out: &Output) -> bool {
+    if out.status.success() {
+        return false;
+    }
+    let e = String::from_utf8_lossy(&out.stderr);
+    e.contains("index.lock") || e.contains("config.lock") || e.contains("could not lock config")
 }
 
 /// Like `run`, but with an explicit per-call timeout — the sync path uses a SHORT
@@ -54,7 +62,7 @@ fn run_to(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let out = run_once(root, args, timeout)?;
-        if !is_index_lock_contention(&out) || std::time::Instant::now() >= deadline {
+        if !is_lock_contention(&out) || std::time::Instant::now() >= deadline {
             return Ok(out);
         }
         std::thread::sleep(Duration::from_millis(40 + jitter_ms(80)));

@@ -1455,6 +1455,47 @@ fn join_refuses_to_re_role_a_clone_bound_to_another_role() {
 }
 
 #[test]
+fn join_fails_closed_when_identity_is_unverifiable() {
+    // Red-team (Jarvis): the re-role guard must FAIL CLOSED. If identity.json can't be read/parsed
+    // or names no role — a torn write from a crash, and confer targets long-running agents where a
+    // mid-write death is ordinary — the guard must REFUSE, not fall through to a silent re-role
+    // (the exact gap the well-formed-only test missed). Also asserts the refusal lands BEFORE any
+    // git-config mutation (#2): a refused join must not leave the clone reconfigured to 'beta'.
+    let hub = new_hub();
+    let cases: &[(&str, fn(&std::path::Path))] = &[
+        ("corrupt-json", |idf| std::fs::write(idf, "{ not valid json").unwrap()),
+        ("missing-role", |idf| std::fs::write(idf, "{\"host\":\"x\"}").unwrap()),
+        ("unreadable", |idf| {
+            // read_to_string on a directory errors with a kind that is NOT NotFound — deterministic
+            // cross-platform stand-in for an unreadable/torn file (no chmod, which root bypasses).
+            std::fs::remove_file(idf).unwrap();
+            std::fs::create_dir(idf).unwrap();
+        }),
+    ];
+    for (name, corrupt) in cases {
+        let a = hub.clone("alpha");
+        // Bind this clone to alpha (no key needed — the guard fires regardless of signing).
+        assert!(ok(&a.confer(&["join", "--role", "alpha"])), "{name}: initial join");
+        let idf = a.dir.join(".confer").join("identity.json");
+        corrupt(&idf);
+
+        let j = a.confer(&["join", "--role", "beta"]);
+        assert!(!ok(&j), "{name}: unverifiable identity must be refused (fail closed)");
+        assert!(
+            !a.dir.join("roles").join("beta.md").exists(),
+            "{name}: no beta card may be written on a fail-closed refusal"
+        );
+        // #2: the refusal must precede git-config mutation — committer identity is still alpha.
+        let cfg = git(&a.dir, &["config", "--local", "user.name"]);
+        assert_eq!(
+            out(&cfg).trim(),
+            "alpha",
+            "{name}: a refused join must not have re-set user.name to beta"
+        );
+    }
+}
+
+#[test]
 fn who_rejects_an_unsigned_heartbeat_downgrade_after_a_role_has_signed() {
     // DESIGN.md Phase 2b, graceful per-role presence TOFU: an unsigned beat is advisory UNTIL a
     // role has signed one; after that, an unsigned (forged/suppressed) beat is a downgrade and is
