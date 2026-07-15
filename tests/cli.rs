@@ -1398,6 +1398,63 @@ fn join_refuses_a_second_different_key_for_an_existing_role() {
 }
 
 #[test]
+fn join_refuses_to_re_role_a_clone_bound_to_another_role() {
+    // Field-reported on 0.6.0 (boxwood-twist-null): `join`/`reconnect --role B` from inside role
+    // A's clone silently relabels the clone to B while KEEPING A's signing key — one key backing
+    // two role-ids, and A's future posts surfacing as B. One clone = one role; refuse by default,
+    // allow a deliberate re-role only with --force.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let kd = tmp("key");
+    let key = kd.join("alpha");
+    Command::new("ssh-keygen")
+        .args([
+            "-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "alpha", "-q",
+        ])
+        .status()
+        .unwrap();
+    // Bind this clone to role 'alpha' (writes .confer/identity.json role=alpha).
+    assert!(ok(&a.confer(&[
+        "join",
+        "--role",
+        "alpha",
+        "--signing-key",
+        key.to_str().unwrap()
+    ])));
+
+    // Re-role the SAME clone to 'beta' → refused (would keep alpha's key).
+    let j = a.confer(&["join", "--role", "beta"]);
+    assert!(!ok(&j), "re-roling a bound clone must be refused");
+    let msg = format!("{}{}", out(&j), err(&j));
+    assert!(
+        msg.contains("already belongs to role 'alpha'"),
+        "refusal must name the bound role: {msg}"
+    );
+
+    // The refusal must have taken effect BEFORE any state write: identity is still alpha, and no
+    // roles/beta.md card was registered on the hub.
+    let idf = a.dir.join(".confer").join("identity.json");
+    let id = std::fs::read_to_string(&idf).unwrap();
+    assert!(
+        id.contains("\"role\": \"alpha\""),
+        "identity must remain alpha after refusal: {id}"
+    );
+    assert!(
+        !a.dir.join("roles").join("beta.md").exists(),
+        "no beta card may be written on refusal"
+    );
+
+    // --force is the deliberate escape hatch: it re-roles (and warns the key is retained).
+    let f = a.confer(&["join", "--role", "beta", "--force"]);
+    assert!(ok(&f), "--force must allow a deliberate re-role: {}", err(&f));
+    let id2 = std::fs::read_to_string(&idf).unwrap();
+    assert!(
+        id2.contains("\"role\": \"beta\""),
+        "identity must be beta after --force re-role: {id2}"
+    );
+}
+
+#[test]
 fn who_rejects_an_unsigned_heartbeat_downgrade_after_a_role_has_signed() {
     // DESIGN.md Phase 2b, graceful per-role presence TOFU: an unsigned beat is advisory UNTIL a
     // role has signed one; after that, an unsigned (forged/suppressed) beat is a downgrade and is

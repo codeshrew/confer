@@ -100,6 +100,11 @@ enum Cmd {
         /// signer); its pubkey is published in the role card for verification
         #[arg(long = "signing-key")]
         signing_key: Option<String>,
+        /// re-role a clone that already belongs to a DIFFERENT role. Off by default: doing so keeps
+        /// this clone's signing key, so one key would back two role-ids (they become linked). For a
+        /// new role, prefer a SEPARATE clone.
+        #[arg(long)]
+        force: bool,
     },
     /// Release the role's lease (record a clean handoff). [stub]
     Leave,
@@ -564,6 +569,10 @@ enum Cmd {
         /// the headless watch keeps reaching the hub. See `init --ssh-key`.
         #[arg(long = "ssh-key")]
         ssh_key: Option<String>,
+        /// re-role a clone that already belongs to a DIFFERENT role (see `join --force`). Off by
+        /// default: it keeps the current clone's signing key, linking two role-ids to one key.
+        #[arg(long)]
+        force: bool,
     },
     /// Bootstrap literacy for a cold agent: three lines on what confer is + the SINGLE next
     /// command for your situation — `init` to START a fleet, `reconnect` to JOIN one. The one
@@ -870,7 +879,8 @@ fn main() -> Result<()> {
             display,
             desc,
             signing_key,
-        } => cmd_join(role, host, display, desc, signing_key),
+            force,
+        } => cmd_join(role, host, display, desc, signing_key, force),
         Cmd::Append {
             msg_type,
             text,
@@ -1031,7 +1041,8 @@ fn main() -> Result<()> {
             dir,
             host,
             ssh_key,
-        } => cmd_reconnect(role, hub, dir, host, ssh_key),
+            force,
+        } => cmd_reconnect(role, hub, dir, host, ssh_key, force),
         Cmd::Onboard { role, hub } => cmd_onboard(role, hub),
         Cmd::Version { json, check, pin } => cmd_version(json, check, pin),
         Cmd::Fleet { json } => cmd_fleet(json),
@@ -1287,6 +1298,7 @@ fn cmd_join(
     display: Option<String>,
     desc: Option<String>,
     signing_key: Option<String>,
+    force: bool,
 ) -> Result<()> {
     let root = config::repo_root()?;
     if !valid_slug(&role) {
@@ -1333,15 +1345,30 @@ fn cmd_join(
     let session = ulid::Ulid::new().to_string();
     let host = host.or_else(config::hostname).unwrap_or_default();
     let confer_dir = root.join(".confer");
-    // Co-resident-role guard: two roles must not share one working copy (they'd
-    // share identity.json). Use a separate git worktree/clone per role.
+    // One clone = one role, permanently. If this working copy is ALREADY bound to a DIFFERENT
+    // role, re-roling it here is an identity clobber: the clone keeps its CURRENT signing key, so
+    // that one key would back two role-ids on the hub and the prior role's future posts from this
+    // clone would surface under the new label — silently. (Field-reported on 0.6.0.) A warning
+    // isn't enough; refuse by default, and make a deliberate re-role take --force. The clean path
+    // for a new role is a SEPARATE clone, not relabeling this one.
     if let Ok(txt) = std::fs::read_to_string(confer_dir.join("identity.json")) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
             if let Some(prev) = v.get("role").and_then(|r| r.as_str()) {
                 if prev != role {
+                    if !force {
+                        return Err(anyhow!(
+                            "this clone already belongs to role '{prev}' — refusing to re-role it \
+                             to '{role}'. It would keep {prev}'s signing key, binding one key to \
+                             two roles and making {prev}'s posts from here appear as '{role}'. For \
+                             a new role, make a SEPARATE clone: \
+                             `confer clone <hub> --role {role} --managed`. To re-role THIS clone \
+                             anyway (it keeps the current key), pass --force."
+                        ));
+                    }
                     eprintln!(
-                        "confer: warning — this working copy was role '{prev}'. Two roles must \
-                         not share one clone; use a separate git worktree/clone per role."
+                        "confer: --force re-roling this clone from '{prev}' to '{role}' — it keeps \
+                         the current signing key, so both role-ids are backed by the same identity \
+                         (they are now linked; see DESIGN.md)."
                     );
                 }
             }
@@ -4050,7 +4077,8 @@ fn cmd_init(
             }
         };
         println!();
-        cmd_join(r.clone(), None, display, desc, signing_key)?;
+        // Fresh clone from `init` — no prior identity to clobber, so force is irrelevant here.
+        cmd_join(r.clone(), None, display, desc, signing_key, false)?;
         // Full reactive stack (mirrors `reconnect`), so `init --role` is the one-command CREATE
         // that `onboard` points to. Skip under --managed: the clone relocates below, so the
         // skills' resolved paths + the arm-from-here advice would be stale; managed prints its own.
@@ -5676,6 +5704,7 @@ fn cmd_reconnect(
     dir: Option<String>,
     host: Option<String>,
     ssh_key: Option<String>,
+    force: bool,
 ) -> Result<()> {
     if let Some(k) = &ssh_key {
         validate_transport_key(k)?;
@@ -5743,9 +5772,11 @@ fn cmd_reconnect(
     let _ = gitcmd::integrate(&root); // pull latest, best-effort
     if let Some(r) = &role {
         let sk = config::signing_key(&root).map(|p| p.to_string_lossy().into_owned());
-        if let Err(e) = cmd_join(r.clone(), host.clone(), None, None, sk) {
-            eprintln!("confer reconnect: join warning ({e}) — continuing setup");
-        }
+        // Propagate — every cmd_join failure here is a hard precondition (invalid/reserved slug,
+        // homoglyph display, re-key mismatch, or a re-role clobber of a clone already bound to
+        // another role). None are transient, so aborting beats printing "✅ reconnected" over a
+        // join that didn't happen. `--force` is threaded through for a deliberate re-role.
+        cmd_join(r.clone(), host.clone(), None, None, sk, force)?;
     }
 
     // 3. Full reactive stack: skills + auto-heal hook (idempotent; migrates legacy names).

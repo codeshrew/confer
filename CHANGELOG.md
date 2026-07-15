@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`join`/`reconnect --role` refuse to silently re-role a clone already bound to another role.**
+  Field report (boxwood-twist-null): running `confer reconnect --role B` from inside role A's clone
+  relabeled the clone to B while **keeping A's signing key** — so one key backed two role-ids on the
+  hub, and A's future posts from that clone surfaced under B's name. The prior code only printed a
+  warning. Now the operation is refused by default with a message that names the bound role and
+  points at the fix (a **separate** clone: `confer clone <hub> --role B --managed`); a deliberate
+  re-role takes `--force` (which warns that the key is retained, linking the two role-ids). Both
+  `join` and `reconnect` funnel through one write-side check, so pointing `reconnect --hub <PATH>`
+  at another role's clone is refused too. `reconnect` now also propagates a join precondition
+  failure instead of printing "✅ reconnected" over a join that didn't happen.
+
 ## 0.6.3
 
 - **`confer hubs` now discovers ad-hoc clones, not just managed ones.** 0.6.2's `confer hubs` read
