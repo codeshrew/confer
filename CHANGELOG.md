@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4
 
 - **`join`/`reconnect --role` refuse to silently re-role a clone already bound to another role.**
   Field report (boxwood-twist-null): running `confer reconnect --role B` from inside role A's clone
