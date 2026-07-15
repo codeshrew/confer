@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.2
+
+- **`confer hubs`** — prints one clone path per *distinct* managed hub (deduped), one per line: the
+  discovery primitive for portable multi-hub scripts and skills, e.g.
+  `for h in $(confer hubs); do CONFER_HUB=$h confer fleet; done`. `confer clones` lists every
+  per-role clone; `confer hubs` collapses them to one line per hub so a shared skill can iterate
+  hubs without ever hardcoding a machine-specific path. (Motivated by the `/confer-fleet` skill
+  baking an absolute path and breaking on every machine but the authoring one.)
+
 ## 0.6.1
 
 - **The README that `confer init` scaffolds into a new hub is rewritten for the current flow.** It

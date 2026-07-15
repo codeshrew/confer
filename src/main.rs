@@ -472,6 +472,10 @@ enum Cmd {
     },
     /// List the clones confer manages under `~/.confer/clones/`.
     Clones,
+    /// Print one clone path per DISTINCT hub (deduped), one per line — the discovery primitive for
+    /// portable multi-hub scripts/skills: `for h in $(confer hubs); do CONFER_HUB=$h confer fleet; done`.
+    /// Managed clones only; `adopt-clone` an ad-hoc clone to have it listed.
+    Hubs,
     /// Print the managed-home path for THIS clone's identity — resolves it by key (verified),
     /// or shows where it would live if you `adopt-clone` it. Handy for scripts.
     Where,
@@ -984,6 +988,7 @@ fn main() -> Result<()> {
             managed,
         ),
         Cmd::Clones => cmd_clones(),
+        Cmd::Hubs => cmd_hubs(),
         Cmd::Where => cmd_where(),
         Cmd::Keygen { role } => cmd_keygen(role, true),
         Cmd::Update { check } => cmd_update(check),
@@ -4255,6 +4260,32 @@ fn cmd_clones() -> Result<()> {
     );
     for c in &clones {
         println!("  {:<20} {:<14} {}", c.hub_slug, c.role, c.path.display());
+    }
+    Ok(())
+}
+
+/// One clone path per DISTINCT hub (deduped by the hub dir, i.e. the clone's parent), one per line
+/// — the discovery primitive a portable multi-hub skill iterates so it never hardcodes a machine
+/// path. Any clone of a hub gives that hub's fleet view, so we emit just one per hub.
+fn cmd_hubs() -> Result<()> {
+    let clones = clonehome::list();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for c in clones {
+        // dedup by the hub directory (`~/.confer/clones/<hub-slug>-<hubtag>/`) — the parent of the
+        // per-role clone — so N co-resident roles on one hub collapse to a single line.
+        let hub_dir = c
+            .path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| c.path.clone());
+        if seen.insert(hub_dir) {
+            paths.push(c.path);
+        }
+    }
+    paths.sort();
+    for p in &paths {
+        println!("{}", p.display());
     }
     Ok(())
 }
