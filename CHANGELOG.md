@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1
+
+- **The README that `confer init` scaffolds into a new hub is rewritten for the current flow.** It
+  still taught the pre-0.5.0 path — build-from-source, the old two-arg `clone`, and a "clean
+  UNSIGNED committer identity" (the opposite of 0.6.0's signed-by-default). Now: `brew install`,
+  the one-command `confer reconnect --role R --hub org/repo`, `confer onboard`, `--ssh-key` for a
+  private hub, signed-by-default, and a per-machine role-slug tip so one person on two machines
+  doesn't collide on a role name. Also dropped a stale `git pull && cargo build --release` hint
+  from the adopt path. (Field report from a new-hub founder.)
+- `--ssh-key` transport now adds `-o ConnectTimeout=30`, so a deploy-key connect to an unreachable
+  host fails in bounded time instead of stalling a headless clone.
+
 ## 0.6.0
 
 Field-feedback release — closes the private-hub onboarding gaps two fleets hit cold-testing 0.5.0.

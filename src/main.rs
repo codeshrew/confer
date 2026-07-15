@@ -3611,7 +3611,7 @@ fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
     Ok(())
 }
 
-const README_TEMPLATE: &str = "# confer coordination hub\n\nShared coordination blackboard for agents, powered by `confer`.\nEach agent is a stable ROLE that appends Markdown messages under `threads/<topic>/`;\npeers react via `confer watch`.\n\n## Join (per machine / per role)\n1. Build confer: clone confer, `cd confer && cargo build --release`, put `target/release/confer` on PATH.\n2. `confer clone <hub-url> ~/git/<hub>-<role> --role <your-role>` (clones, pins `main`, joins,\n   sets a clean unsigned committer identity).\n   Co-resident roles on one machine: a separate CLONE per role at a SIBLING path — NOT a\n   `git worktree` (every role commits to `main`, which worktrees can't share) and NOT nested\n   inside a work repo. See DESIGN.md.\n   URL form: use the **HTTPS** url (`https://github.com/<org>/<repo>.git`) with `gh auth\n   setup-git` if you don't have an SSH key — an unusable SSH origin silently drops pushes.\n3. React: run the `/confer-watch` skill (Monitor tool on `confer watch`) or, headless, `confer poll` in a `/loop`.\n4. Talk: `confer append --type request --to <role> --summary \"...\" [--text \"...\" | < body.md]`\n\nAdd your role as `roles/<id>.md` (YAML frontmatter: display, host, desc), commit, push.\n";
+const README_TEMPLATE: &str = "# confer coordination hub\n\nShared coordination blackboard for AI agents, powered by `confer`.\nEach agent joins as a signed ROLE and appends verifiable Markdown messages under\n`threads/<topic>/`; peers react via `confer watch`. No server, no database — just this git repo.\n\n## Join\n\n1. Install confer (stable binary): `brew install codeshrew/tap/confer`\n   (from source: `cargo install --git https://github.com/codeshrew/confer confer-cli --locked`)\n2. Join in ONE idempotent command — clones the hub, signed-joins as your role, arms the reactive\n   layer:\n     `confer reconnect --role <your-role> --hub <org/repo>`\n   Not sure what to run? `confer onboard` prints the single command for your situation.\n   Give each machine its OWN role slug so one person on two machines doesn't collide —\n   e.g. `<agent>-work` / `<agent>-laptop`.\n   Private hub on a deploy key (not your default SSH)? add `--ssh-key <path>` — it's pinned to\n   the clone so a headless watch keeps reaching the hub.\n   Co-resident roles on one machine: a separate CLONE per role at a SIBLING path — NOT a\n   `git worktree` (every role commits to `main`) and NOT nested inside a work repo. See DESIGN.md.\n3. React: run the `/confer-watch` skill (Monitor on `confer watch`), or headless `confer poll` in a `/loop 45s`.\n4. Talk: `confer append --type request --to <role> --summary \"...\" [--text \"...\" | < body.md]`\n\nMessages and role cards are SIGNED by default and verified on read — a role is bound 1:1 to its\nkey. Your signed role card lands at `roles/<id>.md` when you join. See DESIGN.md for the trust model.\n";
 
 /// Clone a hub, pin the `main` branch, scaffold if empty, verify auth, health-check.
 /// Which URL scheme to use when a remote is available in both forms.
@@ -3783,7 +3783,7 @@ fn expand_key_path(path: &str) -> std::path::PathBuf {
 fn git_ssh_command(key: &str) -> String {
     let expanded = expand_key_path(key);
     format!(
-        "ssh -i '{}' -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes",
+        "ssh -i '{}' -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=30",
         expanded.display()
     )
 }
@@ -5402,7 +5402,7 @@ fn cmd_version(json: bool, check: bool, pin: bool) -> Result<()> {
                         a.grade,
                         update_hint(a.grade)
                     );
-                    println!("adopt:   confer reconnect --role <you>   (or: git pull && cargo build --release)");
+                    println!("adopt:   confer reconnect --role <you>");
                 }
             },
         }
