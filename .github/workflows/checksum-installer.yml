@@ -1,0 +1,44 @@
+# cargo-dist checksums the release ARCHIVES (each tarball gets a .sha256, all go in sha256.sum) but
+# NOT its own shell installer — so `confer-cli-installer.sh`, the artifact users pipe into a shell,
+# is the one thing they can't verify. Backwards from a threat POV. This closes the gap: after a
+# release is published, checksum the installer, publish a `confer-cli-installer.sh.sha256` companion
+# (matching the tarballs), and append the installer line to `sha256.sum`.
+name: checksum installer
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag to backfill (e.g. v0.6.3)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  add-installer-checksum:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checksum the installer, attach companion + append to sha256.sum
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'confer-cli-installer.sh' --pattern 'sha256.sum' --dir dl --clobber
+          cd dl
+          if [ ! -f confer-cli-installer.sh ]; then
+            echo "::notice::no installer in $TAG (shell installer not built) — nothing to do."
+            exit 0
+          fi
+          sum="$(sha256sum confer-cli-installer.sh | awk '{print $1}')"
+          printf '%s  confer-cli-installer.sh\n' "$sum" > confer-cli-installer.sh.sha256
+          # append to the combined sums file (idempotent — skip if already present)
+          if [ -f sha256.sum ] && ! grep -q 'confer-cli-installer.sh' sha256.sum; then
+            printf '%s *confer-cli-installer.sh\n' "$sum" >> sha256.sum
+            gh release upload "$TAG" sha256.sum --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+          gh release upload "$TAG" confer-cli-installer.sh.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          echo "installer sha256: $sum"
