@@ -31,6 +31,9 @@ pub struct WatchOpts {
     /// A chatty agent can set `--min-priority high` to only wake on urgent items;
     /// lower-priority ones still land, seen on the next `poll`/sweep.
     pub min_priority: u8,
+    /// suppress the one-shot "a newer confer is on this hub — update" wake. On by default; set to
+    /// true (`--no-version-notice`) if you don't want the watch to nudge you about version drift.
+    pub no_version_notice: bool,
 }
 
 /// If this watch's stdout is a discard — a regular file (`> file`) or a non-terminal char device
@@ -192,6 +195,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     let mut wait = base;
     let mut io_degraded = false;
     let mut synced = true;
+    let mut version_noticed = false;
     loop {
         lock.heartbeat(); // prove liveness so a later watcher can tell we're alive
         match gitcmd::integrate(&root) {
@@ -204,6 +208,31 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 if synced {
                     crate::warn_safety(format!("hub sync failed ({e}); showing local state"));
                     synced = false;
+                }
+            }
+        }
+
+        // Version-availability wake (on by default; `--no-version-notice` to disable). Unlike the
+        // one-shot startup line, this catches a newer build that lands on the hub WHILE you're
+        // watching — a long-lived watcher would otherwise never learn until a restart. Emitted ONCE
+        // per session to STDOUT (so the Monitor host actually wakes you), and only for genuine
+        // semver drift (a sha-only rebuild is noise). The peer-message stream stays uncluttered:
+        // this is a single, distinct, opt-out line, not mixed into the KIND-wake format.
+        if !opts.no_version_notice && !version_noticed {
+            if let Some(pin) = crate::hub_pin(&root) {
+                let a = crate::version::assess(&crate::my_build(), Some(&pin));
+                if a.outdated && a.grade != "rebuild" {
+                    let mut o = std::io::stdout().lock();
+                    let _ = writeln!(
+                        o,
+                        "⟳ UPDATE — a newer confer ({}) is running on this hub; you're on {}. Update \
+                         (`confer update`), then re-arm your watch + `confer install-skill`. \
+                         (silence: add --no-version-notice)",
+                        pin.pin_string(),
+                        crate::my_build().pin_string()
+                    );
+                    let _ = o.flush();
+                    version_noticed = true;
                 }
             }
         }

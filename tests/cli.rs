@@ -2765,6 +2765,55 @@ fn a_dead_watch_is_surfaced_on_the_next_command_only_after_arming() {
 }
 
 #[test]
+fn watch_notifies_of_a_newer_hub_version_and_can_be_silenced() {
+    // A long-lived watcher should learn when a newer confer lands on the hub (drift that appears
+    // AFTER startup) — a one-shot, opt-out wake. Default on; `--no-version-notice` silences it.
+    use std::io::Read;
+    let hub = new_hub();
+    // Plant a hub version pin newer than this test binary.
+    let setter = hub.clone("setter");
+    std::fs::write(setter.dir.join(".confer-version"), "9.9.9 (feedface)\n").unwrap();
+    git(&setter.dir, &["add", "-A"]);
+    git(&setter.dir, &["commit", "-qm", "bump pin"]);
+    assert!(git(&setter.dir, &["push", "-q", "origin", "main"]).status.success());
+
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |extra: &[&str]| -> String {
+        let mut args = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        args.extend_from_slice(extra);
+        let mut child = Command::new(BIN)
+            .env("HOME", &a.home)
+            .env("CONFER_HUB", &a.dir)
+            .env("CONFER_ROLE", "alpha")
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(1600));
+        let _ = child.kill();
+        let mut s = String::new();
+        if let Some(mut o) = child.stdout.take() {
+            let _ = o.read_to_string(&mut s);
+        }
+        let _ = child.wait();
+        s
+    };
+    let on = run(&[]);
+    assert!(
+        on.contains("UPDATE") || on.to_lowercase().contains("newer confer"),
+        "watch must notify of a newer hub version: {on}"
+    );
+    let off = run(&["--no-version-notice"]);
+    assert!(
+        !off.contains("UPDATE") && !off.to_lowercase().contains("newer confer"),
+        "--no-version-notice must silence the version wake: {off}"
+    );
+}
+
+#[test]
 fn e2e_inbox_excludes_cc_and_broadcast() {
     // Validates directly_addressed (and the --to/--cc advice given to the reader
     // agent): only a direct `--to` recipient is nagged; cc and `all` are not.

@@ -336,6 +336,10 @@ enum Cmd {
         /// normal | high. Lower-priority items still land — seen via `poll`.
         #[arg(long = "min-priority", default_value = "low")]
         min_priority: String,
+        /// don't emit the one-shot "a newer confer is on this hub — update" wake (it's on by
+        /// default; version drift is otherwise only seen at watch startup / `confer status`).
+        #[arg(long = "no-version-notice")]
+        no_version_notice: bool,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether
@@ -1112,6 +1116,7 @@ fn main() -> Result<()> {
             replace,
             all,
             min_priority,
+            no_version_notice,
             ..
         } => {
             let min_priority = match min_priority.as_str() {
@@ -1133,6 +1138,7 @@ fn main() -> Result<()> {
                 replace,
                 all,
                 min_priority,
+                no_version_notice,
             })
         }
         Cmd::WatchStatus { role, json } => cmd_watch_status(role, json),
@@ -4835,10 +4841,21 @@ fn cmd_update(check_only: bool) -> Result<()> {
     }
     if updater.run_sync()?.is_some() {
         println!("confer updated to the latest release.");
+        print_post_update_steps();
     } else {
         println!("confer is already up to date.");
     }
     Ok(())
+}
+
+/// After a binary update, two things are stale and easy to forget — say so explicitly. The RUNNING
+/// watch is still the old binary (it must re-arm to run the new build), and the deployed skills were
+/// baked from the old binary (they must be re-synced). Neither is automatic (the watch is a separate
+/// process the agent hosts; the skill templates live in the NEW on-disk binary, not this process).
+pub(crate) fn print_post_update_steps() {
+    println!("\nnext — pick up the new build (both are needed):");
+    println!("  1. re-arm your watch so it runs the new binary:  /confer-watch   (or `confer watch --replace`)");
+    println!("  2. re-sync your skills from the new binary:       confer install-skill");
 }
 
 /// No dist receipt → a package manager owns this binary. Detect which from the running exe and
@@ -4874,6 +4891,8 @@ fn delegate_to_package_manager() -> Result<()> {
         println!("so `confer update` can't safely replace it. Reinstall via the shell installer");
         println!("(curl … | sh) for self-update, or update through your package manager.");
     }
+    // Whichever way they update the binary, the watch + skills must be refreshed afterward.
+    print_post_update_steps();
     Ok(())
 }
 
