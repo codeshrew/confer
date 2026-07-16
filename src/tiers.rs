@@ -86,7 +86,15 @@ fn set_in(base: &Path, hub_key: &str, tier: Tier) -> Result<()> {
     // Serialize the load-modify-save under a state lock, like keyring/presence — otherwise two
     // concurrent writers (e.g. `join` setting Foreign while `init` set Own, or two roles bootstrapping
     // on one machine) can lost-update: A loads, B loads the same map, B saves, A clobbers B.
-    let _guard = crate::config::state_lock(&base.join("tiers.lock"));
+    // Fail CLOSED if the lock times out (matches keyring/presence): writing unlocked would re-open
+    // the exact lost-update this guard prevents. state_lock returns None only after a 10s wait, so
+    // this fires only under real, sustained contention.
+    let guard = crate::config::state_lock(&base.join("tiers.lock"));
+    if guard.is_none() {
+        return Err(anyhow::anyhow!(
+            "could not lock tiers.json (clone busy) — trust tier not written; retry"
+        ));
+    }
     let mut map = load_all(base);
     map.insert(hub_key.to_string(), tier.as_str().to_string());
     save_all(base, &map)
@@ -96,7 +104,14 @@ fn set_default_in(base: &Path, hub_key: &str, tier: Tier) -> Result<()> {
     // Hold the lock across the whole check-then-set so two concurrent defaults can't both pass the
     // "unset?" test and race. Inlined (not `get_in` + `set_in`) to avoid re-acquiring the same
     // non-reentrant lock. Matches the prior semantics: set only when no PARSEABLE tier is present.
-    let _guard = crate::config::state_lock(&base.join("tiers.lock"));
+    let guard = crate::config::state_lock(&base.join("tiers.lock"));
+    if guard.is_none() {
+        // Best-effort caller (`let _ = set_default(...)`), so this just skips this write; the default
+        // re-derives on the next op. Fail closed rather than race an unlocked write.
+        return Err(anyhow::anyhow!(
+            "could not lock tiers.json (clone busy) — default tier not written; will re-derive"
+        ));
+    }
     let mut map = load_all(base);
     if map.get(hub_key).and_then(|s| Tier::parse(s)).is_none() {
         map.insert(hub_key.to_string(), tier.as_str().to_string());

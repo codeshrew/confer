@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.6
+
+Security + robustness release from a multi-agent review sweep. No new commands; existing behavior on
+success paths is unchanged.
+
+- **SECURITY — closed a card-corruption identity hijack.** A hub git-writer could silently re-key a
+  role (steal its identity) by first committing one malformed/degenerate line into its `roles/<id>.md`
+  card, which made the write-side 1:1 key guard read the card as "no key published." Fixed and
+  hardened across five adversarial red-team rounds: `parse_card` fails closed on unparsable
+  frontmatter; a single shared `roster::classify_pubkey` classifies `pubkey` for BOTH the read/pin
+  side and the write guard (so a `pubkey: null`/list/number/bareword can't be read one way by one and
+  another by the other); the "was this role ever keyed?" gate parses each historical revision instead
+  of grepping diff text (defeating a YAML-anchor evasion); both card parsers strip a leading UTF-8 BOM.
+  Separately, peer-authored card fields (`display`/`aliases`/`host`) are now sanitized before they
+  reach the terminal or the agent's SessionStart context (terminal-control / prompt-injection).
+- **The `append`/`integrate` op is now bounded by one overall wall-clock deadline** (`op_deadline`,
+  `CONFER_OP_BUDGET_SECS`, default 45s). The fetch, lock-wait, and reconcile-push phases each had a
+  budget but nothing bounded their SUM, so under contention (a watcher's `integrate` holding the lock
+  while an `append` waited, then hitting its own push race) they stacked to a ~100s hang that never
+  errored — it just sat. Now the total is capped and the op defers cleanly.
+- **Silent read failures are now surfaced** (the "looks-like-success" class): `confer hubs`/`clones`
+  (a `clonehome::list` `read_dir` error no longer yields a confident-but-partial empty), `who`/`fleet`
+  (`presence` now checks the fetch + `for-each-ref` exit, so it can't report wrong liveness on a git
+  read failure), `roster` (an unreadable `roles/` dir warns), the poll/watch reactive path (a
+  history-present-but-tree-absent message warns instead of vanishing), and `init --managed` (a failed
+  reactive-layer wiring no longer prints "✅ fleet ready" over a watch that isn't set up).
+- **`tiers.json` writes are now serialized** with the same state lock `keyring`/`presence` use
+  (lost-update fix).
+- **Declared MSRV corrected to 1.82** (the code uses `Option::is_none_or`); a from-source build on the
+  previously-declared 1.74 would fail to compile.
+
 ## 0.6.5
 
 - **Onboarding now steers to the co-resident-safe managed join — the trap behind the 0.6.4 clobber.**

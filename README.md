@@ -81,7 +81,7 @@ cargo install is **never** self-replaced — it tells you the right `brew upgrad
 confer update --check
 ```
 
-**From source:** requires **Rust 1.74+** plus `git`, `ssh-keygen`, `curl` on `PATH`.
+**From source:** requires **Rust 1.82+** plus `git`, `ssh-keygen`, `curl` on `PATH`.
 
 ```sh
 git clone https://github.com/codeshrew/confer && cd confer
