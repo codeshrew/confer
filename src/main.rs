@@ -3705,7 +3705,7 @@ fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
     Ok(())
 }
 
-const README_TEMPLATE: &str = "# confer coordination hub\n\nShared coordination blackboard for AI agents, powered by `confer`.\nEach agent joins as a signed ROLE and appends verifiable Markdown messages under\n`threads/<topic>/`; peers react via `confer watch`. No server, no database — just this git repo.\n\n## Join\n\n1. Install confer (stable binary): `brew install codeshrew/tap/confer`\n   (from source: `cargo install --git https://github.com/codeshrew/confer confer-cli --locked`)\n2. Join in ONE idempotent command — clones the hub, signed-joins as your role, arms the reactive\n   layer:\n     `confer reconnect --role <your-role> --hub <org/repo>`\n   Not sure what to run? `confer onboard` prints the single command for your situation.\n   Give each machine its OWN role slug so one person on two machines doesn't collide —\n   e.g. `<agent>-work` / `<agent>-laptop`.\n   Private hub on a deploy key (not your default SSH)? add `--ssh-key <path>` — it's pinned to\n   the clone so a headless watch keeps reaching the hub.\n   Co-resident roles on one machine: a separate CLONE per role at a SIBLING path — NOT a\n   `git worktree` (every role commits to `main`) and NOT nested inside a work repo. See DESIGN.md.\n3. React: run the `/confer-watch` skill (Monitor on `confer watch`), or headless `confer poll` in a `/loop 45s`.\n4. Talk: `confer append --type request --to <role> --summary \"...\" [--text \"...\" | < body.md]`\n\nMessages and role cards are SIGNED by default and verified on read — a role is bound 1:1 to its\nkey. Your signed role card lands at `roles/<id>.md` when you join. See DESIGN.md for the trust model.\n";
+const README_TEMPLATE: &str = "# confer coordination hub\n\nShared coordination blackboard for AI agents, powered by `confer`.\nEach agent joins as a signed ROLE and appends verifiable Markdown messages under\n`threads/<topic>/`; peers react via `confer watch`. No server, no database — just this git repo.\n\n## Join\n\n1. Install confer (stable binary): `brew install codeshrew/tap/confer`\n   (from source: `cargo install --git https://github.com/codeshrew/confer confer-cli --locked`)\n2. Join in ONE command — clones the hub, mints your key, signed-joins as your role, and arms the\n   reactive layer, landing in a PER-ROLE managed clone (`~/.confer/clones/…`):\n     `confer clone <org/repo> --role <your-role> --managed`\n   Not sure what to run? `confer onboard` prints the single command for your situation (and, if\n   you're already joined here, points you at RE-ARMING instead of cloning twice).\n   One clone = one role. `--managed` gives each role its OWN clone, so MANY roles can run on ONE\n   machine without colliding — the recommended layout. Re-arm any of them with `/confer-watch`\n   (or `confer watch --role <r> --replace`) from its clone dir; `confer clones` lists them.\n   Private hub on a deploy key (not your default SSH)? add `--ssh-key <path>` — it's pinned to\n   the clone so a headless watch keeps reaching the hub.\n3. React: run the `/confer-watch` skill (Monitor on `confer watch`), or headless `confer poll` in a `/loop 45s`.\n4. Talk: `confer append --type request --to <role> --summary \"...\" [--text \"...\" | < body.md]`\n\nMessages and role cards are SIGNED by default and verified on read — a role is bound 1:1 to its\nkey. Your signed role card lands at `roles/<id>.md` when you join. See DESIGN.md for the trust model.\n";
 
 /// Clone a hub, pin the `main` branch, scaffold if empty, verify auth, health-check.
 /// Which URL scheme to use when a remote is available in both forms.
@@ -4108,6 +4108,10 @@ fn cmd_init(
         },
     );
 
+    // Keep the role available after the move below, so a `--managed` create can arm the reactive
+    // stack from the FINAL (relocated) clone path — making `clone/init --role --managed` a complete
+    // one-command join+arm, not a join that leaves you to `cd` and arm by hand.
+    let managed_role = role.clone();
     if let Some(r) = role {
         // Fail fast on a bad role id BEFORE it reaches `keys.join(&r)` (an absolute `r` would
         // turn that into an arbitrary-path existence probe) — don't lean on join/keygen catching
@@ -4164,10 +4168,19 @@ fn cmd_init(
         let _ = std::env::set_current_dir(config::home()?);
         let (dest, _) = migrate_to_managed(&root, true)?;
         println!("\nmanaged: this clone now lives at {}", dest.display());
-        println!(
-            "  watch from there: cd {} && confer watch --role <you>",
-            dest.display()
-        );
+        // Arm the reactive stack FROM the final path — skipped before the move (stale paths), done
+        // now so a managed join is complete in one command, exactly like the non-managed branch.
+        if let Some(r) = &managed_role {
+            let _ = cmd_install_skill(None, Some(dest.to_string_lossy().to_string()), Some(r.clone()), false);
+            println!();
+            println!("✅ fleet ready at {}", dest.display());
+            print_reactive_next(r);
+        } else {
+            println!(
+                "  watch from there: cd {} && confer watch --role <you>",
+                dest.display()
+            );
+        }
     }
     Ok(())
 }
@@ -5877,31 +5890,78 @@ fn print_reactive_next(role: &str) {
 /// single idempotent command to run next. Deliberately NOT `invite` (that onboards a newcomer
 /// INTO a live hub, filled from hub state); `onboard` self-bootstraps a create-or-join when
 /// there is no hub and no inviter yet.
+/// Find the managed clone (under `~/.confer/clones/`) for a hub + role, if one exists on THIS
+/// machine. Matches the role and the hub by NORMALIZED origin — an ssh / https / `owner/repo`
+/// shorthand of the same repo all resolve to one shorthand — so it doesn't false-match a same-named
+/// role on a different hub. Read-only; `onboard` uses it to tell a returning agent to RE-ARM its
+/// clone rather than clone again.
+fn find_managed_clone(hub: &str, role: &str) -> Option<std::path::PathBuf> {
+    let want = parse_remote(hub).shorthand;
+    clonehome::list()
+        .into_iter()
+        .filter(|c| c.role == role)
+        .find(|c| {
+            let origin = gitcmd::output(&c.path, &["config", "--get", "remote.origin.url"])
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string());
+            match (origin.as_deref(), want.as_deref()) {
+                (Some(o), Some(w)) => parse_remote(o).shorthand.as_deref() == Some(w),
+                (Some(o), None) => o == hub || o.trim_end_matches(".git").ends_with(hub),
+                _ => false,
+            }
+        })
+        .map(|c| c.path)
+}
+
 fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
     // A concrete, paste-safe default role — NEVER a `<...>` placeholder (a shell chokes on `<`/`>`,
     // so a pasted command would silently fail). The user swaps it for a meaningful role id. Sanitize
-    // both echoed values: an agent may pass a --role/--hub copied from an untrusted message (#D).
+    // both echoed values for DISPLAY; keep the RAW role/hub for looking up an existing managed clone.
     let r = schema::sanitize_term(role.as_deref().unwrap_or("agent"), false);
-    let hub = hub.as_deref().map(|h| schema::sanitize_term(h, false));
+    let hub_display = hub.as_deref().map(|h| schema::sanitize_term(h, false));
     println!("confer — a git-native coordination layer for AI agents.");
     println!("A \"fleet\" is one private git repo (the hub). Each agent joins it with a signed");
     println!(
         "identity and coordinates by appending signed, verifiable messages — no server, no db."
     );
     println!();
-    match hub.as_deref() {
+    match hub_display.as_deref() {
         Some(h) => {
-            println!("You were pointed at a fleet. JOIN it with one command:");
-            println!();
-            println!("    confer reconnect --role {r} --hub {h}");
-            println!();
-            println!(
-                "That clones the hub, joins as {r}, wires your reactive layer, and tells you to"
-            );
-            println!("arm the watch. Idempotent — safe to re-run after a restart or a compaction.");
-            println!(
-                "Private hub authed by a deploy key (not your default SSH)? add:  --ssh-key <path>"
-            );
+            // Already joined this fleet as this role on THIS machine? Managed clones are per-role
+            // (`~/.confer/clones/<hub>/<role>-<key>/`), so a returning agent should RE-ARM its clone,
+            // not clone again. Only resolvable when a concrete role was given (not the placeholder).
+            let existing = match (role.as_deref(), hub.as_deref()) {
+                (Some(rr), Some(hh)) => find_managed_clone(hh, rr),
+                _ => None,
+            };
+            if let Some(p) = existing {
+                println!("You're already joined to this fleet as {r} — in your managed clone:");
+                println!("    {}", p.display());
+                println!();
+                println!("Don't re-clone. Just RE-ARM your reactive watch from there:");
+                println!("    cd {} && confer watch --role {r} --replace", p.display());
+                println!("    (Claude Code: run  /confer-watch  from that directory — same thing.)");
+            } else {
+                println!("You were pointed at a fleet. JOIN it with one command:");
+                println!();
+                println!("    confer clone {h} --role {r} --managed");
+                println!();
+                println!(
+                    "That clones the hub, mints your key, joins as {r}, and arms your reactive layer"
+                );
+                println!("— landing in a PER-ROLE managed clone (~/.confer/clones/…), so several roles");
+                println!("on ONE machine each get their own clone and never collide. One clone = one role.");
+                println!(
+                    "Private hub authed by a deploy key (not your default SSH)? add:  --ssh-key <path>"
+                );
+                println!();
+                println!(
+                    "(Re-running is safe — `confer onboard --hub {h} --role {r}` finds your clone and"
+                );
+                println!(" points you at re-arming it instead of cloning twice.)");
+            }
         }
         None => {
             println!("You have no fleet yet. START one with a single command (local, zero-setup):");
@@ -5919,7 +5979,7 @@ fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
             println!(
                 "    confer init your-org/your-hub --role {r}     # a private GitHub/GitLab repo"
             );
-            println!("    # each peer then runs:  confer reconnect --role frontend --hub your-org/your-hub");
+            println!("    # each peer then runs:  confer clone your-org/your-hub --role frontend --managed");
             println!();
             println!("Private-hub auth — a headless watch needs non-interactive push credentials:");
             println!(

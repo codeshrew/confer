@@ -3458,6 +3458,105 @@ fn keygen_mints_a_0600_key_and_refuses_to_clobber_an_identity() {
     );
 }
 
+/// 0.6.5 steering: `clone --role R --managed` is a COMPLETE one-command join+arm that lands each
+/// role in its OWN managed clone — so several roles on ONE machine (Stefan's normal workflow) never
+/// collide on a shared working copy. This is the co-resident-safe onboarding path the field-reported
+/// clobber (0.6.4) pushed people toward; here we prove two roles get two distinct clones + armed skills.
+#[test]
+fn clone_managed_is_one_command_join_and_coresident_safe() {
+    let hub = new_hub();
+    let run = |role: &str| {
+        Command::new(BIN)
+            .env("HOME", &hub.home)
+            .env_remove("CONFER_HUB")
+            .env_remove("CONFER_ROLE")
+            .args(["clone", hub.bare.to_str().unwrap(), "--role", role, "--managed"])
+            .output()
+            .expect("run confer clone --managed")
+    };
+    let b = run("backend");
+    assert!(ok(&b), "clone --managed (backend) failed: {}", err(&b));
+    // One command did the whole job: joined AND armed the reactive stack from the FINAL managed path.
+    assert!(out(&b).contains("fleet ready"), "managed join must arm in one command: {}", out(&b));
+    assert!(out(&b).contains(".confer/clones/"), "must land in the managed home: {}", out(&b));
+
+    // A second co-resident role on the SAME hub gets its OWN clone — no collision, no clobber.
+    let f = run("frontend");
+    assert!(ok(&f), "clone --managed (frontend) failed: {}", err(&f));
+
+    let clones = hub.home.join(".confer").join("clones");
+    let mut leaves: Vec<PathBuf> = Vec::new();
+    for hubdir in std::fs::read_dir(&clones).unwrap().flatten() {
+        for roledir in std::fs::read_dir(hubdir.path()).unwrap().flatten() {
+            if roledir.path().join(".confer").join("identity.json").is_file() {
+                leaves.push(roledir.path());
+            }
+        }
+    }
+    assert_eq!(leaves.len(), 2, "two roles → two distinct managed clones, got {leaves:?}");
+    // Distinct paths, and each identity bound to its own role.
+    assert_ne!(leaves[0], leaves[1], "co-resident roles must not share a clone");
+    let roles: std::collections::HashSet<String> = leaves
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p.join(".confer").join("identity.json")).ok())
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter_map(|v| v.get("role").and_then(|r| r.as_str()).map(String::from))
+        .collect();
+    assert_eq!(
+        roles,
+        ["backend", "frontend"].iter().map(|s| s.to_string()).collect(),
+        "each managed clone is bound to its own role"
+    );
+}
+
+/// 0.6.5: `onboard --hub` steers a FIRST-time join to `clone … --managed` (the co-resident-safe
+/// path), and once a managed clone exists it DETECTS it and points at re-arming instead of a second
+/// clone — so re-running onboard after a compaction can't create a duplicate/colliding clone.
+#[test]
+fn onboard_steers_to_managed_join_then_detects_existing() {
+    let hub = new_hub();
+    let onboard = |role: &str| {
+        Command::new(BIN)
+            .env("HOME", &hub.home)
+            .env_remove("CONFER_HUB")
+            .env_remove("CONFER_ROLE")
+            .args(["onboard", "--hub", hub.bare.to_str().unwrap(), "--role", role])
+            .output()
+            .expect("run confer onboard")
+    };
+    // Before any clone: steer to the managed join.
+    let pre = onboard("backend");
+    assert!(ok(&pre));
+    assert!(
+        out(&pre).contains("--managed") && out(&pre).contains("clone"),
+        "onboard must steer a first join to `clone --managed`: {}",
+        out(&pre)
+    );
+
+    // Create the managed clone, then onboard again → must detect it and say re-arm, not re-clone.
+    let c = Command::new(BIN)
+        .env("HOME", &hub.home)
+        .env_remove("CONFER_HUB")
+        .env_remove("CONFER_ROLE")
+        .args(["clone", hub.bare.to_str().unwrap(), "--role", "backend", "--managed"])
+        .output()
+        .unwrap();
+    assert!(ok(&c), "clone --managed: {}", err(&c));
+
+    let post = onboard("backend");
+    assert!(ok(&post));
+    assert!(
+        out(&post).contains("already joined") && out(&post).contains(".confer/clones/"),
+        "onboard must detect the existing managed clone and point at re-arm: {}",
+        out(&post)
+    );
+    assert!(
+        !out(&post).contains("confer clone "),
+        "onboard must NOT tell an already-joined agent to clone again: {}",
+        out(&post)
+    );
+}
+
 /// design/32: the `/confer-watch` skill is role-AGNOSTIC (its commands resolve the caller's role
 /// from the hub clone it's run in), so two co-resident agents sharing one skills dir write
 /// IDENTICAL content — no last-writer-wins clobber that bakes one agent's role into a shared file
@@ -3506,7 +3605,7 @@ fn install_skill_is_generic_no_coresident_clobber() {
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
 /// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
 #[test]
-fn onboard_points_to_init_for_create_and_reconnect_for_join() {
+fn onboard_points_to_init_for_create_and_managed_clone_for_join() {
     let home = tmp("home");
     let create = Command::new(BIN)
         .env("HOME", &home)
@@ -3536,8 +3635,8 @@ fn onboard_points_to_init_for_create_and_reconnect_for_join() {
     assert!(ok(&join), "onboard (join) failed: {}", err(&join));
     let j = out(&join);
     assert!(
-        j.contains("confer reconnect --role docs --hub your-org/your-hub"),
-        "join path must point at the idempotent `reconnect` one-liner:\n{j}"
+        j.contains("confer clone your-org/your-hub --role docs --managed"),
+        "join path must point at the co-resident-safe `clone … --managed` one-liner:\n{j}"
     );
 }
 

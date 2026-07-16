@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Onboarding now steers to the co-resident-safe managed join — the trap behind the 0.6.4 clobber.**
+  The 0.6.4 refusal was a safety net; this removes what people tripped on. `reconnect --role R --hub
+  org/repo` derives the working-clone dir from the *hub* name, so two roles on one machine (a common
+  setup — many sessions/roles per box) landed on the SAME clone and the second re-roled the first.
+  The fix aligns onboarding with the managed-clone layout that's already collision-free:
+  - `confer clone <hub> --role R --managed` is now a **complete one-command join+arm** — it clones,
+    mints the key, joins, relocates into the per-role managed home (`~/.confer/clones/<hub>/<role>-<key>/`),
+    and now also **arms the reactive stack from the final path** (previously it stopped after the move
+    and made you `cd` + arm by hand).
+  - `confer onboard --hub …` leads a first join with `clone … --managed`, and is **situation-aware**:
+    if a managed clone for that hub+role already exists on this machine it points you at *re-arming*
+    it (`/confer-watch` from its dir) instead of cloning a second time — so re-running after a
+    compaction can't create a duplicate/colliding clone.
+  - The scaffolded hub README leads with the managed join and states the one-clone-one-role rule.
+
 ## 0.6.4
 
 - **`join`/`reconnect --role` refuse to silently re-role a clone already bound to another role.**
