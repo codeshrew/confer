@@ -314,12 +314,12 @@ pub fn added_message_files(root: &Path, since: Option<&str>) -> Result<Vec<PathB
             // Cursor is a real commit but diverged from HEAD (a force-push or
             // re-clone rewrote history) — reading `c..HEAD` would replay the whole
             // divergent history. Bound it to the merge-base tail instead, loudly.
-            eprintln!("confer: cursor {short} diverged from HEAD (force-push/re-clone?); re-reading from its merge-base");
+            crate::warn_safety(format!("cursor {short} diverged from HEAD (force-push/re-clone?); re-reading from its merge-base"));
             return Ok(collect(&format!("{base}..HEAD")).unwrap_or_default());
         }
         // Cursor is entirely unknown (GC'd / foreign sha) — replay full history,
         // but never SILENTLY: a firehose must be diagnosable (G1).
-        eprintln!("confer: cursor {short} is unknown (history reset/pruned); re-reading full store");
+        crate::warn_safety(format!("cursor {short} is unknown (history reset/pruned); re-reading full store"));
     }
     Ok(collect("HEAD").unwrap_or_default())
 }

@@ -2334,7 +2334,7 @@ fn cmd_poll(p: PollArgs) -> Result<()> {
     warn_if_watch_should_be_live(&root, &me);
     // Fetch the hub first — otherwise the whole non-Monitor fallback is blind (B2).
     if let Err(e) = gitcmd::integrate(&root) {
-        eprintln!("confer: hub sync failed ({e}); showing local state");
+        warn_safety(format!("hub sync failed ({e}); showing local state"));
     }
     let hub = config::hub_key(&root);
     let roster = roster::load(&root);
@@ -2512,7 +2512,7 @@ fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
     // Checking your mail must show FRESH mail — integrate first (like poll/status),
     // else the working-tree fold is stale and the inbox lies by omission.
     if let Err(e) = gitcmd::integrate(&root) {
-        eprintln!("confer: hub sync failed ({e}); showing local state");
+        warn_safety(format!("hub sync failed ({e}); showing local state"));
     }
     let hub = config::hub_key(&root);
     let roster = roster::load(&root);
@@ -2621,7 +2621,7 @@ fn cmd_requests(
         Ok(r) if !r.fetched => {
             eprintln!("confer: couldn't refresh from the hub — the board below may be stale")
         }
-        Err(e) => eprintln!("confer: hub sync failed ({e}); showing local state"),
+        Err(e) => warn_safety(format!("hub sync failed ({e}); showing local state")),
         _ => {}
     }
     let roster = roster::load(&root);
@@ -3675,7 +3675,7 @@ fn cmd_rename(name: String, role: Option<String>, force: bool) -> Result<()> {
                 allow_secret: false,
             };
             if let Err(e) = cmd_append(note) {
-                eprintln!("confer: renamed, but the peer broadcast failed ({e}) — peers still resolve you via `confer whois`.");
+                warn_safety(format!("renamed, but the peer broadcast failed ({e}) — peers still resolve you via `confer whois`."));
             }
         }
     }
