@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.8
+
+Diagnostics + update-lifecycle release: make confer's output consistently classifiable by an AI
+agent, and close the gaps in how agents learn about and adopt a new version.
+
+- **Consistent diagnostic conventions.** All diagnostics now go through one convention so an agent can
+  reliably tell a real problem from a tuning hint: `confer: ⚠ …` (SAFETY — action recommended) vs
+  `confer: · …` (advisory). This fixes a real hazard — `watch`'s genuine safety warnings (shallow
+  clone, hub-sync-failed, local-read-failed, presence-publish-failed) used to print with no glyph,
+  identical to INFO lines like "hub reachable again," so `grep ⚠` missed them. The `‼` glyph (trust
+  violation — do not proceed) is documented as the highest severity.
+- **`confer doctor` is now a real "is my setup OK" command.** Beyond git-identity/signing/transport,
+  it now checks the reactive layer (is a live watcher actually running for this role), clone health
+  (shallow → cursor breakage, nested-in-a-work-repo), and ends with a glyph legend.
+- **`confer update` tells you the follow-up steps.** After updating the binary (self-update or the
+  brew/cargo delegate), it now prints the two things agents forget: re-arm your watch so it runs the
+  new build, and re-sync your skills (they're baked from the binary and go stale).
+- **An opt-out "newer version available" watch notice.** Version drift was only surfaced at watch
+  startup, so a long-lived watcher never learned about a newer build that landed on the hub after it
+  started. `confer watch` now emits a one-shot, distinct `⟳ UPDATE …` wake when a newer confer is on
+  the hub — on by default, `--no-version-notice` to silence — kept separate from the peer-message
+  stream.
+
 ## 0.6.7
 
 Coordination-reliability release: fixes two ways an agent could silently miss messages, and hardens
