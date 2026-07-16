@@ -2112,10 +2112,10 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         let audience: Vec<&str> = to.iter().chain(a.cc.iter()).map(String::as_str).collect();
         for r in &refs {
             match inv.get(&r.repo) {
-                None => eprintln!(
-                    "confer: note — repo '{}' isn't registered; add repos/{}.md so peers know its role/access (confer repos).",
+                None => hint(format!(
+                    "repo '{}' isn't registered; add repos/{}.md so peers know its role/access (confer repos).",
                     r.repo, r.repo
-                ),
+                )),
                 Some(card) if !card.access.is_empty() => {
                     let to_all = audience.contains(&"all");
                     let blocked: Vec<&str> = audience
@@ -2129,10 +2129,10 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
                         } else {
                             blocked.join(", ")
                         };
-                        eprintln!(
-                            "confer: heads-up — repo '{}' isn't accessible to {who}; they can't follow this pointer. Consider inlining the key content (condensed) so the message is self-contained.",
+                        hint(format!(
+                            "repo '{}' isn't accessible to {who}; they can't follow this pointer. Consider inlining the key content (condensed) so the message is self-contained.",
                             r.repo
-                        );
+                        ));
                     }
                 }
                 _ => {}
@@ -5156,6 +5156,51 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
             println!("    confer reconnect --role <you> --hub <origin> --ssh-key <path>");
         }
     }
+
+    // Reactive layer: is a live watcher actually running for this role? (The incident this grew from:
+    // a backgrounded watch died and the agent silently missed mail — doctor should catch that.)
+    if let Ok(me) = config::resolve_role(None, &root) {
+        if !me.is_empty() {
+            let hub = config::hub_key(&root);
+            match watchlock::classify(&watchlock::inspect(&hub, &me, 90), BUILD_SHA) {
+                watchlock::WatchState::Healthy => {
+                    println!("✓ watch: a live watcher is running for '{me}' on this machine.")
+                }
+                watchlock::WatchState::Outdated => println!(
+                    "⚠ watch: your watcher for '{me}' is on an OLD build — re-arm: confer watch --role {me} --replace"
+                ),
+                watchlock::WatchState::OtherHost => {
+                    println!("· watch: '{me}' is watched on another machine (fine if intended).")
+                }
+                watchlock::WatchState::Stale | watchlock::WatchState::NotWatching => {
+                    println!("⚠ watch: NO live watcher for '{me}' — you are not being woken by peer messages.");
+                    println!(
+                        "  Re-arm under your Monitor tool (never background bash): run /confer-watch, or confer watch --role {me} --replace"
+                    );
+                }
+            }
+        }
+    }
+
+    // Clone health: shallow breaks merge-base cursors; nested-in-a-work-repo invites stray commits.
+    if gitcmd::output(&root, &["rev-parse", "--is-shallow-repository"])
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+    {
+        println!("⚠ clone: SHALLOW — merge-base cursors can break (events re-emit/skip). Run `git fetch --unshallow`.");
+    } else {
+        println!("✓ clone: not shallow.");
+    }
+    if is_nested_path(&root) {
+        println!(
+            "⚠ clone: NESTED inside another git repo — the outer repo may see it as stray files. Move it to a sibling / managed path (`confer clones`)."
+        );
+    }
+
+    // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
+    println!(
+        "\nlegend:  ✓ ok   ⚠ safety — action recommended   ‼ trust violation — do NOT proceed   · advisory — no action needed"
+    );
     Ok(())
 }
 

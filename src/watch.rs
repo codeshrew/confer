@@ -136,28 +136,28 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
     {
-        eprintln!(
-            "confer watch: this clone is SHALLOW — merge-base cursors can break (events re-emit \
-             or get skipped). Run `git fetch --unshallow` (confer clones blobless, not shallow)."
+        crate::warn_safety(
+            "this clone is SHALLOW — merge-base cursors can break (events re-emit or get skipped). \
+             Run `git fetch --unshallow` (confer clones blobless, not shallow).",
         );
     }
     if opts.poll_secs < 5 {
-        eprintln!(
-            "confer watch: poll={}s is aggressive on the hub; 10s+ is plenty (idle costs nothing).",
+        crate::hint(format!(
+            "watch poll={}s is aggressive on the hub; 10s+ is plenty (idle costs nothing).",
             opts.poll_secs
-        );
+        ));
     }
     if firehose {
-        eprintln!(
-            "confer watch: firehose mode — waking on ALL board traffic, not just your mail. \
-             Expect high volume; drop --all for addressed-only."
+        crate::hint(
+            "firehose mode — waking on ALL board traffic, not just your mail. Expect high volume; \
+             drop --all for addressed-only.",
         );
     }
     if opts.min_priority > 0 {
-        eprintln!(
-            "confer watch: waking only on {}+ priority; lower-priority items still land (see them via `poll`).",
+        crate::hint(format!(
+            "waking only on {}+ priority; lower-priority items still land (see them via `poll`).",
             if opts.min_priority >= 2 { "high" } else { "normal" }
-        );
+        ));
     }
     // Rolling wake-volume advisory (throttled): high sustained volume suggests
     // mis-tuning (too broad, too chatty). We can measure what we EMIT locally; the
@@ -202,7 +202,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
             Ok(_) => {}
             Err(e) => {
                 if synced {
-                    eprintln!("confer watch: hub sync failed ({e}); showing local state");
+                    crate::warn_safety(format!("hub sync failed ({e}); showing local state"));
                     synced = false;
                 }
             }
@@ -221,11 +221,11 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 let elapsed = started.elapsed().as_secs().max(1);
                 let per_hour = emitted_total.saturating_mul(3600) / elapsed;
                 if emitted_total >= 50 && per_hour >= 60 && last_vol_warn.elapsed().as_secs() >= 1800 {
-                    eprintln!(
-                        "confer watch: high wake volume (~{per_hour}/hr, {emitted_total} events). If \
-                         these aren't all yours to act on, narrow with --topic{}.",
+                    crate::hint(format!(
+                        "high wake volume (~{per_hour}/hr, {emitted_total} events). If these aren't \
+                         all yours to act on, narrow with --topic{}.",
                         if firehose { " or drop --all" } else { " or --min-priority high" }
-                    );
+                    ));
                     last_vol_warn = std::time::Instant::now();
                 }
             }
@@ -234,7 +234,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 // retry — never exit. The cursor didn't advance, so nothing is
                 // missed once I/O recovers.
                 if !io_degraded {
-                    eprintln!("confer watch: local read failed ({e}) — retrying with backoff (watch stays up)");
+                    crate::warn_safety(format!(
+                        "local read failed ({e}) — retrying with backoff (watch stays up)"
+                    ));
                     io_degraded = true;
                 }
                 wait = next_wait(wait, base, false);
@@ -293,7 +295,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 };
                 if let Err(e) = crate::presence::publish(&root, &p) {
                     if last_heartbeat.is_none() {
-                        eprintln!("confer watch: presence publish failed ({e}); peers will see you as stale");
+                        crate::warn_safety(format!(
+                            "presence publish failed ({e}); peers will see you as stale"
+                        ));
                     }
                 }
                 last_heartbeat = Some(std::time::Instant::now());
