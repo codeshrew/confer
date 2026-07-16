@@ -2304,11 +2304,9 @@ fn cmd_poll(p: PollArgs) -> Result<()> {
         if let Some(anchor) = gitcmd::cursor_anchor(&root) {
             cursor::save(&hub, &me, &anchor)?;
         }
-        // An unfiltered poll consumes the whole stream → advance the READ frontier
-        // too, so pulling your mail clears the unread nag (inbox.rs).
-        if let Some(latest) = inbox::latest_id(&msgs) {
-            let _ = inbox::advance(&hub, &me, &latest);
-        }
+        // NOTE: poll advances the DELIVERY cursor only — it does NOT mark directly-addressed mail
+        // read. Delivery ≠ read: a request stays in your inbox until you `show`/`ack` it, so a
+        // polling loop can't silently clear mail it merely streamed past (inbox.rs).
     }
     if p.hook && !new.is_empty() {
         std::process::exit(2);
@@ -2406,10 +2404,10 @@ fn cmd_show(id: String) -> Result<()> {
                     );
                 }
             }
-            // Reading a message's body IS consuming it — advance the read frontier
-            // so the unread-inbox nag clears (emit ≠ read; inbox.rs).
+            // Opening a message's body reads THAT message — mark only this id (not a high-water
+            // mark sweeping every older message read; inbox.rs). The deferred rest stay unread.
             if let Ok(me) = config::resolve_role(None, &root) {
-                let _ = inbox::advance(&config::hub_key(&root), &me, &m.front.id);
+                let _ = inbox::mark_read(&config::hub_key(&root), &me, &m.front.id);
             }
             Ok(())
         }
@@ -2443,39 +2441,46 @@ fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
     let roster = roster::load(&root);
     let grps = groups::load(&root);
     let msgs = store::all_messages(&root)?;
-    let fr = inbox::load(&hub, &me);
-    let unread = inbox::unread_for_me(&msgs, &me, &grps, fr.as_deref());
+    // Fold the contiguous already-read prefix of my direct-mail history into the floor — keeps the
+    // local read state small over time.
+    let _ = inbox::compact_and_save(&hub, &me, &inbox::direct_ids_for_me(&msgs, &me, &grps));
+    let st = inbox::load_state(&hub, &me);
+    let unread = inbox::unread_for_me(&msgs, &me, &grps, &st);
 
     if unread.is_empty() {
         println!("inbox clear — no unread mail addressed to {me}.");
         return Ok(());
     }
-    println!(
-        "── {} unread for {me}{} ──\n",
-        unread.len(),
-        if peek { " (peek)" } else { "" }
-    );
+    println!("── {} unread for {me} ──\n", unread.len());
     let mut vc = verify::Cache::default();
     for m in &unread {
         let t = verify::status(&root, &hub, &roster, &mut vc, m);
-        let who = roster::display(&roster, &m.front.from);
-        let body = schema::sanitize_term(&m.to_markdown()?, true);
-        println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub)));
-        println!();
+        if peek {
+            // Compact triage line — scan the list, then open the ones you want.
+            println!(
+                "  {} · from {} — {}",
+                short_id(&m.front.id),
+                schema::sanitize_term(roster::display(&roster, &m.front.from), false),
+                truncate(&m.summary_line(), 72)
+            );
+            let _ = t;
+        } else {
+            let who = roster::display(&roster, &m.front.from);
+            let body = schema::sanitize_term(&m.to_markdown()?, true);
+            println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub)));
+            println!();
+        }
     }
-    if peek {
-        println!("(peek — not marked read; run `confer inbox` or `confer ack` to clear)");
-    } else if let Some(latest) = unread.last().map(|m| m.front.id.clone()) {
-        // Consumed the lot → advance the frontier to the newest unread shown.
-        inbox::advance(&hub, &me, &latest)?;
-        println!("({} marked read)", unread.len());
-    }
-    let _ = roster; // reserved for future display niceties
+    // The inbox LISTS — it never marks mail read (that was the single-high-water-mark bug: opening
+    // one message read all the older deferred mail). You mark mail read explicitly, one at a time.
+    println!(
+        "(nothing marked read — `confer show <id>` opens one, `confer ack <id>` dismisses one, `confer ack` clears all)"
+    );
     Ok(())
 }
 
-/// Acknowledge mail as read without re-opening it: advance the read frontier to `id`
-/// (resolved) or to the latest message in the log, clearing the unread nag.
+/// Acknowledge mail as read without re-opening it. `ack <id>` dismisses just that one (the deferred
+/// rest stay unread); `ack` with no id catches up — marks EVERYTHING read.
 fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
@@ -2486,15 +2491,20 @@ fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
     }
     let hub = config::hub_key(&root);
     let msgs = store::all_messages(&root)?;
-    let target = match id {
-        Some(raw) => resolve_unique(&msgs, &raw)?.to_string(),
-        None => inbox::latest_id(&msgs).ok_or_else(|| anyhow!("no messages to ack"))?,
-    };
-    inbox::advance(&hub, &me, &target)?;
-    println!(
-        "acked — read frontier for {me} now at {}",
-        short_id(&target)
-    );
+    match id {
+        Some(raw) => {
+            let target = resolve_unique(&msgs, &raw)?.to_string();
+            inbox::mark_read(&hub, &me, &target)?;
+            println!("acked {} — marked read (others left unread).", short_id(&target));
+        }
+        None => match inbox::latest_id(&msgs) {
+            Some(latest) => {
+                inbox::mark_all_read(&hub, &me, &latest)?;
+                println!("acked all — inbox clear for {me}.");
+            }
+            None => println!("no messages to ack."),
+        },
+    }
     Ok(())
 }
 

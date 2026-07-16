@@ -2641,9 +2641,13 @@ fn e2e_inbox_direct_mail_unread_then_read_clears() {
         b.inbox_peek()
     );
     assert_eq!(b.unread_count(), 1);
-    // Reading it (non-peek) marks it read → inbox clears; a re-check stays clear.
+    // The inbox LISTS — it no longer auto-marks the whole batch read (that was the single-HWM bug).
+    // Listing leaves it unread so you can defer; re-checking still shows it.
     assert!(b.inbox().contains("did you see the fix?"));
-    assert_eq!(b.unread_count(), 0, "reading should clear the inbox");
+    assert_eq!(b.unread_count(), 1, "inbox lists; it must NOT auto-clear (defer model)");
+    // Dismiss it explicitly → inbox clears and stays clear.
+    assert!(ok(&b.confer(&["ack"])));
+    assert_eq!(b.unread_count(), 0, "ack clears the inbox");
 }
 
 #[test]
@@ -2746,50 +2750,37 @@ fn e2e_resolution_to_opener_survives_close() {
 }
 
 #[test]
-fn e2e_read_frontier_show_advances_highwater() {
-    // Documents the HWM semantic: reading the NEWEST unread clears older ones too
-    // (a high-water-mark, not a per-message set). A surprise worth pinning down.
+fn e2e_show_marks_only_that_message_older_deferred_mail_stays_unread() {
+    // The fix for the single-high-water-mark bug: opening the NEWEST message marks ONLY it read;
+    // the older mail you deferred stays in the inbox (per-message read-set, holes preserved).
     let hub = new_hub();
     let a = hub.clone("alpha");
     let b = hub.clone("beta");
-    a.send(&[
-        "--type",
-        "note",
-        "--to",
-        "beta",
-        "--summary",
-        "one",
-        "--text",
-        "b",
-    ]);
-    a.send(&[
-        "--type",
-        "note",
-        "--to",
-        "beta",
-        "--summary",
-        "two",
-        "--text",
-        "b",
-    ]);
-    let three = a.send(&[
-        "--type",
-        "note",
-        "--to",
-        "beta",
-        "--summary",
-        "three",
-        "--text",
-        "b",
-    ]);
+    a.send(&["--type", "note", "--to", "beta", "--summary", "one", "--text", "b"]);
+    a.send(&["--type", "note", "--to", "beta", "--summary", "two", "--text", "b"]);
+    let three = a.send(&["--type", "note", "--to", "beta", "--summary", "three", "--text", "b"]);
     b.pull();
     assert_eq!(b.unread_count(), 3);
-    // Show the NEWEST → frontier jumps to it → all three clear.
+    // Show the NEWEST → only it is marked read; the two older deferred messages remain unread.
     assert!(ok(&b.show(&three)));
     assert_eq!(
         b.unread_count(),
-        0,
-        "showing the newest clears older unread too (HWM)"
+        2,
+        "opening the newest must NOT clear older deferred mail (holes preserved)"
+    );
+    let peek = b.inbox_peek();
+    assert!(
+        peek.contains("one") && peek.contains("two"),
+        "the two older messages stay listed: {peek}"
+    );
+    assert!(!peek.contains("three"), "the opened message is gone: {peek}");
+    // Regression (red-team): a plain `inbox` runs compaction — which must GC only, never advance a
+    // floor over the deferred unread mail. The two older messages must survive it.
+    let _ = b.inbox();
+    assert_eq!(
+        b.unread_count(),
+        2,
+        "compaction on `inbox` must not sweep deferred unread mail"
     );
 }
 
@@ -2942,12 +2933,13 @@ fn e2e_filtered_poll_does_not_advance_read_frontier() {
         1,
         "a filtered poll must not mark mail read"
     );
-    // An unfiltered advancing poll DOES consume the stream → inbox clears.
+    // An unfiltered poll --advance advances the DELIVERY cursor but NOT the read state — direct mail
+    // stays unread until you explicitly `show`/`ack` it (delivery ≠ read; the defer model).
     let _ = b.confer(&["poll", "--role", "beta", "--advance"]);
     assert_eq!(
         b.unread_count(),
-        0,
-        "an unfiltered poll --advance clears the inbox"
+        1,
+        "poll --advance advances the stream cursor, not the read state — direct mail persists"
     );
 }
 
@@ -3036,25 +3028,19 @@ fn e2e_claim_race_across_clones_shows_contention() {
 }
 
 #[test]
-fn e2e_late_arriving_older_id_is_missed_by_the_nag() {
-    // Honest limitation: the read frontier is a ULID high-water-mark, so a
-    // message with an OLDER id that syncs in AFTER the frontier advanced is NOT
-    // re-surfaced by the inbox nag. Pins the caveat so a future change is deliberate.
+fn e2e_late_arriving_older_id_visible_after_specific_ack_swept_only_by_bulk_ack() {
+    // The per-id read-set fixes the old HWM caveat: acking a SPECIFIC message marks only that one, so
+    // a later-syncing OLDER-id message (the deferred-push case) is correctly still unread — it is no
+    // longer silently missed. Only a bulk `ack` (no id) — a deliberate "I've caught up to everything
+    // visible" — sets a floor that subsumes it, which remains an accepted, opt-in limitation.
     let hub = new_hub();
     let a = hub.clone("alpha");
     let b = hub.clone("beta");
     let newer = a.send(&[
-        "--type",
-        "note",
-        "--to",
-        "beta",
-        "--summary",
-        "newer",
-        "--text",
-        "b",
+        "--type", "note", "--to", "beta", "--summary", "newer", "--text", "b",
     ]);
     b.pull();
-    assert!(ok(&b.ack(Some(&newer))), "ack newer");
+    assert!(ok(&b.ack(Some(&newer))), "ack the specific newer message");
     assert_eq!(b.unread_count(), 0);
     // Hand-craft a smaller-ULID message and commit it as a late arrival.
     let older = "00000000000000000000000001";
@@ -3065,15 +3051,22 @@ fn e2e_late_arriving_older_id_is_missed_by_the_nag() {
     git(&a.dir, &["commit", "-q", "-m", "late older"]);
     git(&a.dir, &["push", "-q", "origin", "main"]);
     b.pull();
-    // It's in beta's log, but id < frontier → the nag stays silent (the caveat).
     assert!(
         b.dir.join("threads/general/older.md").exists(),
         "older msg synced into beta's tree"
     );
+    // FIXED: a specific ack didn't sweep a range, so the late older message is correctly unread.
+    assert_eq!(
+        b.unread_count(),
+        1,
+        "a late older-id message is visible after a SPECIFIC ack (no range sweep — the HWM bug is fixed)"
+    );
+    // A bulk catch-up (`ack` with no id) DOES set a floor — the one remaining, deliberate limitation.
+    assert!(ok(&b.ack(None)));
     assert_eq!(
         b.unread_count(),
         0,
-        "documented limitation: older-id late arrival isn't re-nagged"
+        "bulk ack (catch-up) marks everything visible read, including the late older one"
     );
 }
 
@@ -3451,11 +3444,12 @@ fn e2e_lifecycle_verb_accepts_optional_body() {
         "here is the full explanation",
     ]);
     assert!(ok(&d), "done --text must be accepted: {}", err(&d));
-    // The body reaches the opener (inbox integrates + shows the full message).
+    // The body reaches the opener (the full `inbox` view shows message bodies; `--peek` is a
+    // compact triage list).
     assert!(
-        a.inbox_peek().contains("here is the full explanation"),
+        a.inbox().contains("here is the full explanation"),
         "close body must reach opener: {}",
-        a.inbox_peek()
+        a.inbox()
     );
 }
 

@@ -219,8 +219,8 @@ pub fn run(opts: WatchOpts) -> Result<()> {
             if n_emitted > 0 || periodic {
                 if let Ok(all) = store::all_messages(&root) {
                     let grps = crate::groups::load(&root);
-                    let fr = crate::inbox::load(&hub, &me);
-                    let unread = crate::inbox::unread_for_me(&all, &me, &grps, fr.as_deref());
+                    let st = crate::inbox::load_state(&hub, &me);
+                    let unread = crate::inbox::unread_for_me(&all, &me, &grps, &st);
                     if unread.is_empty() {
                         last_inbox_key.clear(); // cleared — re-show if new mail arrives
                     } else {
