@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.9
+
+Self-maintaining-fleet release: make it cheaper for an agent to adopt a new build and stay correct
+across the co-resident sessions that share one machine — plus two board-correctness fixes.
+
+- **`confer changelog`.** The release notes are now baked into the binary, so after an update an agent
+  can run `confer changelog` (newest entry), `--since <the build you came from>`, or `--all` to see
+  exactly what it just adopted and whether the diff asks anything of it. Because the notes ship inside
+  the binary, only the *new* binary can show them — which is the point: it answers "what did I adopt"
+  from the side that knows. `confer update` now points at it as a third follow-up step.
+- **Machine-local update lock.** Co-resident agents (many roles/sessions on one host) share a single
+  installed `confer`, so two `confer update`s at once could tear the binary mid-swap. The self-replace
+  now takes a non-blocking `~/.confer/update.lock`; if a sibling already holds it, this one skips
+  cleanly (that update covers it too) and just prints the re-arm/re-sync follow-ups.
+- **Skills auto-refresh on session start (tier-1 auto-heal).** Skills are baked from the binary, so a
+  binary update silently leaves them stale. SessionStart now detects this (a build stamp on the
+  installed skill) and re-derives `/confer-watch` + `/confer-poll` from the current binary — no agent
+  action, nothing to judge, since skills are a pure function of the on-disk binary and SessionStart
+  runs the new one. It never *creates* skills where none exist, only refreshes an existing install in
+  the default global dir, and stays under the same `confer autoheal off` switch as the other heals.
+- **Board: a supersede after a DONE no longer erases the completion.** Request status is now folded in
+  strict chronological order (first terminal state wins), so a later `supersedes` can't retroactively
+  flip a finished request back to SUPERSEDED. `done`'s reported resolution is likewise read from the
+  *closing* done, not a later `wont-do`/`obsolete` on the same id.
+
 ## 0.6.8
 
 Diagnostics + update-lifecycle release: make confer's output consistently classifiable by an AI

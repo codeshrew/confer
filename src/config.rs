@@ -138,6 +138,25 @@ pub fn state_lock(lock_path: &Path) -> Option<std::fs::File> {
     }
 }
 
+/// A NON-BLOCKING exclusive flock over the machine-local `~/.confer/update.lock`. Co-resident agents
+/// (many roles/sessions on one host) share ONE installed `confer` binary, so a concurrent
+/// self-replace would have several processes swapping the same file at once. Unlike `state_lock`,
+/// this does NOT wait: if another agent already holds it, we return `None` so the caller skips
+/// cleanly ("someone else on this box is updating") instead of piling on. Dropping the returned
+/// handle releases the lock; a crashed holder's flock is released by the OS on exit.
+pub fn try_update_lock() -> Option<std::fs::File> {
+    use fs2::FileExt;
+    let path = home().ok()?.join(".confer").join("update.lock");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path).ok()?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Some(file),
+        Err(_) => None,
+    }
+}
+
 /// Machine-local "tip" signal dir — a same-machine `append` touches a file here
 /// so co-resident `watch`ers wake instantly (their `notify` watches this dir),
 /// bounding local latency by push+fetch instead of the poll interval. Purely

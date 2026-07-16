@@ -91,6 +91,11 @@ pub(crate) fn warn_if_watch_should_be_live(root: &std::path::Path, role: &str) {
 }
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CONFER_GIT_SHA"), ")");
 
+/// The changelog THIS build was compiled from — so `confer changelog` shows exactly what shipped in
+/// the binary you're running. A freshly-updated binary carries the new entries; the old one can't,
+/// which is why "show me what changed" only makes sense AFTER the update, from the new binary.
+const CHANGELOG_MD: &str = include_str!("../CHANGELOG.md");
+
 /// The repo confer's own source lives in — what `invite` tells a cold agent to
 /// install from. SSH default (matches our fleet); swap to the https form if you
 /// clone GitHub over HTTPS.
@@ -745,6 +750,18 @@ enum Cmd {
         #[arg(long)]
         pin: bool,
     },
+    /// Show the release notes baked into THIS binary — what shipped in the build you're running.
+    /// After `confer update` + a watch re-arm, run this to see what changed and whether the diff
+    /// asks anything of you (a new flag, a setup cleanup). Defaults to the newest entry; `--since
+    /// <version>` shows everything newer than a version you were on; `--all` dumps the whole log.
+    Changelog {
+        /// show every entry strictly newer than this version (e.g. the build you updated FROM)
+        #[arg(long, value_name = "VERSION")]
+        since: Option<String>,
+        /// show the entire changelog, not just the newest entry
+        #[arg(long)]
+        all: bool,
+    },
     /// Fleet version audit: every agent's published build (from presence) vs the hub pin
     /// and the requirement floor — the "are we all up to date / compatible" view.
     Fleet {
@@ -1099,6 +1116,7 @@ fn main() -> Result<()> {
         } => cmd_reconnect(role, hub, dir, host, ssh_key, force),
         Cmd::Onboard { role, hub } => cmd_onboard(role, hub),
         Cmd::Version { json, check, pin } => cmd_version(json, check, pin),
+        Cmd::Changelog { since, all } => cmd_changelog(since, all),
         Cmd::Fleet { json } => cmd_fleet(json),
         Cmd::Require { req, bump } => cmd_require(req, bump),
         Cmd::Read {
@@ -3058,6 +3076,10 @@ fn cmd_session_heal() -> Result<()> {
     if !autoheal::load().enabled {
         return Ok(()); // silent no-op when disabled
     }
+    // Tier-1 auto-heal: skills are derived from this (now-current) binary, so a binary update that
+    // left them stale is safe to fix here without asking — SessionStart runs the NEW binary. Silent
+    // unless it acted; then a single line tells the agent what got refreshed and why.
+    let skills_resynced = resync_skills_if_stale();
     // NB: prune is a MANUAL, human-verified step (`confer autoheal prune`) — never automatic —
     // so a transiently-absent hub can't silently drop a watcher. Here we merely SKIP a
     // missing-hub target (no nudge into a dead path) and surface the count for review.
@@ -3157,6 +3179,15 @@ fn cmd_session_heal() -> Result<()> {
     );
     if !roster_block.is_empty() {
         sections.push(roster_block);
+    }
+    if skills_resynced.is_some() {
+        sections.push(
+            "confer auto-refreshed your /confer-watch and /confer-poll skills to match a newly-updated \
+             binary (they're baked from it and had gone stale). No action needed — but if you'd re-armed \
+             your watch before this, the skill text you'll see now is the current one. Run `confer changelog` \
+             if you want to know what changed in this build."
+                .to_string(),
+        );
     }
     if !nudges.is_empty() {
         let lead = if source == "compact" {
@@ -4809,6 +4840,82 @@ fn which(cmd: &str) -> bool {
 /// cargo) has no receipt and is NEVER self-replaced — self-replacing a pm binary fights the
 /// package manager and gets silently clobbered on its next upgrade — so we delegate to it instead.
 /// Exit 0 on every branch: "defer to your package manager" is a valid outcome, not an error.
+/// Split the embedded CHANGELOG into `(version_heading, section_text)` pairs, newest first. Sections
+/// are delimited by `## <heading>` lines; anything before the first `##` (the `# Changelog` title) is
+/// dropped. The heading is kept verbatim (e.g. "0.6.8" or "Unreleased") for display + comparison.
+fn changelog_sections() -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut cur: Option<(String, String)> = None;
+    for line in CHANGELOG_MD.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            if let Some(prev) = cur.take() {
+                sections.push(prev);
+            }
+            cur = Some((h.trim().to_string(), format!("{line}\n")));
+        } else if let Some((_, body)) = cur.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(prev) = cur.take() {
+        sections.push(prev);
+    }
+    sections
+}
+
+/// Parse a leading `X.Y.Z` (ignoring any trailing text) into a comparable tuple. Non-numeric
+/// headings like "Unreleased" return None — the caller treats those as "always newer" so a
+/// pending, not-yet-versioned entry is never hidden by a `--since` filter.
+fn parse_semver_prefix(s: &str) -> Option<(u64, u64, u64)> {
+    let core = s.trim().split_whitespace().next()?;
+    let mut it = core.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    let patch = it.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+/// `confer changelog` — show the release notes compiled into this binary. Because the changelog is
+/// embedded at build time, a freshly-updated binary shows the new notes and an old one can't; that's
+/// the whole point — it answers "what did I just adopt" from the side that actually knows.
+fn cmd_changelog(since: Option<String>, all: bool) -> Result<()> {
+    let sections = changelog_sections();
+    if sections.is_empty() {
+        println!("(no changelog embedded in this build)");
+        return Ok(());
+    }
+    let selected: Vec<&(String, String)> = if all {
+        sections.iter().collect()
+    } else if let Some(since) = since.as_deref() {
+        // Everything strictly newer than `since`. A heading that doesn't parse as semver
+        // (e.g. "Unreleased") is treated as newer so it's never filtered out.
+        let floor = parse_semver_prefix(since);
+        sections
+            .iter()
+            .filter(|(v, _)| match (parse_semver_prefix(v), floor) {
+                (Some(vv), Some(f)) => vv > f,
+                _ => true,
+            })
+            .collect()
+    } else {
+        // Default: just the newest entry — the "what's new right now" view.
+        sections.iter().take(1).collect()
+    };
+    if selected.is_empty() {
+        let base = since.as_deref().unwrap_or("");
+        println!("confer {} — no changelog entries newer than {base}.", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    for (i, (_, body)) in selected.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print!("{}", body.trim_end());
+        println!();
+    }
+    Ok(())
+}
+
 fn cmd_update(check_only: bool) -> Result<()> {
     use axoupdater::AxoUpdater;
 
@@ -4839,6 +4946,18 @@ fn cmd_update(check_only: bool) -> Result<()> {
         }
         return Ok(());
     }
+    // Serialize the self-replace across co-resident agents: they share one installed binary, so two
+    // processes swapping it at once could tear the file. Non-blocking — if a sibling already holds
+    // the lock, that update covers this binary too, so we skip and just point at the follow-up steps.
+    let _guard = match config::try_update_lock() {
+        Some(g) => g,
+        None => {
+            println!("another confer on this machine is updating the shared binary — skipping.");
+            println!("once it finishes, pick up the new build:");
+            print_post_update_steps();
+            return Ok(());
+        }
+    };
     if updater.run_sync()?.is_some() {
         println!("confer updated to the latest release.");
         print_post_update_steps();
@@ -4856,6 +4975,7 @@ pub(crate) fn print_post_update_steps() {
     println!("\nnext — pick up the new build (both are needed):");
     println!("  1. re-arm your watch so it runs the new binary:  /confer-watch   (or `confer watch --replace`)");
     println!("  2. re-sync your skills from the new binary:       confer install-skill");
+    println!("  3. see what changed (may ask something of you):   confer changelog");
 }
 
 /// No dist receipt → a package manager owns this binary. Detect which from the running exe and
@@ -6395,6 +6515,47 @@ fn expand_local_hub(url: String) -> Result<String> {
     Ok(expanded.to_string_lossy().into_owned())
 }
 
+/// The confer skills, as `(dir-name, template)` — role-agnostic, so only `{CONFER}` (the machine's
+/// binary path) is baked. Shared by the explicit installer and the tier-1 auto-resync so the two can
+/// never drift in which skills or templates they write.
+const CONFER_SKILLS: [(&str, &str); 2] =
+    [("confer-watch", WATCH_SKILL), ("confer-poll", CHECK_BLACKBOARD_SKILL)];
+
+/// Tier-1 auto-heal: if confer skills are already installed in the default global dir but were baked
+/// from a DIFFERENT build than this binary, silently re-derive them. This is safe to do without
+/// asking — skills are a pure function of the on-disk binary (fixed templates + the binary's own
+/// path), and SessionStart runs the NEW binary — so it closes the "updated the binary but forgot to
+/// re-sync the skills" gap with zero agent action and nothing to judge. Returns the build it synced
+/// to when it acted (for a one-line note), None when nothing was stale. It NEVER creates skills where
+/// none exist — a fresh install is an explicit `install-skill` choice, not something to auto-heal —
+/// and only touches the DEFAULT global dir (a `--dir` install is the agent's own placement to manage).
+fn resync_skills_if_stale() -> Option<String> {
+    let dir = config::home().ok()?.join(".claude").join("skills");
+    let marker = dir.join("confer-watch").join(".confer-build");
+    // Present = installed here. Absent = not installed → not ours to create.
+    if !dir.join("confer-watch").join("SKILL.md").is_file() {
+        return None;
+    }
+    if std::fs::read_to_string(&marker).unwrap_or_default().trim() == BUILD_SHA {
+        return None; // already current — the common case, a cheap stat+read
+    }
+    let bin = std::env::current_exe().ok()?.to_string_lossy().to_string();
+    for (name, tmpl) in CONFER_SKILLS {
+        let filled = tmpl.replace("{CONFER}", &bin);
+        // Defensive: these templates are role-agnostic by design (design/32). If a future one ever
+        // baked {ROLE}/{HUB}, a role-blind resync would write a broken skill — so bail rather than
+        // corrupt a working install; the explicit `install-skill` (which knows role+hub) still fixes it.
+        if filled.contains("{ROLE}") || filled.contains("{HUB}") {
+            return None;
+        }
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).ok()?;
+        std::fs::write(d.join("SKILL.md"), filled).ok()?;
+    }
+    let _ = std::fs::write(&marker, BUILD_SHA);
+    Some(BUILD_SHA.to_string())
+}
+
 fn cmd_install_skill(
     dir: Option<String>,
     hub: Option<String>,
@@ -6428,14 +6589,14 @@ fn cmd_install_skill(
     // (commands resolve the caller's role from the hub clone they're run in), so co-resident agents
     // no longer clobber each other by baking their own role into a shared `confer-watch/SKILL.md`
     // (design/32). Only {CONFER} (the machine's binary path, shared by co-resident agents) is baked.
-    for (name, tmpl) in [
-        ("confer-watch", WATCH_SKILL),
-        ("confer-poll", CHECK_BLACKBOARD_SKILL),
-    ] {
+    for (name, tmpl) in CONFER_SKILLS {
         let d = dir.join(name);
         std::fs::create_dir_all(&d)?;
         std::fs::write(d.join("SKILL.md"), fill(tmpl))?;
     }
+    // Stamp the build these skills were baked from so the SessionStart tier-1 auto-heal can tell,
+    // cheaply, when a later binary update has left them stale and silently re-derive them.
+    let _ = std::fs::write(dir.join("confer-watch").join(".confer-build"), BUILD_SHA);
     println!(
         "wrote {}/{{confer-watch,confer-poll}}/SKILL.md",
         dir.display()
@@ -6481,6 +6642,40 @@ fn cmd_install_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changelog_parses_into_newest_first_sections() {
+        let sections = changelog_sections();
+        assert!(!sections.is_empty(), "the embedded CHANGELOG should parse into sections");
+        // Newest-first: the top heading sorts >= every other numeric heading below it.
+        let top = parse_semver_prefix(&sections[0].0);
+        if let Some(top) = top {
+            for (v, _) in &sections[1..] {
+                if let Some(vv) = parse_semver_prefix(v) {
+                    assert!(top >= vv, "sections must be newest-first ({top:?} vs {vv:?})");
+                }
+            }
+        }
+        // Each section body starts with its own `## ` heading and nothing leaks from the file title.
+        for (heading, body) in &sections {
+            assert!(body.starts_with("## "), "section body must start with its heading");
+            assert!(!body.contains("# Changelog\n"), "the file title must not leak into a section");
+            assert!(!heading.is_empty());
+        }
+    }
+
+    #[test]
+    fn semver_prefix_orders_versions_and_ignores_non_numeric() {
+        assert!(parse_semver_prefix("0.6.8") > parse_semver_prefix("0.6.7"));
+        assert!(parse_semver_prefix("0.7.0") > parse_semver_prefix("0.6.99"));
+        assert!(parse_semver_prefix("1.0.0") > parse_semver_prefix("0.99.99"));
+        // trailing text after the version core is ignored
+        assert_eq!(parse_semver_prefix("0.6.8 (abc123)"), Some((0, 6, 8)));
+        // a two-component version fills patch with 0
+        assert_eq!(parse_semver_prefix("0.6"), Some((0, 6, 0)));
+        // non-numeric headings (e.g. "Unreleased") don't parse — the filter treats them as newer
+        assert_eq!(parse_semver_prefix("Unreleased"), None);
+    }
 
     #[test]
     fn slug_rules() {
