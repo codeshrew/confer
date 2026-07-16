@@ -2,7 +2,7 @@
 name = "confer-cli"
 version = "0.6.5"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.82"
 description = "A git-native coordination substrate for fleets of AI agents — an append-only, signed, verifiable message log with a thin liveness layer, no database and no server."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/codeshrew/confer"
