@@ -858,7 +858,12 @@ fn render_targets(roster: &roster::Roster, targets: &[String]) -> String {
     if targets.is_empty() {
         return String::new();
     }
-    let names: Vec<&str> = targets.iter().map(|t| roster::display(roster, t)).collect();
+    // Sanitize peer-authored display names before they reach the terminal — a hostile card's
+    // `display` could otherwise inject ANSI to spoof/hide a message's addressee line (red-team).
+    let names: Vec<String> = targets
+        .iter()
+        .map(|t| schema::sanitize_term(roster::display(roster, t), false))
+        .collect();
     format!(" → {}", names.join(", "))
 }
 
@@ -1200,12 +1205,70 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
 /// exactly like the read side (`roster::parse_role`) — never a raw line-scan, so the write-side
 /// 1:1 check can't diverge from what verification actually reads (a `pubkey:` in the body, a
 /// `pubkey : x` with a space, or a missing fence would otherwise disagree — red-team).
-fn card_pubkey(card_text: &str) -> Option<String> {
-    let (map, _body) = parse_card(card_text);
-    map.get("pubkey")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// Read a card frontmatter map's published `pubkey`, FAILING CLOSED on a present-but-unusable value.
+/// Ok(None) ONLY when the field is genuinely absent. A present `pubkey` that isn't a non-empty
+/// string — `null`, a list, a number, `""` — is a tamper/degenerate signal and returns Err, NEVER
+/// "no key". Treating a non-string pubkey as "no key" is a type-confusion bypass of the write-side
+/// 1:1 guard: a hub writer sets `pubkey: null`, the guard reads "keyless", and the role is re-keyed
+/// (silent identity hijack — red-team). Both the join guard and `ensure_card_pubkey` go through here
+/// so they can't disagree on what "already published" means.
+/// The write-side view of a card's published key — delegates to `roster::classify_pubkey`, the
+/// SINGLE shared classifier the read/pin side uses too, so the guard can't diverge from what gets
+/// pinned. Absent/null/"" → None (a legit placeholder — the re-key path still gates filling it via
+/// the git-history "ever keyed?" check). A present non-string value → hard refusal (type-confusion
+/// bypass — red-team).
+fn published_pubkey(map: &serde_yaml::Mapping) -> Result<Option<String>> {
+    roster::classify_pubkey(map).map_err(|kind| {
+        anyhow!(
+            "role card's `pubkey` is present but is a {kind} where a key string was expected — \
+             refusing to treat that as 'no key published' (a role-id's identity IS its key; this \
+             shape can't be verified — possible tampering). Inspect the roles/*.md card."
+        )
+    })
+}
+
+/// Did this role EVER publish a real `pubkey: ssh-…` line in the hub's history? One git call over a
+/// tiny file. Used to gate re-keying a card that currently shows NO key: a fresh, never-keyed role
+/// may publish its first key, but a role whose key was nulled/emptied (tamper) must NOT be re-keyed
+/// through that placeholder — "once keyed, never re-keyed." (Absolute prevention is impossible when
+/// the attacker fully controls the hub — that's what read-side TOFU + out-of-band confirm are for —
+/// but this raises the bar from "one edited line" to "rewrite + force-push the whole hub history".)
+fn role_ever_published_a_key(root: &std::path::Path, role: &str) -> Result<bool> {
+    if !valid_slug(role) {
+        return Ok(false);
+    }
+    let path = format!("roles/{role}.md");
+    // Enumerate every commit that touched this card, then PARSE each historical blob through the
+    // SAME `parse_card`/`published_pubkey` the current-state check uses — never a diff-text grep.
+    // A line-oriented grep for `+pubkey:...ssh-` is defeated by any non-literal representation a
+    // YAML parser still resolves to a real key: an anchor/alias (`pubkey: *realkey`), a folded/
+    // continued scalar, rename-detection collapsing the diff, etc. (red-team). Reusing the parser
+    // per revision closes that text/semantics divergence by construction.
+    let log = gitcmd::output(root, &["log", "--format=%H", "--", &path])?;
+    if !log.status.success() {
+        return Ok(false);
+    }
+    let shas = String::from_utf8_lossy(&log.stdout);
+    for sha in shas.lines().map(str::trim).filter(|s| !s.is_empty()) {
+        let blob = gitcmd::output(root, &["show", &format!("{sha}:{path}")])?;
+        if !blob.status.success() {
+            continue; // the card didn't exist at this revision
+        }
+        let txt = String::from_utf8_lossy(&blob.stdout);
+        match parse_card(&txt).and_then(|(m, _)| published_pubkey(&m)) {
+            Ok(Some(_)) => return Ok(true),
+            // A historical revision that is itself unparsable or type-confused is suspicious — treat
+            // it as "had a key" (fail closed), never as a reason to allow a re-key.
+            Err(_) => return Ok(true),
+            Ok(None) => {}
+        }
+    }
+    Ok(false)
+}
+
+fn card_pubkey(card_text: &str) -> Result<Option<String>> {
+    let (map, _body) = parse_card(card_text)?;
+    published_pubkey(&map)
 }
 
 /// Compare two ssh pubkeys by algorithm + key material only (ignore the trailing comment) —
@@ -1227,23 +1290,34 @@ fn pubkey_material_eq(a: &str, b: &str) -> bool {
 /// then vanishes fleet-wide — red-team). Returns true if it changed.
 fn ensure_card_pubkey(root: &std::path::Path, role: &str, pubkey: &str) -> Result<bool> {
     let path = root.join("roles").join(format!("{role}.md"));
-    let (mut map, body) = parse_card(&std::fs::read_to_string(&path)?);
+    // `?` here is load-bearing: a card whose frontmatter won't parse must ABORT the write, never
+    // fall through to `map.get("pubkey") == None` and insert this key over a corrupt card.
+    let (mut map, body) = parse_card(&std::fs::read_to_string(&path)?)?;
     // Write-side 1:1: a role-id may never publish a SECOND, different key. Same key
     // re-joining is a harmless no-op; a different key is refused (the read-side MISMATCH is the
     // suspenders — the hub is not server-validated, so this is a source-side UX guard, not a
     // boundary).
-    if let Some(existing) = map
-        .get("pubkey")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        return if pubkey_material_eq(existing, pubkey) {
+    // Same fail-closed classifier the join guard uses: a present-but-non-string `pubkey` (null, a
+    // list, "") is refused here rather than read as "no key" and overwritten — that type confusion
+    // was the residual identity-hijack the first cut missed (red-team).
+    if let Some(existing) = published_pubkey(&map)? {
+        return if pubkey_material_eq(&existing, pubkey) {
             Ok(false)
         } else {
             Err(anyhow!(
                 "role '{role}' already publishes a DIFFERENT signing key — the identity IS the key, so a role-id cannot be re-keyed. For a new agent use your OWN role-id; to drive THIS identity, join with its existing key."
             ))
         };
+    }
+    // The card shows no key. Only a role that has NEVER published one may key itself here — else this
+    // is a re-key through a nulled/emptied card (the type-confusion hijack: attacker overwrites
+    // `pubkey:` to null so the guard reads "keyless", then this would fill their key).
+    if role_ever_published_a_key(root, role)? {
+        return Err(anyhow!(
+            "role '{role}' has published a signing key before, but its card now shows none — refusing \
+             to re-key it. Its card may have been tampered (its `pubkey` nulled/removed); recover the \
+             card from git history rather than re-keying. The identity IS the key."
+        ));
     }
     map.insert("pubkey".into(), pubkey.into());
     let yaml = serde_yaml::to_string(&map)?;
@@ -1356,7 +1430,11 @@ fn cmd_join(
         let my_pub = read_pubkey(std::path::Path::new(kp))?;
         let card_path = root.join("roles").join(format!("{role}.md"));
         if let Ok(txt) = std::fs::read_to_string(&card_path) {
-            if let Some(existing) = card_pubkey(&txt) {
+            // card_pubkey now FAILS CLOSED (`?`): a corrupt card can no longer read as "no key
+            // published" and slip past this guard — that was the identity-hijack (a hub writer
+            // commits one malformed line, then re-keys the role). A card in an unknown state aborts
+            // the join rather than letting a re-key through.
+            if let Some(existing) = card_pubkey(&txt)? {
                 if !pubkey_material_eq(&existing, &my_pub) {
                     return Err(anyhow!(
                         "role '{role}' already publishes a DIFFERENT signing key — the identity IS the key, so a role-id cannot be re-keyed. Use your OWN role-id for a new agent, or join with this identity's existing key."
@@ -1509,7 +1587,7 @@ fn cmd_join(
     let _ = tiers::set_default(&config::hub_key(&root), tiers::Tier::Foreign);
     println!(
         "joined as {} [{role}] (session {session})",
-        roster::display(&roster, &role)
+        schema::sanitize_term(roster::display(&roster, &role), false)
     );
 
     // Register the role on the hub so peers see it — roles are shared as
@@ -2518,7 +2596,7 @@ fn cmd_requests(
                 if row.stale { "⚠ " } else { "  " },
                 fmt_age(row.age_secs),
                 short_id(&row.id),
-                roster::display(&roster, &row.from),
+                schema::sanitize_term(roster::display(&roster, &row.from), false),
                 render_targets(&roster, &row.to),
                 truncate(&row.summary, 66),
             );
@@ -2943,11 +3021,21 @@ fn cmd_session_heal() -> Result<()> {
     for hub in hubs {
         let ros = roster::load(std::path::Path::new(hub));
         for (id, role) in ros.iter() {
-            let disp = roster::display(&ros, id);
+            // These fields come from peer-authored role cards and are folded into the SessionStart
+            // `additionalContext` (the model's own context), so a hostile card's display/alias could
+            // otherwise inject terminal-control/ANSI sequences straight into it. Sanitize both (the
+            // `id` is valid_slug-gated). The surrounding "never trust a cached name" framing marks
+            // these as untrusted peer data. (Red-team HIGH.)
+            let disp = schema::sanitize_term(roster::display(&ros, id), false);
             let line = if role.aliases.is_empty() {
                 format!("{id} = {disp}")
             } else {
-                format!("{id} = {disp} (aka {})", role.aliases.join(", "))
+                let aliases: Vec<String> = role
+                    .aliases
+                    .iter()
+                    .map(|a| schema::sanitize_term(a, false))
+                    .collect();
+                format!("{id} = {disp} (aka {})", aliases.join(", "))
             };
             rows.entry(id.clone()).or_insert(line);
         }
@@ -3239,7 +3327,9 @@ fn cmd_who() -> Result<()> {
             .map(|h| format!(" (expected on {})", schema::sanitize_term(h, false)))
             .unwrap_or_default();
         let seen = match (&a.last_ts, &a.last_host) {
-            (Some(t), Some(host)) => format!("last posted {t} on {host}"),
+            (Some(t), Some(host)) => {
+                format!("last posted {t} on {}", schema::sanitize_term(host, false))
+            }
             (Some(t), None) => format!("last posted {t}"),
             _ => "no messages".to_string(),
         };
@@ -3396,11 +3486,24 @@ fn cmd_whois(phrase: String) -> Result<()> {
     Ok(())
 }
 
-/// Parse a role card into (frontmatter mapping, freeform body).
-fn parse_card(raw: &str) -> (serde_yaml::Mapping, String) {
+/// Parse a role card into (frontmatter mapping, freeform body). FAILS CLOSED: if a `---`-fenced
+/// frontmatter block is present but does NOT parse as YAML, return Err instead of silently
+/// degrading to an empty map. Every caller here is a key/metadata WRITE path, and a corrupt card
+/// that reads as "empty" would be a security hole: (a) it bypasses the write-side 1:1 key guard,
+/// letting a hub writer re-key a role by first committing ONE malformed frontmatter line — a silent
+/// identity hijack (red-team CRITICAL); and (b) it lets a self-mutation (`describe`/`rename`/
+/// `set-status`) overwrite the card, destroying display/host/aliases/status with no signal. A card
+/// with NO frontmatter fence, or an empty fence, is legitimately empty and returns Ok. (The lenient
+/// READ path is `roster::parse_role`, which skip-and-warns; it deliberately does NOT share this.)
+fn parse_card(raw: &str) -> Result<(serde_yaml::Mapping, String)> {
+    // Strip a leading UTF-8 BOM before the fence-sniff. A BOM (common from Windows/Notepad/PowerShell
+    // editors — cards are explicitly hand-editable) would otherwise make the first line `\u{FEFF}---`
+    // fail the `== "---"` check, so a KEYED card would be misread as "no frontmatter" (Ok, empty map)
+    // and slip past the re-key guard as key-less (red-team). Keep this identical to roster::parse_role.
+    let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
     let mut lines = raw.lines();
     if lines.next().map(str::trim_end) != Some("---") {
-        return (serde_yaml::Mapping::new(), raw.to_string());
+        return Ok((serde_yaml::Mapping::new(), raw.to_string()));
     }
     let (mut yaml, mut body, mut in_body) = (String::new(), String::new(), false);
     for line in lines {
@@ -3408,16 +3511,22 @@ fn parse_card(raw: &str) -> (serde_yaml::Mapping, String) {
             in_body = true;
             continue;
         }
-        let (buf, nl) = if in_body {
-            (&mut body, "\n")
-        } else {
-            (&mut yaml, "\n")
-        };
+        let buf = if in_body { &mut body } else { &mut yaml };
         buf.push_str(line);
-        buf.push_str(nl);
+        buf.push('\n');
     }
-    let map = serde_yaml::from_str::<serde_yaml::Mapping>(&yaml).unwrap_or_default();
-    (map, body.trim_matches('\n').to_string())
+    let map = if yaml.trim().is_empty() {
+        serde_yaml::Mapping::new()
+    } else {
+        serde_yaml::from_str::<serde_yaml::Mapping>(&yaml).map_err(|e| {
+            anyhow!(
+                "role card frontmatter is not valid YAML ({e}) — refusing to read or modify a card \
+                 in an unknown state (possible tampering, or a hand-edit that broke it). Inspect \
+                 the roles/*.md card and fix or revert its frontmatter."
+            )
+        })?
+    };
+    Ok((map, body.trim_matches('\n').to_string()))
 }
 
 /// Update your own role card: description + aliases, with collision-checked adds.
@@ -3435,7 +3544,7 @@ fn cmd_rename(name: String, role: Option<String>, force: bool) -> Result<()> {
         match config::repo_root().and_then(|r| Ok((config::resolve_role(role.clone(), &r)?, r))) {
             Ok((me, root)) => (
                 Some(me.clone()),
-                roster::display(&roster::load(&root), &me).to_string(),
+                schema::sanitize_term(roster::display(&roster::load(&root), &me), false),
             ),
             Err(_) => (None, String::new()),
         };
@@ -3510,9 +3619,8 @@ fn cmd_describe(
         let r = roster.get(&me);
         println!(
             "{me}: {} — {}",
-            roster::display(&roster, &me),
-            r.and_then(|r| r.desc.as_deref())
-                .unwrap_or("(no description)")
+            schema::sanitize_term(roster::display(&roster, &me), false),
+            &schema::sanitize_term(r.and_then(|r| r.desc.as_deref()).unwrap_or("(no description)"), false)
         );
         let al = r.map(|r| r.aliases.clone()).unwrap_or_default();
         println!(
@@ -3526,7 +3634,9 @@ fn cmd_describe(
         return Ok(());
     }
 
-    let (mut map, body) = parse_card(&std::fs::read_to_string(&card_path)?);
+    // Fail closed (`?`): refuse to mutate a card whose frontmatter won't parse, rather than
+    // read it as empty and overwrite it — which would silently destroy display/host/aliases/status.
+    let (mut map, body) = parse_card(&std::fs::read_to_string(&card_path)?)?;
     let mut changed = false;
     // Rename: set the display peers see. Guarded against homoglyph impersonation and,
     // unless --force, against colliding with another role's name.
@@ -3656,7 +3766,8 @@ fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
         ));
     }
     let _ = gitcmd::integrate(&root); // freshen the card first, so we edit HEAD's version (avoids a stale-card clobber/stuck-defer)
-    let (mut map, body) = parse_card(&std::fs::read_to_string(&card_path)?);
+    // Fail closed (`?`): don't overwrite a card whose frontmatter won't parse.
+    let (mut map, body) = parse_card(&std::fs::read_to_string(&card_path)?)?;
     let current = map
         .get("status")
         .and_then(|v| v.as_str())
@@ -4891,7 +5002,9 @@ fn cmd_verify(id: String) -> Result<()> {
         .find(|m| m.front.id == target)
         .expect("resolved id is present");
     let role = m.front.from.clone();
-    let who = roster::display(&roster, &role).to_string();
+    // Sanitize the peer-authored display before echoing — otherwise a hostile card's `display` could
+    // inject ANSI to hide/rewrite the very trust-verdict line `verify` exists to show (red-team).
+    let who = schema::sanitize_term(roster::display(&roster, &role), false);
     let short = short_id(&m.front.id).to_string();
 
     let mut cache = verify::Cache::default();
@@ -5074,7 +5187,7 @@ fn cmd_seen(id: String) -> Result<()> {
     println!(
         "{} {short} — from {} [{sender}]  «{}»",
         m.front.msg_type.to_uppercase(),
-        roster::display(&roster, &sender),
+        schema::sanitize_term(roster::display(&roster, &sender), false),
         truncate(&m.summary_line(), 60)
     );
     if audience.is_empty() {
@@ -5097,7 +5210,7 @@ fn cmd_seen(id: String) -> Result<()> {
     let (mut seen, mut pending, mut no_hb): (Vec<String>, Vec<String>, Vec<String>) =
         (Vec::new(), Vec::new(), Vec::new());
     for r in &audience {
-        let disp = roster::display(&roster, r).to_string();
+        let disp = schema::sanitize_term(roster::display(&roster, r), false);
         match pres.get(r) {
             Some(p) => {
                 let hb = p.last_seen.get(11..16).unwrap_or(&p.last_seen);
@@ -5448,7 +5561,11 @@ fn cmd_fleet(json: bool) -> Result<()> {
         } else {
             ""
         };
-        println!("  {g} {:<16} {:<12} {bl}{flag}{cflag}", r.role, r.host);
+        println!(
+            "  {g} {:<16} {:<12} {bl}{flag}{cflag}",
+            r.role,
+            schema::sanitize_term(&r.host, false)
+        );
     }
 
     // Summary — the up-to-date verdict, computed from live agents. We lead with build
@@ -6336,6 +6453,59 @@ mod tests {
         assert_eq!(local.ssh, None);
         assert_eq!(local.https, None);
         assert_eq!(local.raw, "/srv/hubs/team-hub.git");
+    }
+
+    #[test]
+    fn parse_card_fails_closed_on_unparsable_frontmatter() {
+        // A well-formed card parses.
+        let (m, body) = parse_card("---\ndisplay: alice\npubkey: ssh-ed25519 AAA\n---\nhello").unwrap();
+        assert_eq!(m.get("display").and_then(|v| v.as_str()), Some("alice"));
+        assert_eq!(body, "hello");
+        // No frontmatter fence → legitimately empty, Ok.
+        let (m, _) = parse_card("just a body, no fence").unwrap();
+        assert!(m.is_empty());
+        // Empty fence → empty, Ok.
+        let (m, _) = parse_card("---\n---\n").unwrap();
+        assert!(m.is_empty());
+        // CRITICAL: a duplicate key (or any unparsable frontmatter) must ERR, never degrade to an
+        // empty map — that was the identity-hijack bypass of the write-side 1:1 key guard.
+        assert!(
+            parse_card("---\ndisplay: a\ndisplay: b\n---\n").is_err(),
+            "duplicate frontmatter key must fail closed, not read as empty"
+        );
+        assert!(
+            parse_card("---\n: : : not yaml\n---\n").is_err(),
+            "malformed frontmatter must fail closed"
+        );
+        // A leading UTF-8 BOM must NOT hide the frontmatter (that misread a keyed card as key-less —
+        // red-team): a BOM'd card parses its frontmatter normally.
+        let (m, _) = parse_card("\u{FEFF}---\npubkey: ssh-ed25519 AAA\ndisplay: v\n---\n").unwrap();
+        assert_eq!(
+            m.get("pubkey").and_then(|v| v.as_str()),
+            Some("ssh-ed25519 AAA"),
+            "a BOM before --- must not hide the pubkey"
+        );
+    }
+
+    #[test]
+    fn published_pubkey_classifies_and_fails_closed_on_type_confusion() {
+        let pk = |yaml: &str| {
+            let m: serde_yaml::Mapping = serde_yaml::from_str(yaml).unwrap();
+            published_pubkey(&m)
+        };
+        // A real key string reads as published.
+        assert_eq!(
+            pk("pubkey: ssh-ed25519 AAAA").unwrap(),
+            Some("ssh-ed25519 AAAA".to_string())
+        );
+        // Absent / null / empty-string are legit "no key here" placeholders (Ok(None)).
+        assert_eq!(pk("display: x").unwrap(), None);
+        assert_eq!(pk("pubkey: null").unwrap(), None);
+        assert_eq!(pk("pubkey: \"\"").unwrap(), None);
+        // Non-string, non-null types are never legit → fail closed (the type-confusion bypass).
+        assert!(pk("pubkey: [a, b]").is_err(), "list pubkey must fail closed");
+        assert!(pk("pubkey: 123").is_err(), "number pubkey must fail closed");
+        assert!(pk("pubkey: true").is_err(), "bool pubkey must fail closed");
     }
 
     #[test]

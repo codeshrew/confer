@@ -31,6 +31,10 @@ pub fn frame(body: &str, who: &str, role: &str, trust: &Trust, tier: Option<Tier
 
 /// `frame` with an explicit nonce — split out so tests are deterministic.
 fn frame_with(n: &str, body: &str, who: &str, role: &str, trust: &Trust, tier: Option<Tier>, note: Option<&str>) -> String {
+    // `who` is a peer-authored display name; strip terminal-control/ANSI so a hostile card can't
+    // inject escapes into the provenance header — the very frame that's meant to be unspoofable
+    // (red-team: raw ESC bytes were landing inside the header). `role` is valid_slug-gated.
+    let who = crate::schema::sanitize_term(who, false);
     let tier_s = match tier {
         Some(t) => format!(" · tier={} ({})", t.as_str(), t.caution()),
         None => String::new(),

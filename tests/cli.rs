@@ -1401,6 +1401,202 @@ fn join_refuses_a_second_different_key_for_an_existing_role() {
 }
 
 #[test]
+fn join_refuses_to_rekey_through_a_corrupted_card() {
+    // Red-team CRITICAL (reproduced): a hub writer who commits ONE malformed frontmatter line into
+    // a victim's card made `parse_card` read it as "no key published", bypassing the write-side 1:1
+    // guard, and could then re-key the role with their OWN key — a silent identity hijack. parse_card
+    // now FAILS CLOSED, so the re-key is refused and the victim's published key is left untouched.
+    let hub = new_hub();
+    let kd = tmp("key");
+    let vk = kd.join("victim");
+    let ak = kd.join("attacker");
+    for k in [&vk, &ak] {
+        Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f", k.to_str().unwrap(), "-N", "", "-C", "x", "-q"])
+            .status()
+            .unwrap();
+    }
+    // Victim legitimately publishes its real key.
+    let v = hub.clone("victim");
+    assert!(ok(&v.confer(&[
+        "join", "--role", "victim", "--signing-key", vk.to_str().unwrap()
+    ])));
+    let before = hub.clone("reader");
+    let before_txt =
+        std::fs::read_to_string(before.dir.join("roles").join("victim.md")).unwrap();
+    let victim_key_line = before_txt
+        .lines()
+        .find(|l| l.starts_with("pubkey:"))
+        .expect("victim published a pubkey")
+        .to_string();
+
+    // Attacker (an ordinary hub writer) corrupts the card with a duplicate frontmatter key.
+    let atk = hub.clone("attacker");
+    let card = atk.dir.join("roles").join("victim.md");
+    let raw = std::fs::read_to_string(&card).unwrap();
+    let corrupted = raw.replacen("---\n", "---\ndisplay: dup-one\ndisplay: dup-two\n", 1);
+    std::fs::write(&card, corrupted).unwrap();
+    git(&atk.dir, &["commit", "-qam", "corrupt victim card"]);
+    assert!(git(&atk.dir, &["push", "-q", "origin", "main"]).status.success());
+
+    // Attacker tries to re-key victim with its OWN key → must REFUSE (fail closed).
+    let j = atk.confer(&[
+        "join", "--role", "victim", "--signing-key", ak.to_str().unwrap()
+    ]);
+    assert!(!ok(&j), "re-key through a corrupt card must be refused");
+    let msg = format!("{}{}", out(&j), err(&j));
+    assert!(
+        msg.contains("not valid YAML") || msg.contains("unknown state"),
+        "refusal must name the corrupt-card cause: {msg}"
+    );
+
+    // The victim's ORIGINAL published key must still be on the hub — the attacker never re-keyed.
+    let after = hub.clone("reader2");
+    let after_txt =
+        std::fs::read_to_string(after.dir.join("roles").join("victim.md")).unwrap();
+    assert!(
+        after_txt.contains(&victim_key_line),
+        "victim's original pubkey must remain (no hijack); card now:\n{after_txt}"
+    );
+}
+
+#[test]
+fn join_refuses_rekey_through_a_nulled_or_typeconfused_pubkey() {
+    // Red-team round 2 (reproduced): the fail-closed-on-unparsable fix missed TYPE CONFUSION — a
+    // `pubkey: null` / `pubkey: ""` / `pubkey: [list]` PARSES fine, so parse_card returned Ok and
+    // `.as_str()` yielded None → both guards read an established role as key-less and re-keyed it.
+    // Now: non-string pubkey types are refused outright, and null/empty (legit placeholders) are
+    // gated by a git-history "was this role ever keyed?" check — so an established key can't be
+    // nulled and re-keyed, while a genuinely fresh role can still publish its first key.
+    let attack_key_landed = |payload: &str| -> bool {
+        let hub = new_hub();
+        let kd = tmp("key");
+        let vk = kd.join("victim");
+        let ak = kd.join("attacker");
+        for k in [&vk, &ak] {
+            Command::new("ssh-keygen")
+                .args(["-t", "ed25519", "-f", k.to_str().unwrap(), "-N", "", "-C", "x", "-q"])
+                .status()
+                .unwrap();
+        }
+        let atk_pub = std::fs::read_to_string(kd.join("attacker.pub")).unwrap();
+        let atk_frag = atk_pub.split_whitespace().nth(1).unwrap()[..30].to_string();
+
+        // Victim publishes its real key (committed to hub history).
+        let v = hub.clone("victim");
+        assert!(ok(&v.confer(&[
+            "join", "--role", "victim", "--signing-key", vk.to_str().unwrap()
+        ])));
+        // Attacker rewrites victim's pubkey to the (illegitimate) payload and pushes.
+        let atk = hub.clone("attacker");
+        let card = atk.dir.join("roles").join("victim.md");
+        let raw = std::fs::read_to_string(&card).unwrap();
+        let corrupted: String = raw
+            .lines()
+            .map(|l| {
+                if l.starts_with("pubkey:") {
+                    format!("pubkey: {payload}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&card, format!("{corrupted}\n")).unwrap();
+        git(&atk.dir, &["commit", "-qam", "rewrite pubkey"]);
+        assert!(git(&atk.dir, &["push", "-q", "origin", "main"]).status.success());
+        // Attacker attempts the re-key with its own key (must be refused).
+        let _ = atk.confer(&[
+            "join", "--role", "victim", "--signing-key", ak.to_str().unwrap(), "--force"
+        ]);
+        // Did the attacker's key land in the published card?
+        let after = hub.clone(&format!("reader-{}", payload.len()));
+        let txt = std::fs::read_to_string(after.dir.join("roles").join("victim.md")).unwrap();
+        txt.contains(&atk_frag)
+    };
+    assert!(!attack_key_landed("null"), "null-pubkey re-key must be blocked");
+    assert!(!attack_key_landed("\"\""), "empty-string-pubkey re-key must be blocked");
+    assert!(!attack_key_landed("[a, b]"), "list-pubkey re-key must be blocked");
+
+    // A genuinely fresh, never-keyed role must STILL be able to publish its first key.
+    let hub = new_hub();
+    let kd = tmp("key2");
+    let k = kd.join("k");
+    Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", k.to_str().unwrap(), "-N", "", "-C", "x", "-q"])
+        .status()
+        .unwrap();
+    let fresh = hub.clone("newbie");
+    let j = fresh.confer(&[
+        "join", "--role", "newbie", "--signing-key", k.to_str().unwrap()
+    ]);
+    assert!(ok(&j), "a fresh never-keyed role must publish its first key: {}", err(&j));
+}
+
+#[test]
+fn join_refuses_rekey_when_key_was_published_in_any_representation_then_stripped() {
+    // Red-team round 3 (reproduced): the "ever keyed?" history gate first used a diff-TEXT grep for
+    // `+pubkey:...ssh-`, which a YAML ANCHOR (`pubkey: *realkey`) defeats — the parser resolves it to
+    // a real key (accepted everywhere) but the diff line has no `ssh-` substring, so the grep read
+    // "never keyed" and allowed the re-key. The gate now PARSES each historical revision through the
+    // same published_pubkey, so any representation that resolves to a real key counts. This locks
+    // that in: a key published via an anchor, then stripped, must still block a re-key.
+    let hub = new_hub();
+    let kd = tmp("key");
+    let vk = kd.join("victim");
+    let ak = kd.join("attacker");
+    for k in [&vk, &ak] {
+        Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f", k.to_str().unwrap(), "-N", "", "-C", "x", "-q"])
+            .status()
+            .unwrap();
+    }
+    let atk_pub = std::fs::read_to_string(kd.join("attacker.pub")).unwrap();
+    let atk_frag = atk_pub.split_whitespace().nth(1).unwrap()[..30].to_string();
+    let vpub = std::fs::read_to_string(kd.join("victim.pub")).unwrap();
+    let vkey = {
+        let mut it = vpub.split_whitespace();
+        format!("{} {}", it.next().unwrap(), it.next().unwrap())
+    };
+
+    // Victim publishes its key via a YAML ANCHOR (a valid representation).
+    let v = hub.clone("victim");
+    std::fs::create_dir_all(v.dir.join("roles")).unwrap();
+    std::fs::write(
+        v.dir.join("roles/victim.md"),
+        format!("---\nkey: &realkey {vkey} victim@confer.local\ndisplay: Victim\npubkey: *realkey\n---\n"),
+    )
+    .unwrap();
+    git(&v.dir, &["add", "-A"]);
+    git(&v.dir, &["commit", "-qm", "victim key via anchor"]);
+    assert!(git(&v.dir, &["push", "-q", "origin", "main"]).status.success());
+
+    // Attacker strips the key/pubkey lines, then tries to re-key.
+    let atk = hub.clone("attacker");
+    let card = atk.dir.join("roles/victim.md");
+    let stripped: String = std::fs::read_to_string(&card)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("key:") && !l.starts_with("pubkey:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&card, format!("{stripped}\n")).unwrap();
+    git(&atk.dir, &["commit", "-qam", "strip key"]);
+    assert!(git(&atk.dir, &["push", "-q", "origin", "main"]).status.success());
+    let _ = atk.confer(&[
+        "join", "--role", "victim", "--signing-key", ak.to_str().unwrap(), "--force"
+    ]);
+
+    let after = hub.clone("reader");
+    let txt = std::fs::read_to_string(after.dir.join("roles/victim.md")).unwrap();
+    assert!(
+        !txt.contains(&atk_frag),
+        "attacker key must NOT have landed after stripping an anchor-published key; card:\n{txt}"
+    );
+}
+
+
+#[test]
 fn join_refuses_to_re_role_a_clone_bound_to_another_role() {
     // Field-reported on 0.6.0 (boxwood-twist-null): `join`/`reconnect --role B` from inside role
     // A's clone silently relabels the clone to B while KEEPING A's signing key — one key backing

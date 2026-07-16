@@ -41,6 +41,38 @@ pub fn pubkey<'a>(roster: &'a Roster, id: &str) -> Option<&'a str> {
     roster.get(id).and_then(|r| r.pubkey.as_deref())
 }
 
+/// The SINGLE source of truth for "what key does this card publish", shared by the read/pin side
+/// (`parse_role`, below) and the write-side 1:1 guard (`published_pubkey` in main.rs) so the two can
+/// never disagree. Absent / null / "" → Ok(None) (no key). A non-empty string → Ok(Some). A present
+/// but NON-string value (bool/number/list/mapping) → Err(type-name).
+///
+/// This is load-bearing: `roster::parse_role` used to deserialize straight into a typed
+/// `Option<String>`, which silently STRINGIFIES a YAML bareword (`pubkey: true` → "true",
+/// `pubkey: 12345` → "12345"), while the write guard decodes an untyped Value and refuses it. That
+/// split let a hub writer poison a new peer's TOFU pin with a bogus literal like "true", permanently
+/// mismatching the real role (identity-DoS — red-team). Routing BOTH sides through this one
+/// classifier closes the divergence by construction.
+pub(crate) fn classify_pubkey(map: &serde_yaml::Mapping) -> Result<Option<String>, String> {
+    match map.get("pubkey") {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => match v.as_str() {
+            Some(s) => {
+                let t = s.trim();
+                Ok((!t.is_empty()).then(|| t.to_string()))
+            }
+            None => Err(match v {
+                serde_yaml::Value::Sequence(_) => "list",
+                serde_yaml::Value::Mapping(_) => "mapping",
+                serde_yaml::Value::Number(_) => "number",
+                serde_yaml::Value::Bool(_) => "boolean",
+                _ => "non-string value",
+            }
+            .to_string()),
+        },
+    }
+}
+
 pub type Roster = HashMap<String, Role>;
 
 /// Load `roles/<id>.md` (preferred) unioned over legacy `roles.toml`.
@@ -99,6 +131,10 @@ pub fn load(root: &Path) -> Roster {
 
 /// Parse a role card's YAML frontmatter (body is ignored / freeform notes).
 fn parse_role(text: &str) -> Option<Role> {
+    // Strip a leading UTF-8 BOM before the fence-sniff — keep this identical to `parse_card` in
+    // main.rs, so the read side and the write-side key guard can't disagree about whether a BOM'd
+    // card has frontmatter (a divergence there was an identity-hijack vector — red-team).
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
         return None;
@@ -111,7 +147,18 @@ fn parse_role(text: &str) -> Option<Role> {
         yaml.push_str(line);
         yaml.push('\n');
     }
-    serde_yaml::from_str(&yaml).ok()
+    let mut role: Role = serde_yaml::from_str(&yaml).ok()?;
+    // Re-derive `pubkey` through the SHARED classifier rather than trusting the typed
+    // `Option<String>` deserialize, which stringifies a YAML bareword (`pubkey: true` → "true") that
+    // the write-side guard refuses — the split let an attacker poison a peer's TOFU pin (red-team).
+    // On the read side a non-string / absent pubkey degrades to None (unverifiable), never a bogus
+    // literal, so it can't be pinned.
+    if let Ok(m) = serde_yaml::from_str::<serde_yaml::Mapping>(&yaml) {
+        role.pubkey = classify_pubkey(&m).ok().flatten();
+    } else {
+        role.pubkey = None;
+    }
+    Some(role)
 }
 
 /// Resolve a role id to its display name (falls back to the id).
@@ -125,4 +172,35 @@ pub fn display<'a>(roster: &'a Roster, id: &'a str) -> &'a str {
 /// The role's declared (expected) host, if any.
 pub fn host<'a>(roster: &'a Roster, id: &str) -> Option<&'a str> {
     roster.get(id).and_then(|r| r.host.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_role_never_pins_a_nonstring_pubkey() {
+        // Read-side classification MUST match the write guard: a YAML bareword (`pubkey: true`) or
+        // any non-string value degrades to None (unverifiable), never a bogus literal like "true"
+        // that would poison a peer's TOFU pin (red-team round 5).
+        assert_eq!(parse_role("---\ndisplay: v\npubkey: true\n---\n").unwrap().pubkey, None);
+        assert_eq!(parse_role("---\npubkey: 12345\n---\n").unwrap().pubkey, None);
+        assert_eq!(parse_role("---\npubkey: null\n---\n").unwrap().pubkey, None);
+        // In YAML 1.2 (serde_yaml 0.9) `yes` is a STRING, not a bool — so both sides agree on
+        // Some("yes") (no divergence; it just can't satisfy a real signature). Documented here so the
+        // distinction from `true`/`false`/numbers is explicit.
+        assert_eq!(
+            parse_role("---\npubkey: yes\n---\n").unwrap().pubkey.as_deref(),
+            Some("yes")
+        );
+        // A real key string is read normally, and a BOM before the fence doesn't hide it.
+        assert_eq!(
+            parse_role("---\npubkey: ssh-ed25519 AAAA x\n---\n").unwrap().pubkey.as_deref(),
+            Some("ssh-ed25519 AAAA x")
+        );
+        assert_eq!(
+            parse_role("\u{FEFF}---\npubkey: ssh-ed25519 AAAA x\n---\n").unwrap().pubkey.as_deref(),
+            Some("ssh-ed25519 AAAA x")
+        );
+    }
 }
