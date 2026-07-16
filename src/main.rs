@@ -2010,10 +2010,36 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
         if let Some(rt) = &reply_to {
             if let Some(orig) = all.iter().find(|m| &m.front.id == rt) {
                 if orig.front.from != role {
+                    // Replying to a peer → address that peer.
                     to = vec![orig.front.from.clone()];
+                } else {
+                    // Replying to YOUR OWN message in a thread → continue it to whoever THAT message
+                    // addressed (minus yourself/`all`), so the reply doesn't go out unaddressed and
+                    // wake nobody. (Field bug: a `--reply-to` pointing at your own thread post
+                    // resolved to no audience, so the message never woke the participant.)
+                    to = orig
+                        .front
+                        .to
+                        .iter()
+                        .filter(|t| t.as_str() != role && !is_reserved_name(t))
+                        .cloned()
+                        .collect();
                 }
             }
         }
+    }
+    // Surface the silent "wakes nobody" case: a REPLY (`--reply-to`/`--of`) or a REQUEST that still
+    // has NO audience reaches no inbox and wakes no peer — the exact trap where an addressing intent
+    // resolved to no one. (A plain `note` with no `--to` is a deliberate board post; left alone.)
+    if to.is_empty()
+        && a.cc.is_empty()
+        && (reply_to.is_some() || of.is_some() || a.msg_type == "request")
+    {
+        eprintln!(
+            "confer: ⚠ this {} is addressed to NO ONE — it lands on the board but reaches no inbox \
+             and wakes no peer. Add `--to <role>` (or `--to all`) so it's actually delivered.",
+            if a.msg_type == "request" { "request" } else { "reply" }
+        );
     }
 
     // Recipient-reachability advisory (guardrail against split-brain / wrong-hub
@@ -5761,6 +5787,14 @@ agent on the machine). Not sure which clone is yours? `{CONFER} clones` lists co
 `cd` into the one for your role. Then start a **persistent Monitor** on:
 
     {CONFER} watch --replace
+
+⚠ **Host it under the Monitor tool — never background Bash.** `confer watch` is a LONG-LIVED
+streamer. If you launch it with `run_in_background`, a trailing `&`, `nohup`, or you redirect its
+output (`> file`, `> /dev/null`), the harness REAPS it after its first output burst (or the wakes go
+nowhere): it dies **silently** and you stop receiving peer messages with no error — you just go dark
+until someone notices. The Monitor tool is the persistent host that keeps it alive and pipes each wake
+to you; that is what the `Monitor` in this skill's allowed-tools is for. No Monitor tool in your
+environment? Use the `/confer-poll` skill under `/loop` — never a raw backgrounded watch.
 
 `--replace` matters: if your previous session compacted or ended, its background watch may still be
 running and would race this one on the shared cursor (silently stealing your events). `--replace`

@@ -2651,6 +2651,48 @@ fn e2e_inbox_direct_mail_unread_then_read_clears() {
 }
 
 #[test]
+fn reply_to_your_own_thread_post_addresses_its_recipients_not_no_one() {
+    // Field bug: a `--reply-to` pointing at YOUR OWN message resolved to no audience, so the reply
+    // went out unaddressed and woke nobody. Now it continues the thread to that message's recipients.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let m1 = a.send(&["--type", "note", "--to", "beta", "--summary", "q", "--text", "question"]);
+    // alpha replies to its OWN m1 with no --to → should auto-address beta (m1's recipient).
+    let r = a.confer(&[
+        "append", "--from", "alpha", "--type", "note", "--reply-to", &m1, "--summary", "followup",
+        "--text", "more",
+    ]);
+    assert!(ok(&r), "reply to own post: {}", err(&r));
+    b.pull();
+    assert!(
+        b.inbox_peek().contains("followup"),
+        "a reply to alpha's own post must reach beta (the thread recipient): {}",
+        b.inbox_peek()
+    );
+}
+
+#[test]
+fn a_reply_that_resolves_to_no_audience_warns_it_wakes_nobody() {
+    // Surface the silent "wakes nobody" case: a reply whose addressing resolves to no one lands on
+    // the board but reaches no inbox — the sender must be told, not left to discover it went dark.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    // alpha posts to `all`, then replies to its OWN broadcast with no --to → resolves to no one.
+    let mb = a.send(&["--type", "note", "--to", "all", "--summary", "bc", "--text", "hi"]);
+    let r = a.confer(&[
+        "append", "--from", "alpha", "--type", "note", "--reply-to", &mb, "--summary", "re",
+        "--text", "x",
+    ]);
+    assert!(ok(&r), "the reply still posts (warning is non-fatal): {}", err(&r));
+    assert!(
+        err(&r).contains("addressed to NO ONE") || err(&r).contains("wakes no peer"),
+        "must warn that the reply reaches no one: {}",
+        err(&r)
+    );
+}
+
+#[test]
 fn e2e_inbox_excludes_cc_and_broadcast() {
     // Validates directly_addressed (and the --to/--cc advice given to the reader
     // agent): only a direct `--to` recipient is nagged; cc and `all` are not.
