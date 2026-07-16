@@ -26,15 +26,15 @@ pub fn id_ref_matches(full: &str, reference: &str) -> bool {
 /// Fold a request's terminal/active status from the log. DONE/ERROR/SUPERSEDED are
 /// terminal; BLOCKED is a stall a `claim` clears; else CLAIMED or OPEN.
 pub fn request_status(msgs: &[Message], req_id: &str) -> &'static str {
-    // A superseded request is withdrawn/replaced — a terminal state.
-    if msgs
-        .iter()
-        .any(|m| m.front.supersedes.as_deref().is_some_and(|s| id_ref_matches(req_id, s)))
-    {
-        return "SUPERSEDED";
-    }
     let mut st = "OPEN";
     for m in msgs {
+        // Fold the SUPERSEDE in chronological order like the other terminals — NOT ahead of them.
+        // Checking supersede first (as an any() before the loop) let a `supersede` posted AFTER a
+        // `done` retroactively flip a completed request to SUPERSEDED, erasing the completion (and
+        // any role could do it). The FIRST terminal event in fold order wins, whatever it is.
+        if m.front.supersedes.as_deref().is_some_and(|s| id_ref_matches(req_id, s)) {
+            return "SUPERSEDED";
+        }
         if m.front.of.as_deref().is_some_and(|of| id_ref_matches(req_id, of)) {
             match m.front.msg_type.as_str() {
                 "done" => return "DONE",
@@ -66,11 +66,18 @@ pub fn request_deferred(msgs: &[Message], req: &Message) -> bool {
     deferred
 }
 
-/// The resolution recorded on a request's closing `done`, if any.
+/// The resolution recorded on a request's CLOSING `done`, if any. Uses the FIRST matching `done`
+/// (the one that terminated the request per `request_status`'s fold order) and returns ITS
+/// resolution — NOT the first done that merely happens to carry one. Using `find_map` skipped a
+/// resolution-less closing done (a genuine completion) and picked up a LATER `done --as wont-do`,
+/// mislabelling completed work as consciously dropped.
 pub fn done_resolution(msgs: &[Message], req_id: &str) -> Option<String> {
     msgs.iter()
-        .filter(|m| m.front.msg_type == "done" && m.front.of.as_deref().is_some_and(|of| id_ref_matches(req_id, of)))
-        .find_map(|m| m.front.resolution.clone())
+        .find(|m| {
+            m.front.msg_type == "done"
+                && m.front.of.as_deref().is_some_and(|of| id_ref_matches(req_id, of))
+        })
+        .and_then(|m| m.front.resolution.clone())
 }
 
 /// Distinct roles that have `claim`ed a request, in first-claim order (the head is
@@ -404,4 +411,72 @@ pub fn render_targets(roster: &roster::Roster, targets: &[String]) -> String {
         .map(|t| if t == "all" { "all".to_string() } else { roster::display(roster, t).to_string() })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::Frontmatter;
+
+    fn m(id: &str, from: &str, ty: &str, of: Option<&str>, sup: Option<&str>, res: Option<&str>) -> Message {
+        Message {
+            front: Frontmatter {
+                id: id.into(),
+                from: from.into(),
+                msg_type: ty.into(),
+                ts: "2026-07-16T00:00:00Z".into(),
+                host: None,
+                to: vec![],
+                cc: vec![],
+                priority: None,
+                topic: None,
+                reply_to: None,
+                of: of.map(String::from),
+                supersedes: sup.map(String::from),
+                resolution: res.map(String::from),
+                defer: false,
+                via: None,
+                src: None,
+                summary: Some("s".into()),
+                refs: vec![],
+            },
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_supersede_after_done_does_not_erase_the_completion() {
+        // done at 01B, then superseded at 01C — the FIRST terminal in fold order wins → still DONE.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "done", Some("01A"), None, None),
+            m("01C", "carol", "supersede", None, Some("01A"), None),
+        ];
+        assert_eq!(request_status(&msgs, "01A"), "DONE");
+        // superseded BEFORE any done → correctly SUPERSEDED.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "carol", "supersede", None, Some("01A"), None),
+            m("01C", "bob", "done", Some("01A"), None, None),
+        ];
+        assert_eq!(request_status(&msgs, "01A"), "SUPERSEDED");
+    }
+
+    #[test]
+    fn done_resolution_is_the_closing_dones_not_a_later_wont_do() {
+        // The closing done (01B) is a real completion (no resolution); a LATER `done --as wont-do`
+        // must NOT be picked up and mislabel the completed work.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "done", Some("01A"), None, None),
+            m("01C", "alice", "done", Some("01A"), None, Some("wont-do")),
+        ];
+        assert_eq!(done_resolution(&msgs, "01A"), None);
+        // When the closing done itself carries a resolution, use it.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "done", Some("01A"), None, Some("duplicate")),
+        ];
+        assert_eq!(done_resolution(&msgs, "01A").as_deref(), Some("duplicate"));
+    }
 }
