@@ -333,6 +333,44 @@ fn append_under_held_lock_fails_loudly_never_phantom_sends() {
 }
 
 #[test]
+fn append_op_is_bounded_by_the_overall_deadline_not_the_stacked_phase_budgets() {
+    // The append-hang fix: fetch + lock-wait + reconcile-push each have their own budget, but the
+    // OVERALL op deadline caps their SUM (they used to STACK to ~100s). Here the lock is HELD and the
+    // lock budget is left at its 30s default, but a 2s overall op budget must bound the whole append
+    // to a couple of seconds and fail cleanly — proving the op deadline, not the per-phase budget,
+    // is what bounds it.
+    use fs2::FileExt;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    std::fs::create_dir_all(a.dir.join(".confer")).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(a.dir.join(".confer/gitlock"))
+        .unwrap();
+    held.lock_exclusive().unwrap(); // a concurrent op holds the clone lock for the whole test
+
+    let start = std::time::Instant::now();
+    let out = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("CONFER_OP_BUDGET_SECS", "2") // overall cap — NOT the (defaulted 30s) lock budget
+        .args(["append", "--from", "alpha", "--type", "note", "--to", "x", "--summary", "s", "--text", "b"])
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert!(!out.status.success(), "append under a held lock must fail, not phantom-send");
+    assert!(
+        elapsed < std::time::Duration::from_secs(12),
+        "the 2s overall op deadline must bound the append well under the 30s lock budget; took {elapsed:?}"
+    );
+    FileExt::unlock(&held).unwrap();
+}
+
+#[test]
 fn append_rejects_terminal_control_chars() {
     // Fable review: a body/summary with raw ANSI/C0 escapes could rewrite a reading
     // agent's terminal or forge a fake envelope. Blocked at the source.

@@ -21,6 +21,21 @@ fn git_timeout() -> Duration {
         .map_or(Duration::from_secs(60), Duration::from_secs)
 }
 
+/// Overall wall-clock budget for a WHOLE commit_and_sync / integrate op (fetch + lock-wait +
+/// reconcile-push COMBINED). Each per-phase budget (fetch 2×15s, lock 30s, push 25s) is sensible
+/// alone but they STACK to ~85s+ under contention — a watcher's `integrate` holding the lock while
+/// an `append` waits, then the append hits its own push race — the real ~100s "append hang" seen in
+/// the field. Capping the TOTAL makes an op degrade to a clean "clone/hub busy — deferred" instead
+/// of an invisible stall. `CONFER_OP_BUDGET_SECS` overrides the 45s default.
+fn op_deadline() -> std::time::Instant {
+    let secs = std::env::var("CONFER_OP_BUDGET_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(45);
+    std::time::Instant::now() + Duration::from_secs(secs)
+}
+
 fn base(root: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C").arg(root);
@@ -155,6 +170,13 @@ fn jitter_ms(cap: u64) -> u64 {
 }
 
 fn acquire_lock(root: &Path) -> Result<Lock> {
+    acquire_lock_until(root, None)
+}
+
+/// Acquire the clone lock, capping the wait at `min(own budget, overall)` — `overall` is the whole
+/// op's shared deadline (fetch+lock+push), so lock-wait can't consume time the push still needs and
+/// the op stays within its total budget. `None` → just the standalone lock budget (raw add+commit).
+fn acquire_lock_until(root: &Path, overall: Option<std::time::Instant>) -> Result<Lock> {
     use fs2::FileExt;
     use std::io::{Seek, Write};
     let p = root.join(".confer").join("gitlock");
@@ -174,7 +196,8 @@ fn acquire_lock(root: &Path) -> Result<Lock> {
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(30);
-    let deadline = std::time::Instant::now() + Duration::from_secs(budget);
+    let own = std::time::Instant::now() + Duration::from_secs(budget);
+    let deadline = overall.map_or(own, |o| own.min(o));
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => {
@@ -189,7 +212,7 @@ fn acquire_lock(root: &Path) -> Result<Lock> {
             }
             Err(_) => {
                 return Err(anyhow!(
-                    "clone busy — another confer op has held {} for >30s",
+                    "clone busy — could not acquire {} within the time budget (another confer op holds it)",
                     p.display()
                 ));
             }
@@ -340,8 +363,11 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
     // Fetch OUTSIDE the lock — it's the slow, read-only part (updates only refs/remotes/*).
     // Keeping it out means a peer's watcher poll fetching the same clone can't starve this
     // write (studio bug A). Everything under the lock is fast-local + a bounded push.
-    let fetched = fetch_unlocked(root);
-    let _lock = acquire_lock(root)?; // Err here → NOTHING committed
+    // One shared deadline across all three phases (fetch, lock-wait, reconcile) so their budgets
+    // can't STACK into a ~100s hang — the whole op is bounded, then defers cleanly.
+    let deadline = op_deadline();
+    let fetched = fetch_unlocked(root, deadline);
+    let _lock = acquire_lock_until(root, Some(deadline))?; // Err here → NOTHING committed
     let file_s = file.to_string_lossy().to_string();
     check(root, &["add", file_s.as_str()])?;
     let name_cfg = format!("user.name={role}");
@@ -353,7 +379,7 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
     args.extend(["commit", "-q", "-m", msg]);
     check(root, &args)?;
     // From here the message is durably committed locally — a push failure only DEFERS it.
-    match reconcile_push(root, fetched) {
+    match reconcile_push(root, fetched, Some(deadline)) {
         Ok(_) => Ok(Committed::Synced),
         Err(_) => Ok(Committed::DeferredLocal),
     }
@@ -361,28 +387,34 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
 
 /// Fetch (outside the lock), then reconcile with upstream and push — under the lock.
 pub fn integrate(root: &Path) -> Result<SyncResult> {
-    let fetched = fetch_unlocked(root);
-    let _lock = acquire_lock(root)?;
-    reconcile_push(root, fetched)
+    let deadline = op_deadline();
+    let fetched = fetch_unlocked(root, deadline);
+    let _lock = acquire_lock_until(root, Some(deadline))?;
+    reconcile_push(root, fetched, Some(deadline))
 }
 
 /// Fetch remote-tracking refs. READ-ONLY (updates only `refs/remotes/*`, never HEAD/index),
 /// so it deliberately does NOT hold the clone lock — the whole point of keeping the slow
 /// network fetch out of the write path. Bounded to the short sync timeout; offline → false
 /// (non-fatal: the local commit still lands and the push defers).
-fn fetch_unlocked(root: &Path) -> bool {
+fn fetch_unlocked(root: &Path, deadline: std::time::Instant) -> bool {
     // Retry once on failure/timeout: under heavy concurrent git load a single fetch can exceed the
     // timeout, and a swallowed fetch means a READ folds STALE (misses a peer just-pushed event).
     // A jittered retry rides out a transient contention spike; SyncResult still reports
     // `fetched: false` if BOTH attempts fail, so a genuinely-offline read surfaces as stale.
+    // Bounded by the op deadline so fetch can't consume the whole budget and starve lock+push.
     for attempt in 0..2 {
-        if run_to(root, &["fetch", "--quiet"], Duration::from_secs(15))
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if run_to(root, &["fetch", "--quiet"], remaining.min(Duration::from_secs(15)))
             .map(|o| o.status.success())
             .unwrap_or(false)
         {
             return true;
         }
-        if attempt == 0 {
+        if attempt == 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(150 + jitter_ms(250)));
         }
     }
@@ -401,7 +433,7 @@ pub struct SyncResult {
 /// wall-clock budget it DEFERS (the commit stays local, flushes on the next confer command),
 /// returning a clean "hub busy" message. The caller holds the clone lock and has already
 /// fetched OUTSIDE it (`fetched` = whether that succeeded; offline → defer, don't error).
-fn reconcile_push(root: &Path, fetched: bool) -> Result<SyncResult> {
+fn reconcile_push(root: &Path, fetched: bool, overall: Option<std::time::Instant>) -> Result<SyncResult> {
     if !has_upstream(root) {
         // No remote/upstream yet (e.g. brand-new local repo in tests).
         return Ok(SyncResult { fetched, pushed: 0 });
@@ -420,6 +452,9 @@ fn reconcile_push(root: &Path, fetched: bool) -> Result<SyncResult> {
         .filter(|n| *n > 0)
         .map_or(Duration::from_secs(25), Duration::from_secs);
     let started = std::time::Instant::now();
+    // Stop at the EARLIER of our own push budget and the whole op's shared deadline, so lock-wait +
+    // push together can't blow past the op budget (the stacked-budget hang).
+    let end = overall.map_or(started + budget, |o| (started + budget).min(o));
     let mut attempt = 0u32;
     let deferred = loop {
         // Reconcile to the latest upstream: fast-forward if we've added nothing,
@@ -455,7 +490,7 @@ fn reconcile_push(root: &Path, fetched: bool) -> Result<SyncResult> {
         // Push rejected (almost always a concurrent push won the race). Stop once the
         // wall-clock budget is spent — defer rather than spin or stack slow calls.
         let last = String::from_utf8_lossy(&p.stderr).trim().to_string();
-        if started.elapsed() >= budget {
+        if std::time::Instant::now() >= end {
             break last;
         }
         let base = (100u64 << attempt.min(4)).min(1500); // 100,200,400,800,1500,… ms
