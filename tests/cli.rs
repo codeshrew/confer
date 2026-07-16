@@ -2693,6 +2693,78 @@ fn a_reply_that_resolves_to_no_audience_warns_it_wakes_nobody() {
 }
 
 #[test]
+fn watch_warns_when_its_output_is_discarded() {
+    // Arming a watch with stdout going to a discard (here /dev/null via Stdio::null) means the wakes
+    // go nowhere — the watch must say so, loudly, at startup (the "> /dev/null" footgun).
+    use std::io::Read;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let mut child = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null()) // discarded output — the bad setup
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    let _ = child.kill();
+    let mut s = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut s);
+    }
+    let _ = child.wait();
+    assert!(
+        s.contains("will NOT see any wakes") || s.contains("output is going to"),
+        "watch must warn when its output is discarded: {s}"
+    );
+}
+
+#[test]
+fn a_dead_watch_is_surfaced_on_the_next_command_only_after_arming() {
+    // The silent-death net: an agent that armed a watch which then died (reaped/backgrounded) is told
+    // on its next `append`/`poll` that it's not being woken. A poll-only agent that NEVER armed a
+    // watch must not be nagged.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    // Never armed → no nag.
+    let before = a.confer(&[
+        "append", "--from", "alpha", "--type", "note", "--to", "x", "--summary", "s", "--text", "b",
+    ]);
+    assert!(
+        !err(&before).contains("no live watcher"),
+        "a poll-only agent (never armed a watch) must not be nagged: {}",
+        err(&before)
+    );
+    // Arm a watch briefly (registers the auto-heal target + lock), then let it die.
+    let mut child = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    let _ = child.kill();
+    let _ = child.wait();
+    std::thread::sleep(Duration::from_millis(400));
+    // Now the next command surfaces the dead watch.
+    let after = a.confer(&[
+        "append", "--from", "alpha", "--type", "note", "--to", "x", "--summary", "s2", "--text", "b",
+    ]);
+    assert!(
+        err(&after).contains("no live watcher"),
+        "a dead watch must be surfaced on the next command: {}",
+        err(&after)
+    );
+}
+
+#[test]
 fn e2e_inbox_excludes_cc_and_broadcast() {
     // Validates directly_addressed (and the --to/--cc advice given to the reader
     // agent): only a direct `--to` recipient is nagged; cc and `all` are not.

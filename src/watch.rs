@@ -33,6 +33,33 @@ pub struct WatchOpts {
     pub min_priority: u8,
 }
 
+/// If this watch's stdout is a discard — a regular file (`> file`) or a non-terminal char device
+/// (`> /dev/null`) — the wakes go nowhere and the agent never sees them. Returns a description of the
+/// bad sink. A pipe/socket (a real Monitor host, OR a reaped background-bash pipe) is indistinguishable
+/// here, so it's deliberately NOT flagged: the reaped-bg case is caught by the dead-watch check on the
+/// next command + the /confer-watch skill's anti-background rule.
+#[cfg(unix)]
+fn stdout_is_discarded() -> Option<&'static str> {
+    use std::io::IsTerminal;
+    use std::os::fd::AsRawFd;
+    if std::io::stdout().is_terminal() {
+        return None; // an interactive terminal is fine
+    }
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(std::io::stdout().as_raw_fd(), &mut st) } != 0 {
+        return None;
+    }
+    match (st.st_mode as u32) & (libc::S_IFMT as u32) {
+        m if m == libc::S_IFREG as u32 => Some("a file (a `>` redirect)"),
+        m if m == libc::S_IFCHR as u32 => Some("/dev/null (or a device)"), // non-tty char dev
+        _ => None, // FIFO/pipe/socket — could be a real host; don't false-warn
+    }
+}
+#[cfg(not(unix))]
+fn stdout_is_discarded() -> Option<&'static str> {
+    None
+}
+
 pub fn run(opts: WatchOpts) -> Result<()> {
     let root = config::repo_root()?;
     crate::check_version(&root);
@@ -95,6 +122,15 @@ pub fn run(opts: WatchOpts) -> Result<()> {
 
     // Tier 1 self-observability: surface likely mis-configuration once at startup
     //. Machine-local, no git writes — just help the agent notice.
+    // Host self-check: if our output is a discard, the agent will never see a wake — the classic
+    // "arm a watch, redirect it to /dev/null / a file, then silently miss everything" trap.
+    if let Some(sink) = stdout_is_discarded() {
+        crate::warn_safety(format!(
+            "this watch's output is going to {sink} — you will NOT see any wakes. A watch must run \
+             under a host that READS its stdout (your Monitor tool / the /confer-watch skill), never \
+             a `>` redirect. Re-arm via /confer-watch."
+        ));
+    }
     let firehose = opts.all || me.is_empty();
     if gitcmd::output(&root, &["rev-parse", "--is-shallow-repository"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")

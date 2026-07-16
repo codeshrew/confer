@@ -44,6 +44,51 @@ use std::io::{IsTerminal, Read, Write};
 
 /// The confer repo commit this build was made from.
 pub(crate) const BUILD_SHA: &str = env!("CONFER_GIT_SHA");
+
+// ── Diagnostic conventions (one glyph legend so an AI agent can reliably classify output) ─────────
+//   ‼ trust violation — do NOT proceed (identity mismatch / impersonation)   [emitted by verify paths]
+//   ⚠ SAFETY — a real problem or silent-failure; action recommended          → `warn_safety`
+//   · advisory / tuning — no action required (a hint)                        → `hint`
+// All go to STDERR (diagnostics), never stdout (which carries the command's actual output).
+
+/// A SAFETY diagnostic: a real failure or a silent-failure the agent must notice. Always
+/// `confer: ⚠ …` on stderr, so `grep ⚠` reliably finds every one.
+pub(crate) fn warn_safety(msg: impl std::fmt::Display) {
+    eprintln!("confer: ⚠ {msg}");
+}
+
+/// An advisory/tuning hint — not a failure. `confer: · …` on stderr, visually distinct from `⚠` so
+/// it can be grepped/filtered separately from real problems.
+pub(crate) fn hint(msg: impl std::fmt::Display) {
+    eprintln!("confer: · {msg}");
+}
+
+/// If this role has ARMED a watch before (an auto-heal target exists) but no live watcher is running
+/// on this machine, warn — this is the "backgrounded/reaped watch died silently and I'm no longer
+/// receiving peer messages" case, surfaced on the next confer command the agent runs. Gated on a
+/// prior autoheal target so a deliberately poll-only agent (never watches) is never nagged.
+pub(crate) fn warn_if_watch_should_be_live(root: &std::path::Path, role: &str) {
+    if role.is_empty() {
+        return;
+    }
+    let clone = root.to_string_lossy();
+    let armed = autoheal::load()
+        .targets
+        .iter()
+        .any(|t| t.role == role && t.hub == clone);
+    if !armed {
+        return; // poll-only / never armed a watch — nothing to nag about
+    }
+    let hub = config::hub_key(root);
+    match watchlock::classify(&watchlock::inspect(&hub, role, 90), BUILD_SHA) {
+        watchlock::WatchState::Stale | watchlock::WatchState::NotWatching => warn_safety(format!(
+            "no live watcher for '{role}' on this machine — you are NOT being woken by peer \
+             messages. Re-arm via /confer-watch (host it under your Monitor tool, never background \
+             bash); check anytime with `confer watch-status`."
+        )),
+        _ => {}
+    }
+}
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CONFER_GIT_SHA"), ")");
 
 /// The repo confer's own source lives in — what `invite` tells a cold agent to
@@ -1873,6 +1918,9 @@ fn cmd_lifecycle(msg_type: &str, a: LifecycleArgs, resolution: Option<String>) -
 fn cmd_append(a: AppendArgs) -> Result<()> {
     let root = config::repo_root()?;
     let role = config::resolve_role(a.from, &root)?;
+    // Surface a silently-dead watch on the next active command: if you armed a watch but it isn't
+    // running (backgrounded/reaped), you're not being woken — say so now rather than let you go dark.
+    warn_if_watch_should_be_live(&root, &role);
 
     if !TYPES.contains(&a.msg_type.as_str()) {
         return Err(anyhow!(
@@ -2281,6 +2329,9 @@ struct PollArgs {
 fn cmd_poll(p: PollArgs) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(p.role.clone(), &root).unwrap_or_default();
+    // If you armed a watch but it isn't live, a poll won't fix that — surface it (poll-only agents,
+    // which never armed one, are not nagged; the check is gated on a prior watch).
+    warn_if_watch_should_be_live(&root, &me);
     // Fetch the hub first — otherwise the whole non-Monitor fallback is blind (B2).
     if let Err(e) = gitcmd::integrate(&root) {
         eprintln!("confer: hub sync failed ({e}); showing local state");
