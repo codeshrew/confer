@@ -209,7 +209,18 @@ fn save_hwm(hub_key: &str, updates: &std::collections::HashMap<String, Hwm>) {
 /// must use this and ignore `Untrusted` beats; `load_all` stays for raw/legacy reads.
 pub fn load_verified(root: &Path, hub_key: &str, ros: &crate::roster::Roster, fetch: bool) -> Vec<Beat> {
     if fetch {
-        let _ = gitcmd::output(root, &["fetch", "-q", "origin", "+refs/presence/*:refs/presence/*"]);
+        // A failed presence fetch → stale/empty presence → `who`/`fleet`/`seen` confidently report
+        // the wrong liveness ("X is down / behind") purely because the git read failed. Surface it.
+        match gitcmd::output(root, &["fetch", "-q", "origin", "+refs/presence/*:refs/presence/*"]) {
+            Ok(o) if !o.status.success() => eprintln!(
+                "confer: ⚠ presence fetch failed ({}) — liveness (who/fleet/seen) may be STALE.",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => eprintln!(
+                "confer: ⚠ presence fetch failed ({e}) — liveness (who/fleet/seen) may be STALE."
+            ),
+            _ => {}
+        }
     }
     let mut cache = crate::verify::Cache::default();
     let mut hwm = load_hwm(hub_key);
@@ -217,8 +228,18 @@ pub fn load_verified(root: &Path, hub_key: &str, ros: &crate::roster::Roster, fe
     let mut out = Vec::new();
     let now = Utc::now();
     let skew = chrono::Duration::seconds(300);
-    let Ok(o) = gitcmd::output(root, &["for-each-ref", "--format=%(objectname) %(refname)", "refs/presence/"]) else {
-        return out;
+    let o = match gitcmd::output(root, &["for-each-ref", "--format=%(objectname) %(refname)", "refs/presence/"]) {
+        Ok(o) if o.status.success() => o,
+        // Don't check ONLY that git spawned (the old `let Ok(o)`) — a non-zero exit yields empty
+        // stdout that would parse as "zero presence records", i.e. a confident "nobody's here".
+        other => {
+            let why = match &other {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => e.to_string(),
+            };
+            eprintln!("confer: ⚠ could not read presence refs ({why}) — who/fleet may show NO or STALE presence.");
+            return out;
+        }
     };
     for line in String::from_utf8_lossy(&o.stdout).lines() {
         let Some((sha, refname)) = line.trim().split_once(' ') else { continue };

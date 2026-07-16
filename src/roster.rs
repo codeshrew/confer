@@ -104,7 +104,13 @@ pub fn load(root: &Path) -> Roster {
     // roles/<id>.md wins over legacy.
     let dir = root.join("roles");
     if dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+        match std::fs::read_dir(&dir) {
+          Err(e) => eprintln!(
+            "confer: ⚠ cannot read {} ({e}) — every role's display/host/pubkey is MISSING this load \
+             (who/whois/verification will be blind).",
+            dir.display()
+          ),
+          Ok(entries) => {
             for e in entries.flatten() {
                 let p = e.path();
                 if p.extension().and_then(|s| s.to_str()) != Some("md") {
@@ -124,6 +130,7 @@ pub fn load(root: &Path) -> Roster {
                     }
                 }
             }
+          }
         }
     }
     m

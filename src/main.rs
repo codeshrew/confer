@@ -4260,15 +4260,19 @@ fn cmd_init(
         // that `onboard` points to. Skip under --managed: the clone relocates below, so the
         // skills' resolved paths + the arm-from-here advice would be stale; managed prints its own.
         if !managed {
-            let _ = cmd_install_skill(
+            match cmd_install_skill(
                 None,
                 Some(root.to_string_lossy().to_string()),
                 Some(r.clone()),
                 false,
-            );
-            println!();
-            println!("✅ fleet ready at {}", root.display());
-            print_reactive_next(&r);
+            ) {
+                Ok(_) => {
+                    println!();
+                    println!("✅ fleet ready at {}", root.display());
+                    print_reactive_next(&r);
+                }
+                Err(e) => warn_reactive_arm_failed(&e, &root, &r),
+            }
         }
     } else {
         println!("next: cd {dir} && confer join --role <your-role>");
@@ -4282,10 +4286,14 @@ fn cmd_init(
         // Arm the reactive stack FROM the final path — skipped before the move (stale paths), done
         // now so a managed join is complete in one command, exactly like the non-managed branch.
         if let Some(r) = &managed_role {
-            let _ = cmd_install_skill(None, Some(dest.to_string_lossy().to_string()), Some(r.clone()), false);
-            println!();
-            println!("✅ fleet ready at {}", dest.display());
-            print_reactive_next(r);
+            match cmd_install_skill(None, Some(dest.to_string_lossy().to_string()), Some(r.clone()), false) {
+                Ok(_) => {
+                    println!();
+                    println!("✅ fleet ready at {}", dest.display());
+                    print_reactive_next(r);
+                }
+                Err(e) => warn_reactive_arm_failed(&e, &dest, r),
+            }
         } else {
             println!(
                 "  watch from there: cd {} && confer watch --role <you>",
@@ -6164,6 +6172,18 @@ fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<()> {
     println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch`.");
     println!("On any other agent, loop `confer poll --role {r}` in your run loop instead.");
     Ok(())
+}
+
+/// Loud degrade when the reactive-layer wiring fails during a join. The clone + signed join already
+/// SUCCEEDED, so we don't abort — but we must NOT print "✅ fleet ready" over a watch that isn't set
+/// up (the silent-success class). Surface the failure on stderr and give the exact by-hand fix.
+fn warn_reactive_arm_failed(e: &anyhow::Error, dir: &std::path::Path, role: &str) {
+    eprintln!(
+        "\nconfer: ⚠ joined as {role}, but arming the reactive layer FAILED ({e}) — your \
+         /confer-watch is NOT wired yet.\n  arm it by hand: cd {} && confer install-skill --role \
+         {role}   (then run /confer-watch)",
+        dir.display()
+    );
 }
 
 /// If `url` is a local filesystem path (starts with `/`, `~`, or `.`) that isn't a git repo

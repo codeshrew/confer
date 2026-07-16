@@ -27,7 +27,15 @@ pub fn messages_since(root: &Path, since: Option<&str>) -> Result<Vec<Message>> 
                 Ok(m) => out.push(m),
                 Err(e) => eprintln!("confer: skipping {}: {e}", f.display()),
             },
-            Err(_) => {} // file recorded in history but absent in the tree — skip
+            // Recorded in history but absent in the tree (sparse checkout, a concurrent GC, a partial
+            // fetch). This is the REACTIVE path an unattended agent trusts to "see everything since
+            // the cursor", so a silent skip could drop a request/reply with no trace — surface it,
+            // matching `all_messages`'s warn-and-skip on its analogous case.
+            Err(e) => eprintln!(
+                "confer: ⚠ message {} is in history but unreadable in the tree ({e}) — it was NOT \
+                 delivered this cycle; run `confer read` or re-fetch if you expected mail.",
+                f.display()
+            ),
         }
     }
     Ok(out)

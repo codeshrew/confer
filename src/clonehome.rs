@@ -272,8 +272,20 @@ pub fn list() -> Vec<ManagedClone> {
     let Ok(root) = root() else {
         return out;
     };
-    let Ok(hubs) = std::fs::read_dir(&root) else {
-        return out;
+    // A MISSING managed home is the legit "no managed clones yet" case (silent). Any OTHER read
+    // failure (permissions, an unmounted volume) means the list is INCOMPLETE — surface it loudly
+    // rather than returning a confident-but-partial empty, which reads as "no clones" downstream
+    // (`confer hubs`/`clones`) — the same silent-omission class the hubs command was written to fix.
+    let hubs = match std::fs::read_dir(&root) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
+        Err(e) => {
+            eprintln!(
+                "confer: ⚠ cannot read the managed-clone home {} ({e}) — the managed-clone list may be INCOMPLETE.",
+                root.display()
+            );
+            return out;
+        }
     };
     for h in hubs.flatten() {
         if !h.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -281,8 +293,17 @@ pub fn list() -> Vec<ManagedClone> {
         }
         let hname = h.file_name().to_string_lossy().to_string();
         let hub_slug = split_tag(&hname).map(|(s, _)| s.to_string()).unwrap_or(hname);
-        let Ok(roles) = std::fs::read_dir(h.path()) else {
-            continue;
+        let roles = match std::fs::read_dir(h.path()) {
+            Ok(rd) => rd,
+            Err(e) => {
+                // The hub dir exists but its contents can't be read — its clones are dropped. Say so
+                // rather than silently omitting a whole hub from `confer hubs`.
+                eprintln!(
+                    "confer: ⚠ cannot read managed hub dir {} ({e}) — its clones are OMITTED from the list.",
+                    h.path().display()
+                );
+                continue;
+            }
         };
         for r in roles.flatten() {
             if !r.file_type().map(|t| t.is_dir()).unwrap_or(false) {

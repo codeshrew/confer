@@ -83,14 +83,24 @@ fn get_in(base: &Path, hub_key: &str) -> Option<Tier> {
 }
 
 fn set_in(base: &Path, hub_key: &str, tier: Tier) -> Result<()> {
+    // Serialize the load-modify-save under a state lock, like keyring/presence — otherwise two
+    // concurrent writers (e.g. `join` setting Foreign while `init` set Own, or two roles bootstrapping
+    // on one machine) can lost-update: A loads, B loads the same map, B saves, A clobbers B.
+    let _guard = crate::config::state_lock(&base.join("tiers.lock"));
     let mut map = load_all(base);
     map.insert(hub_key.to_string(), tier.as_str().to_string());
     save_all(base, &map)
 }
 
 fn set_default_in(base: &Path, hub_key: &str, tier: Tier) -> Result<()> {
-    if get_in(base, hub_key).is_none() {
-        set_in(base, hub_key, tier)?;
+    // Hold the lock across the whole check-then-set so two concurrent defaults can't both pass the
+    // "unset?" test and race. Inlined (not `get_in` + `set_in`) to avoid re-acquiring the same
+    // non-reentrant lock. Matches the prior semantics: set only when no PARSEABLE tier is present.
+    let _guard = crate::config::state_lock(&base.join("tiers.lock"));
+    let mut map = load_all(base);
+    if map.get(hub_key).and_then(|s| Tier::parse(s)).is_none() {
+        map.insert(hub_key.to_string(), tier.as_str().to_string());
+        save_all(base, &map)?;
     }
     Ok(())
 }
