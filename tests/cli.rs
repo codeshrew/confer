@@ -83,6 +83,9 @@ fn new_hub() -> Hub {
     // Mirror a real confer hub: gitignore per-clone local state so `git add -A`
     // never commits `.confer/` (lock/cursor/identity) into the shared hub.
     std::fs::write(seed.join(".gitignore"), ".confer/\n").unwrap();
+    // The authoritative hub marker a real `init` scaffolds — clones inherit it, and the managed-clone
+    // health probe (`find_managed_clone`) requires it, so test hubs must carry it too.
+    std::fs::write(seed.join(".confer-version"), "0.6.5\n").unwrap();
     git(&seed, &["add", "-A"]);
     git(&seed, &["commit", "-q", "-m", "init"]);
     git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);

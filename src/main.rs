@@ -5890,27 +5890,76 @@ fn print_reactive_next(role: &str) {
 /// single idempotent command to run next. Deliberately NOT `invite` (that onboards a newcomer
 /// INTO a live hub, filled from hub state); `onboard` self-bootstraps a create-or-join when
 /// there is no hub and no inviter yet.
-/// Find the managed clone (under `~/.confer/clones/`) for a hub + role, if one exists on THIS
-/// machine. Matches the role and the hub by NORMALIZED origin — an ssh / https / `owner/repo`
-/// shorthand of the same repo all resolve to one shorthand — so it doesn't false-match a same-named
-/// role on a different hub. Read-only; `onboard` uses it to tell a returning agent to RE-ARM its
-/// clone rather than clone again.
+/// A transport- and case-independent canonical id for a hub, used to MATCH an existing managed clone
+/// to a requested hub. Remote URLs collapse to `host/owner/repo` — scheme, `user@`, `:port`, a
+/// `.git` suffix and a trailing slash all stripped, then lowercased (GitHub/GitLab paths are
+/// case-insensitive; matching a shade too loosely across ssh/https of the SAME repo is the whole
+/// point). Local filesystem hubs canonicalize to an absolute path and compare EXACTLY — never a
+/// suffix test, which would false-match a different hub that merely shares a basename (red-team #1).
+/// Returns None for anything not recognizable as a hub ref, so an unknown value matches nothing.
+fn canonical_hub_id(input: &str) -> Option<String> {
+    let s = input.trim().trim_end_matches('/');
+    if s.is_empty() {
+        return None;
+    }
+    // Local filesystem hub (a bare-repo path): absolute, ~, ., or an existing path.
+    if s.starts_with(['/', '~', '.']) || std::path::Path::new(s).exists() {
+        let expanded = if s == "~" {
+            config::home().ok()?
+        } else if let Some(rest) = s.strip_prefix("~/") {
+            config::home().ok()?.join(rest)
+        } else {
+            std::path::PathBuf::from(s)
+        };
+        let canon = std::fs::canonicalize(&expanded).unwrap_or(expanded);
+        let c = canon.to_string_lossy();
+        return Some(format!("file:{}", c.trim_end_matches(".git").trim_end_matches('/')));
+    }
+    // Remote: pull out (host, path) for scp-like, scheme://, and bare owner/repo forms.
+    let (host, path) = if let Some(rest) = s.strip_prefix("git@") {
+        rest.split_once(':')?
+    } else if let Some((_scheme, after)) = s.split_once("://") {
+        let after = after.rsplit_once('@').map_or(after, |(_, h)| h); // strip user@
+        after.split_once('/')?
+    } else if !s.contains(':') && s.matches('/').count() == 1 {
+        ("github.com", s) // bare owner/repo → github.com
+    } else {
+        return None;
+    };
+    let host = host.split(':').next().unwrap_or(host); // drop :port
+    let path = path
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        host.to_ascii_lowercase(),
+        path.to_ascii_lowercase()
+    ))
+}
+
+/// Find the HEALTHY managed clone (under `~/.confer/clones/`) for a hub + role, if one exists on THIS
+/// machine — matched by role and by `canonical_hub_id` (transport/case-independent), and gated on a
+/// `.confer-version` marker so a half-migrated/broken clone isn't reported as "already joined".
+/// Read-only; `onboard` uses it to tell a returning agent to RE-ARM rather than clone again.
 fn find_managed_clone(hub: &str, role: &str) -> Option<std::path::PathBuf> {
-    let want = parse_remote(hub).shorthand;
+    let want = canonical_hub_id(hub)?;
     clonehome::list()
         .into_iter()
         .filter(|c| c.role == role)
+        .filter(|c| c.path.join(".confer-version").is_file() && c.path.join("threads").is_dir())
         .find(|c| {
-            let origin = gitcmd::output(&c.path, &["config", "--get", "remote.origin.url"])
+            gitcmd::output(&c.path, &["config", "--get", "remote.origin.url"])
                 .ok()
                 .filter(|o| o.status.success())
                 .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string());
-            match (origin.as_deref(), want.as_deref()) {
-                (Some(o), Some(w)) => parse_remote(o).shorthand.as_deref() == Some(w),
-                (Some(o), None) => o == hub || o.trim_end_matches(".git").ends_with(hub),
-                _ => false,
-            }
+                .map(|s| s.trim().to_string())
+                .and_then(|o| canonical_hub_id(&o))
+                .as_deref()
+                == Some(want.as_str())
         })
         .map(|c| c.path)
 }
@@ -6287,6 +6336,55 @@ mod tests {
         assert_eq!(local.ssh, None);
         assert_eq!(local.https, None);
         assert_eq!(local.raw, "/srv/hubs/team-hub.git");
+    }
+
+    #[test]
+    fn canonical_hub_id_matches_same_hub_across_scheme_case_host() {
+        // Same GitHub repo across ssh / https / shorthand / trailing-slash / .git / CASE → one id.
+        let want = Some("github.com/codeshrew/confer-lab".to_string());
+        for input in [
+            "git@github.com:codeshrew/confer-lab.git",
+            "https://github.com/codeshrew/confer-lab",
+            "https://github.com/codeshrew/confer-lab.git/",
+            "codeshrew/confer-lab",
+            "https://github.com/CodeShrew/Confer-Lab", // GitHub paths are case-insensitive (red-team #2)
+        ] {
+            assert_eq!(canonical_hub_id(input), want, "canonical of {input}");
+        }
+        // NON-github host must ALSO normalize ssh vs https of the SAME repo (red-team #2: the old
+        // matcher only handled github.com, so self-hosted hubs never matched themselves).
+        assert_eq!(
+            canonical_hub_id("git@git.example.com:org/hub.git"),
+            canonical_hub_id("https://git.example.com/org/hub"),
+            "self-hosted ssh vs https must match"
+        );
+        assert_eq!(
+            canonical_hub_id("ssh://git@git.example.com:2222/org/hub.git"),
+            Some("git.example.com/org/hub".to_string()),
+            ":port and user@ are stripped"
+        );
+    }
+
+    #[test]
+    fn canonical_hub_id_does_not_false_match_different_hubs() {
+        // Different org / host → distinct ids (never a cross-fleet mismatch).
+        assert_ne!(
+            canonical_hub_id("orgA/hub"),
+            canonical_hub_id("orgB/hub"),
+            "different org must not match"
+        );
+        assert_ne!(
+            canonical_hub_id("git@github.com:o/hub.git"),
+            canonical_hub_id("git@gitlab.com:o/hub.git"),
+            "different host must not match"
+        );
+        // red-team #1: local-path fallback must be EXACT, never a suffix test. A different hub that
+        // merely shares a basename, or a bare word that is a raw suffix, must NOT match.
+        let real = canonical_hub_id("/srv/hubs/myhub.git");
+        assert_ne!(real, canonical_hub_id("/other/place/myhub.git"), "same basename, different path");
+        assert_eq!(canonical_hub_id("myhub"), None, "a bare non-owner/repo word is not a hub ref");
+        assert_ne!(real, canonical_hub_id("/srv/hubs/aaamyhub.git"), "aaamyhub must not match myhub");
+        assert_ne!(real, canonical_hub_id("/srv/hubs/notmyhub.git"), "notmyhub must not match myhub");
     }
 
     #[test]

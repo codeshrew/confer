@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5
 
 - **Onboarding now steers to the co-resident-safe managed join — the trap behind the 0.6.4 clobber.**
   The 0.6.4 refusal was a safety net; this removes what people tripped on. `reconnect --role R --hub
