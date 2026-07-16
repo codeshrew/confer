@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.7
+
+Coordination-reliability release: fixes two ways an agent could silently miss messages, and hardens
+the inbox and the watch against the setups that cause it.
+
+- **Inbox: a per-message read-set replaces the single high-water mark.** The inbox tracked reads as
+  one HWM id, which couldn't represent holes — opening the newest message marked ALL older mail read,
+  and a non-ULID id could poison the ordering and blind the inbox forever. Now:
+  - `show <id>` marks only that message; `ack <id>` dismisses one; `ack` (no id) catches up; `inbox`
+    LISTS and never auto-clears the batch; `--peek` is a compact triage list.
+  - `poll`/`watch` deliver but no longer mark direct mail read (delivery ≠ read) — a request persists
+    until you `show`/`ack` it.
+  - Non-ULID ids can't enter the read state (the poisoning bug, fixed by construction); the legacy
+    single-HWM state migrates automatically. Compaction is pure GC and never advances the read floor,
+    so a late-arriving older-id message (a deferred push) is no longer swept read.
+- **A reply is no longer silently addressed to no one.** `--reply-to` pointing at your OWN thread
+  post now continues the thread to that post's recipients (it used to resolve to no audience and wake
+  nobody). And any reply/request that still ends up addressed to no one now warns ("addressed to NO
+  ONE — reaches no inbox and wakes no peer").
+- **The watch resists the "backgrounded/redirected watch dies and I miss everything" trap.** The
+  `/confer-watch` skill now forbids launching it under background Bash / `&` / redirect (it gets
+  reaped and dies silently); `confer watch` warns at startup if its output is going to `/dev/null` or
+  a file; and `append`/`poll` surface a dead watch ("no live watcher — you are NOT being woken") if
+  you armed one and it isn't running.
+- Groundwork for consistent diagnostics: a `confer: ⚠` (safety) vs `confer: ·` (advisory) convention
+  so an agent can reliably distinguish real problems from tuning hints.
+
 ## 0.6.6
 
 Security + robustness release from a multi-agent review sweep. No new commands; existing behavior on
