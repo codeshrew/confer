@@ -7,7 +7,7 @@
 //! `crate::LifecycleArgs` for the `#[command(flatten)]`.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use crate::{LifecycleArgs, VERSION};
+use crate::{CreateArgs, LifecycleArgs, VERSION};
 
 /// `confer autoheal <action>` — was a freeform `String` (a typo exited as a runtime error, code 3,
 /// with no shell completion); a `ValueEnum` makes clap reject a bad value itself (usage error, code
@@ -50,7 +50,7 @@ pub(crate) enum HubAction {
     about = "git-native coordination blackboard for AI agents"
 )]
 pub(crate) struct Cli {
-    /// Operate on a specific hub — like `git -C`, before the subcommand: `confer --hub jarvis threads`,
+    /// Operate on a specific hub — like `git -C`, before the subcommand: `confer --hub jarvis topics`,
     /// `confer --hub agent-coord who`. Works with EVERY hub-scoped command. Give a hub NAME (matched
     /// against `confer hubs` — a case-insensitive substring of the hub's name) or a clone PATH. Sets
     /// the effective hub for this one invocation (overrides $CONFER_HUB / the current directory).
@@ -156,6 +156,25 @@ pub(crate) enum Cmd {
         #[arg(long = "allow-secret")]
         allow_secret: bool,
     },
+    /// Open a new tracked request (a ticket). Sugar for `append --type request`.
+    /// note = chat, request = ticket: use this when the thing needs someone to DO
+    /// something and show up on `requests`; use `note` for a plain message.
+    Request {
+        #[command(flatten)]
+        args: CreateArgs,
+        /// promote a prior `note` (or any message) into a tracked request that
+        /// references it — the "escalation" idiom: `note` first, `request
+        /// --reply-to <note-id>` once it needs to be tracked.
+        #[arg(long = "reply-to")]
+        reply_to: Option<String>,
+    },
+    /// Post a plain message (chat, no lifecycle tracking). Sugar for `append --type note`.
+    /// note = chat, request = ticket: use `request` instead when someone needs to DO
+    /// something about it.
+    Note {
+        #[command(flatten)]
+        args: CreateArgs,
+    },
     /// Claim a request (you're taking it). Sugar for `append --type claim --of`.
     Claim {
         #[command(flatten)]
@@ -246,21 +265,22 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// List the hub's topic THREADS (the folders under `threads/`) with activity + open-work state —
-    /// the board at a glance, newest-active first, and a way to find stale open threads to clean up.
+    /// List the hub's TOPICS (the folders under `threads/`) with activity + open-work state —
+    /// the board at a glance, newest-active first, and a way to find stale open topics to clean up.
     /// `thread <id>` (singular) drills into one request's lifecycle; this lists them all. A REPORT
     /// (exits 0). Combine `--stale` with lifecycle `done --as obsolete` to close what's gone dead.
-    Threads {
-        /// only threads with unresolved work (an open/claimed/blocked request)
+    #[command(alias = "threads")]
+    Topics {
+        /// only topics with unresolved work (an open/claimed/blocked request)
         #[arg(long)]
         open: bool,
-        /// only threads with no open work (all requests resolved, or discussion-only)
+        /// only topics with no open work (all requests resolved, or discussion-only)
         #[arg(long)]
         closed: bool,
-        /// only OPEN threads gone quiet longer than N days (default 14) — cleanup candidates
+        /// only OPEN topics gone quiet longer than N days (default 14) — cleanup candidates
         #[arg(long, num_args = 0..=1, default_missing_value = "14")]
         stale: Option<u64>,
-        /// machine output: a JSON array of thread objects — topic, messages, participants,
+        /// machine output: a JSON array of topic objects — topic, messages, participants,
         /// last_activity, age_secs, requests, open_requests, status ("open"|"closed"), stale.
         #[arg(long)]
         json: bool,

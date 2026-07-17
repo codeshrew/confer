@@ -4942,3 +4942,84 @@ fn threads_notes_only_topic_is_discussion_not_closed() {
         "JSON status for a zero-request topic stays \"closed\" (back-compat), only text + the additive \"discussion\" field change: {watercooler}"
     );
 }
+
+// ── `threads` → `topics` rename (hidden alias) ──────────────────────────────
+#[test]
+fn topics_lists_a_topic_and_threads_still_works_as_a_hidden_alias() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.append(&["--type", "note", "--to", "b", "--topic", "chat", "--summary", "hi", "--text", "y"])),
+        "append"
+    );
+    let js = out(&c.confer(&["topics", "--json"]));
+    assert!(js.trim_start().starts_with('['), "topics --json is an array: {js}");
+    assert!(js.contains("\"topic\":\"chat\""), "topics lists the chat topic: {js}");
+    assert!(code(&c.confer(&["topics"])) == 0, "topics is a report → exit 0");
+    // The old name keeps working (hidden alias) for scripts/skills that still call it.
+    assert!(
+        out(&c.confer(&["threads"])).contains("chat"),
+        "`threads` must still work as a hidden alias of `topics`"
+    );
+}
+
+// ── creation sugar verbs: `confer request` / `confer note` ─────────────────
+#[test]
+fn note_creates_a_plain_message_with_no_lifecycle() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.confer(&["note", "--from", "a", "--to", "b", "--text", "just chatting", "--summary", "hi"])),
+        "confer note should succeed"
+    );
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains("\"type\":\"note\""), "note creates a type:note message: {shown}");
+    // A note carries no lifecycle status — it must not show up on the requests board.
+    let reqs = out(&c.confer(&["requests"]));
+    assert!(!reqs.contains("just chatting"), "a note must not appear on `requests`: {reqs}");
+}
+
+#[test]
+fn request_creates_an_open_tracked_request() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.confer(&["request", "--from", "a", "--to", "b", "--summary", "fix the thing", "--text", "body"])),
+        "confer request should succeed"
+    );
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains("\"type\":\"request\""), "request creates a type:request message: {shown}");
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("fix the thing"), "a `request` must show up OPEN on `requests --open`: {reqs}");
+}
+
+#[test]
+fn request_reply_to_promotes_a_note_into_a_tracked_request() {
+    let h = new_hub();
+    let c = h.clone("a");
+    // A plain note first (the "chat" half of the idiom).
+    assert!(
+        ok(&c.confer(&["note", "--from", "a", "--to", "b", "--summary", "saw something odd", "--text", "logs look off"])),
+        "confer note should succeed"
+    );
+    let note_id = newest_id(&c);
+    // Escalate it into a tracked request that references the original note.
+    assert!(
+        ok(&c.confer(&[
+            "request", "--from", "a", "--to", "b", "--reply-to", &note_id,
+            "--summary", "please investigate", "--text", "escalating the earlier note"
+        ])),
+        "confer request --reply-to should succeed"
+    );
+    let req_id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &req_id, "--json"]));
+    assert!(shown.contains("\"type\":\"request\""), "still a tracked request: {shown}");
+    assert!(
+        shown.contains(&note_id),
+        "the request references the original note via reply_to: {shown}"
+    );
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("please investigate"), "the escalated request is OPEN: {reqs}");
+}

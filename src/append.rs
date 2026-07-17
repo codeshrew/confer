@@ -9,7 +9,7 @@ use crate::schema::{self, Frontmatter, Message, TYPES};
 use crate::{
     config, gitcmd, groups, hint, id_matches, is_full_ulid, is_reserved_name, now, repos,
     resolve_unique, roster, secrets, short_id, store, truncate, valid_slug,
-    warn_if_watch_should_be_live, LifecycleArgs,
+    warn_if_watch_should_be_live, CreateArgs, LifecycleArgs,
 };
 
 pub(crate) struct AppendArgs {
@@ -196,6 +196,33 @@ pub(crate) fn cmd_lifecycle(
         resolution,
         defer: false,
         allow_secret: false,
+    })
+}
+
+/// Ergonomic first-class creation verbs (`confer request`/`note`) — thin sugar over
+/// `append` with the type fixed, so opening a ticket or posting a chat message
+/// doesn't require spelling out `--type`. note = chat, request = ticket; a request
+/// may `--reply-to` a prior note to promote it into tracked work (the escalation
+/// idiom) — `note` itself has no `reply_to` param since only `request` exposes it.
+pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>) -> Result<()> {
+    cmd_append(AppendArgs {
+        msg_type: msg_type.to_string(),
+        text: a.text,
+        summary: a.summary,
+        to: a.to,
+        cc: a.cc,
+        priority: a.priority,
+        topic: a.topic,
+        reply_to,
+        of: None,
+        supersedes: None,
+        from: a.from,
+        src: a.src,
+        refs: a.refs,
+        allow_empty_body: a.allow_empty_body,
+        resolution: None,
+        defer: a.defer,
+        allow_secret: a.allow_secret,
     })
 }
 

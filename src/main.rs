@@ -55,7 +55,7 @@ mod watch;
 mod watchlock;
 
 use anyhow::{anyhow, Result};
-use append::{cmd_append, cmd_lifecycle, AppendArgs};
+use append::{cmd_append, cmd_create, cmd_lifecycle, AppendArgs};
 use clap::Parser;
 use cli::{Cli, Cmd};
 use config_hub::{cmd_config, cmd_hub, cmd_rewatch, cmd_status};
@@ -532,6 +532,8 @@ fn run() -> Result<()> {
             resolution,
             defer,
         }),
+        Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
+        Cmd::Note { args } => cmd_create("note", args, None),
         Cmd::Claim { args } => cmd_lifecycle("claim", args, None),
         Cmd::Done { args, resolution } => cmd_lifecycle("done", args, resolution),
         Cmd::Error { args } => cmd_lifecycle("error", args, None),
@@ -583,7 +585,7 @@ fn run() -> Result<()> {
             blocked,
         } => cmd_requests(open, mine, role, json, backlog, blocked),
         Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
-        Cmd::Threads {
+        Cmd::Topics {
             open,
             closed,
             stale,
@@ -825,6 +827,57 @@ pub(crate) struct LifecycleArgs {
     /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
     #[arg(long = "ref")]
     refs: Vec<String>,
+}
+
+/// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
+/// wrappers over `append --type <request|note>` with the type fixed, so they
+/// accept the same creation flags `append` does — add a flag here once and both
+/// verbs gain it. `--type` itself isn't exposed here — these verbs exist so it
+/// doesn't need to be.
+#[derive(clap::Args)]
+pub(crate) struct CreateArgs {
+    /// REQUIRED one-line summary — the triage field peers read before opening the body.
+    #[arg(long)]
+    summary: String,
+    /// message body; if omitted, read from stdin (supports multi-line/fenced)
+    #[arg(long)]
+    text: Option<String>,
+    /// primary addressee target(s) — role id, group, or `all`; repeatable
+    /// (--to a --to b). REQUIRED for `request`.
+    #[arg(long = "to")]
+    to: Vec<String>,
+    /// secondary audience target(s) — role id, group, or `all`; repeatable
+    #[arg(long = "cc")]
+    cc: Vec<String>,
+    /// triage hint: low | normal | high
+    #[arg(long)]
+    priority: Option<String>,
+    /// thread/topic slug (folder); defaults to "general"
+    #[arg(long)]
+    topic: Option<String>,
+    /// override the writing role (defaults to the joined role)
+    #[arg(long)]
+    from: Option<String>,
+    /// content provenance: agent | web | human (external → downweight)
+    #[arg(long)]
+    src: Option<String>,
+    /// point at a durable doc/spec instead of re-transmitting it:
+    /// `repo:path[@sha][#Lstart-Lend]` (repo resolves against `confer repos`);
+    /// repeatable. sha defaults to HEAD.
+    #[arg(long = "ref")]
+    refs: Vec<String>,
+    /// allow a summary-only message (empty body) — otherwise an empty/`-` body
+    /// is rejected, so content isn't silently lost.
+    #[arg(long)]
+    allow_empty_body: bool,
+    /// mark a request as backlog/someday — captured but kept OFF the active
+    /// `requests` board until promoted. (`request` only.)
+    #[arg(long)]
+    defer: bool,
+    /// post anyway even if the body looks like it contains a secret (the lint
+    /// blocks common token/key shapes — history is permanent + fleet-wide).
+    #[arg(long = "allow-secret")]
+    allow_secret: bool,
 }
 
 struct PollArgs {
