@@ -57,13 +57,19 @@ fn lev(a: &str, b: &str) -> usize {
 
 /// Do the significant tokens of the shorter string fully sit inside the longer's?
 /// ("reader" ⊆ "mobile reader" → true; "design studio" vs "design review" → false)
+/// Are ALL of `a`'s significant words already in `b` (a ⊆ b)? DIRECTIONAL on purpose. A proposed name
+/// that is a subset of an existing one has NO distinguishing word — a loose reference to it also matches
+/// the existing name, so it's genuinely ambiguous and must be blocked. A proposed name that ADDS a
+/// distinguisher (a superset, or a partial overlap with a new word) is always resolvable, so it's
+/// allowed — otherwise deliberate family names would each need `--force` for no ambiguity benefit: e.g.
+/// "Architecture Orbit" ⊃ "Orbit" is strictly *more* specific, never confusable with the base "Orbit"
+/// (field report). The exact-match + typo checks (`conflict`) still catch the genuinely confusable cases.
 fn token_subset(a: &str, b: &str) -> bool {
     let (ta, tb) = (tokens(a), tokens(b));
     if ta.is_empty() || tb.is_empty() {
         return false;
     }
-    let (short, long) = if ta.len() <= tb.len() { (&ta, &tb) } else { (&tb, &ta) };
-    short.iter().all(|t| long.contains(t))
+    ta.iter().all(|t| tb.contains(t))
 }
 
 /// Every identifier string for a role: its id, display, and aliases.
@@ -216,5 +222,28 @@ mod tests {
         assert!(conflict(&r, "carol", "printer").is_none());
         // re-adding my OWN identifier is not a conflict (me is skipped):
         assert!(conflict(&r, "bob", "mobile agent").is_none());
+    }
+
+    #[test]
+    fn collision_is_directional_superset_ok_subset_still_blocked() {
+        // A name that ADDS a distinguishing word (superset / partial overlap with a new word) is
+        // always resolvable → allowed. A name that is a bare SUBSET (drops all distinguishers) is
+        // still ambiguous → blocked. This dissolves the family-naming friction WITHOUT weakening the
+        // guard (field report): confer recommends `<domain>-orbit`, whose display is a superset of the
+        // base `orbit`, so every member used to need `--force` for no ambiguity benefit.
+        let mut r = Roster::new();
+        r.insert("arch-orbit".into(), role("Architecture Orbit", "athena.local", "architecture", &[]));
+
+        // supersets / siblings — a distinguishing word makes them resolvable → allowed:
+        assert!(conflict(&r, "orbit", "Orbit Prime").is_none()); // {orbit,prime} ⊄ {architecture,orbit}
+        assert!(conflict(&r, "graph-orbit", "Graph Orbit").is_none()); // {graph,orbit} ⊄ {architecture,orbit}
+
+        // bare subsets — no distinguisher → still blocked (a loose ref matches "Architecture Orbit"):
+        assert!(conflict(&r, "orbit", "Orbit").is_some()); // {orbit} ⊆ {architecture,orbit}
+        assert!(conflict(&r, "x", "Architecture").is_some()); // {architecture} ⊆ {architecture,orbit}
+
+        // exact + reordered duplicates still blocked:
+        assert!(conflict(&r, "x", "architecture orbit").is_some());
+        assert!(conflict(&r, "x", "Orbit Architecture").is_some()); // same words, reordered
     }
 }
