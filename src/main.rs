@@ -580,7 +580,7 @@ fn run() -> Result<()> {
             https,
         } => cmd_invite(role, host, scheme_from(ssh, https)),
         Cmd::Repos { json } => cmd_repos(json),
-        Cmd::Verify { id } => cmd_verify(id),
+        Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
         Cmd::Doctor { dir, fix } => cmd_doctor(dir, fix),
         Cmd::Trust { tier } => cmd_trust(tier),

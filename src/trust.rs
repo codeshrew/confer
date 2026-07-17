@@ -224,7 +224,7 @@ pub(crate) fn cmd_confirm_key(role: Option<String>) -> Result<()> {
     }
 }
 
-pub(crate) fn cmd_verify(id: String) -> Result<()> {
+pub(crate) fn cmd_verify(id: String, strict: bool) -> Result<()> {
     let root = config::repo_root()?;
     let hub_key = config::hub_key(&root);
     let roster = roster::load(&root);
@@ -246,7 +246,17 @@ pub(crate) fn cmd_verify(id: String) -> Result<()> {
     if trust.is_mismatch() {
         println!("  (the identity IS the key — it is never reassigned. Treat this as untrusted: it's an impersonation attempt, or a genuinely new agent, which must use its OWN role-id, never this one.)");
     }
-    Ok(())
+    // `verify` is a PREDICATE: the report above prints regardless, but the exit code answers "is this
+    // message cryptographically attributable to its claimed sender?" so `confer verify <id> && act` is
+    // a safe attribution gate. Verified = yes (0). A first-sight pin is a provisional yes (0) unless
+    // `--strict`. Unverified (unsigned / unknown key) and Mismatch (KEY MISMATCH) are a determinate NO
+    // (1) — NOT an error: the check ran, the answer is no. Genuine failures (id not found, git) already
+    // returned Err above → exit 3. (design/37 F6)
+    match &trust {
+        verify::Trust::Verified { .. } => Ok(()),
+        verify::Trust::FirstSight { .. } if !strict => Ok(()),
+        _ => Err(crate::PredicateFalse.into()),
+    }
 }
 
 /// Audit a clone's git identity/signing config for agent/human scope conflicts.

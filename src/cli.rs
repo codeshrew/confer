@@ -581,8 +581,18 @@ pub(crate) enum Cmd {
         json: bool,
     },
     /// Verify a message's commit signature against the sender role's LOCALLY PINNED
-    /// key (TOFU, ~/.confer) — attribution / anti-spoof. See DESIGN.md.
-    Verify { id: String },
+    /// key (TOFU, ~/.confer) — attribution / anti-spoof. A PREDICATE: prints the verdict and
+    /// exits 0 if the sender is cryptographically attributed (verified, or an unconfirmed
+    /// first-sight pin — see `--strict`), 1 if NOT attributable (unsigned / unknown key / KEY
+    /// MISMATCH), 3 if the check couldn't run. So `confer verify <id> && act` is a safe gate.
+    /// See DESIGN.md.
+    Verify {
+        id: String,
+        /// stricter gate: also exit 1 for an unconfirmed first-sight pin (only a human-CONFIRMED
+        /// key passes). Use for high-stakes attribution decisions.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Confirm a role's first-seen key OUT-OF-BAND: after checking its
     /// fingerprint by a trusted channel, mark the pin confirmed so it verifies as ✓ instead of
     /// the provisional ⚠ first-sight. Shows the pinned fingerprint if you pass no role.
