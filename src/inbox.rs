@@ -230,7 +230,6 @@ mod tests {
     const A: &str = "01AAAAAAAAAAAAAAAAAAAAAAAA";
     const B: &str = "01BBBBBBBBBBBBBBBBBBBBBBBB";
     const C: &str = "01CCCCCCCCCCCCCCCCCCCCCCCC";
-    const D: &str = "01DDDDDDDDDDDDDDDDDDDDDDDD";
 
     #[test]
     fn opening_one_does_not_read_the_others_holes_are_preserved() {
