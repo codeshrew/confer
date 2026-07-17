@@ -1,0 +1,6 @@
+# A function longer than this trips `clippy::too_many_lines` (enabled at the crate root in
+# src/main.rs). It's the FUNCTION-level half of our size discipline — the per-FILE budget is
+# enforced separately in CI (clippy has no per-file line lint). 150 is a soft target: split a
+# handler that outgrows it, or add `#[allow(clippy::too_many_lines)]` with a note if it's
+# irreducibly linear (e.g. a big match).
+too-many-lines-threshold = 150

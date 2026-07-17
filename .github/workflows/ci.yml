@@ -41,3 +41,29 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --all-targets
+
+  size-budget:
+    name: file-size budget (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Per-file line budget
+        # clippy caps FUNCTION length (too_many_lines, advisory in the lint job); this caps FILE
+        # length, which clippy can't. A file over the cap must be split into a focused module —
+        # this is the forcing function that keeps main.rs from silently regrowing into a monolith.
+        # See CLAUDE.md for the module/size conventions.
+        run: |
+          cap=1500; warn=1000; fail=0
+          while read -r n f; do
+            [ "$f" = "total" ] && continue
+            if [ "$n" -gt "$cap" ]; then
+              echo "::error file=$f::$f is $n lines (> $cap cap) — split it into a focused module (see CLAUDE.md)"
+              fail=1
+            elif [ "$n" -gt "$warn" ]; then
+              echo "::warning file=$f::$f is $n lines (approaching the $cap-line cap) — plan a split"
+            fi
+          done < <(find src -name '*.rs' | xargs wc -l | awk '{print $1, $2}')
+          if [ "$fail" -eq 1 ]; then
+            echo "One or more source files exceed the $cap-line cap. Split them (CLAUDE.md)."; exit 1
+          fi
+          echo "All source files within the $cap-line budget."

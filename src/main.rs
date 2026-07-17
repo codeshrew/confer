@@ -2,6 +2,11 @@
 //! Messages are Markdown files with YAML frontmatter (Obsidian-compatible),
 //! one file per message under threads/<topic>/. See DESIGN.md for the architecture and threat model.
 
+// Keep command handlers from silently growing back into monoliths — flags any fn over the
+// clippy.toml threshold (150). Advisory in CI; the per-file budget is enforced by the size-budget
+// CI job (clippy has no per-file lint). See CLAUDE.md for the module/size conventions.
+#![warn(clippy::too_many_lines)]
+
 mod alias;
 mod append;
 mod autoheal;
