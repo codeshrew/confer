@@ -353,6 +353,11 @@ enum Cmd {
         /// default; version drift is otherwise only seen at watch startup / `confer status`).
         #[arg(long = "no-version-notice")]
         no_version_notice: bool,
+        /// how this watcher delivers wakes (stamped for `watch-status`): the `/confer-watch` skill
+        /// passes `monitor`; a poll loop `poll`. Any harness passes its own label. Omit for a manual
+        /// run — `watch-status` then can't confirm you're actually receiving events.
+        #[arg(long)]
+        delivery: Option<String>,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether
@@ -1179,6 +1184,7 @@ fn main() -> Result<()> {
             all,
             min_priority,
             no_version_notice,
+            delivery,
             ..
         } => {
             let min_priority = match min_priority.as_str() {
@@ -1201,6 +1207,7 @@ fn main() -> Result<()> {
                 all,
                 min_priority,
                 no_version_notice,
+                delivery,
             })
         }
         Cmd::WatchStatus { role, json } => cmd_watch_status(role, json),
@@ -3071,12 +3078,14 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
         }
     };
 
+    let delivery = info.as_ref().and_then(|i| i.delivery.clone());
     if json {
         let obj = serde_json::json!({
             "role": me, "host": this_host, "state": state, "healthy": healthy,
             "your_version": cur,
             "watcher_version": info.as_ref().and_then(|i| i.version.clone()),
             "pid": info.as_ref().map(|i| i.pid),
+            "delivery": delivery,
             "recommendation": rec,
         });
         println!("{}", serde_json::to_string(&obj)?);
@@ -3086,6 +3095,18 @@ fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
             "{glyph} watch [{}]: {state} — {detail}",
             if me.is_empty() { "<role>" } else { &me }
         );
+        // Running ≠ delivering: a Monitor-hosted watcher wakes the agent; a plain background one just
+        // streams to a place nobody reads. We can only affirm this from the self-declared stamp
+        // (design/36); absent it, flag the ambiguity rather than imply healthy-means-delivering.
+        if healthy {
+            match &delivery {
+                Some(m) => println!("  delivery: {m} — armed to deliver wakes."),
+                None => hint(
+                    "delivery method not recorded — if you didn't arm via /confer-watch (or another \
+                     event-delivering wrapper), this watcher may be RUNNING but not waking you. Re-arm via /confer-watch.",
+                ),
+            }
+        }
         if !rec.is_empty() {
             println!("  → {rec}");
         }
@@ -6525,7 +6546,11 @@ in, so no command below hard-codes a role (that's deliberate: this one skill is 
 agent on the machine). Not sure which clone is yours? `{CONFER} clones` lists confer-managed clones;
 `cd` into the one for your role. Then start a **persistent Monitor** on:
 
-    {CONFER} watch --replace
+    {CONFER} watch --replace --delivery monitor
+
+(`--delivery monitor` stamps HOW you armed it, so `{CONFER} watch-status` can later confirm this
+watcher actually *delivers* wakes — not just that a process is running. Arming it any other way, or
+without the flag, leaves that unconfirmable.)
 
 ⚠ **Host it under the Monitor tool — never background Bash.** `confer watch` is a LONG-LIVED
 streamer. If you launch it with `run_in_background`, a trailing `&`, `nohup`, or you redirect its

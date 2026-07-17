@@ -17,6 +17,12 @@ pub struct WatchLock {
     path: PathBuf,
     /// When this watcher started (stable across heartbeats) — for `watch-status`.
     started_at: String,
+    /// How this watcher was armed — a self-declared stamp (e.g. `monitor`, `poll`, `background`) so
+    /// `watch-status` can affirm the watcher actually DELIVERS wake events to the agent vs. just runs.
+    /// A plain background watcher and a Monitor-hosted one look identical from the outside, but only
+    /// the latter reaches the AI (Heliosphere field report / design/36). Portable BY DESIGN: whatever
+    /// harness arms the watch passes its own method string — nothing here is Claude-Code-specific.
+    delivery: Option<String>,
 }
 
 /// A snapshot of a watcher lock, for `watch-status` / healing decisions.
@@ -31,6 +37,9 @@ pub struct LockInfo {
     pub same_host: bool,
     /// heartbeat is newer than the stale window.
     pub fresh: bool,
+    /// Self-declared arming method (see [`WatchLock::delivery`]). `None` = not recorded — an older
+    /// watcher, or one armed without the stamp (possibly a plain background process not delivering).
+    pub delivery: Option<String>,
 }
 
 /// The health of a role's watcher — shared by `watch-status` and `session-heal`
@@ -68,6 +77,7 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     let host = v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string();
     let version = v.get("version").and_then(|x| x.as_str()).map(String::from);
     let started_at = v.get("started_at").and_then(|x| x.as_str()).map(String::from);
+    let delivery = v.get("delivery").and_then(|x| x.as_str()).map(String::from);
     let same_host = host == config::hostname().unwrap_or_default();
     let age = age_secs(&path);
     Some(LockInfo {
@@ -79,6 +89,7 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
         host,
         version,
         started_at,
+        delivery,
     })
 }
 
@@ -122,7 +133,13 @@ impl WatchLock {
     /// Acquire the (hub, role) watch lock. If a *live, fresh* watcher already
     /// holds it, refuse — unless `replace`, which kills it and takes over. A
     /// dead / hung / other-host lock is reclaimed silently (auto-cleanup).
-    pub fn acquire(hub: &str, role: &str, stale_secs: u64, replace: bool) -> Result<Self> {
+    pub fn acquire(
+        hub: &str,
+        role: &str,
+        stale_secs: u64,
+        replace: bool,
+        delivery: Option<String>,
+    ) -> Result<Self> {
         let path = lock_path(hub, role)?;
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
@@ -159,6 +176,7 @@ impl WatchLock {
         let lock = WatchLock {
             path,
             started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            delivery,
         };
         lock.write()?;
         Ok(lock)
@@ -174,6 +192,7 @@ impl WatchLock {
             "host": config::hostname().unwrap_or_default(),
             "version": env!("CONFER_GIT_SHA"),
             "started_at": self.started_at,
+            "delivery": self.delivery,
         });
         std::fs::write(&self.path, serde_json::to_string_pretty(&info)?)?;
         Ok(())

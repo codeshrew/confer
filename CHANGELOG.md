@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.12
+
+- **`confer watch --delivery <method>` + `watch-status` confirms wake delivery.** A watcher that's
+  merely *running* isn't necessarily *delivering* wakes: a Monitor-hosted watch reaches the agent, a
+  plain background one streams to a place nobody reads — and both report `healthy`. The watch now
+  records a self-declared arming method (the `/confer-watch` skill passes `monitor`), and
+  `watch-status` reports `delivery: monitor — armed to deliver wakes` when it's stamped, or warns
+  "delivery method not recorded — may be running but not waking you" when it can't confirm. The stamp
+  is a free-string self-declaration, so any harness (not just Claude Code) passes its own label.
+  (Heliosphere field report #3; see design/36.)
+
 ## 0.6.11
 
 - **`confer rewatch` won't suggest killing a healthy peer's watcher.** A watch target owned only by

@@ -34,6 +34,9 @@ pub struct WatchOpts {
     /// suppress the one-shot "a newer confer is on this hub — update" wake. On by default; set to
     /// true (`--no-version-notice`) if you don't want the watch to nudge you about version drift.
     pub no_version_notice: bool,
+    /// self-declared arming method stamped onto the watch lock (`--delivery`), so `watch-status` can
+    /// affirm this watcher DELIVERS wakes vs. just runs. The `/confer-watch` skill passes `monitor`.
+    pub delivery: Option<String>,
 }
 
 /// If this watch's stdout is a discard — a regular file (`> file`) or a non-terminal char device
@@ -77,7 +80,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     // after a session compacts). Refuse a live duplicate; reclaim a stale one;
     // `--replace` takes over. Held for the lifetime of this run (Drop releases).
     let stale_secs = opts.poll_secs.max(15) * 4 + 20;
-    let lock = crate::watchlock::WatchLock::acquire(&hub, &me, stale_secs, opts.replace)?;
+    let lock = crate::watchlock::WatchLock::acquire(&hub, &me, stale_secs, opts.replace, opts.delivery.clone())?;
     eprintln!(
         "confer watch: owned by role '{}' on {} (pid {}, confer {}). A later session for this \
          role reclaims it with `watch --replace` — you don't need to remember this process.",
