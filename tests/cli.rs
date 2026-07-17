@@ -5149,3 +5149,56 @@ fn refs_reverse_lookup_finds_conversations_about_code() {
     assert!(out(&j).contains("\"event\":\"ref-hit\""), "json: {}", out(&j));
     assert!(out(&j).contains("\"repo\":\"mylib\""), "json: {}", out(&j));
 }
+
+#[test]
+fn ref_show_renders_snippet_and_flags_drift() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo4");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("lib.rs"), "one\ntwo\nthree\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // reference lines 1-2
+    let a = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:lib.rs#L1-2",
+    ]);
+    assert!(ok(&a), "append failed: {}", err(&a));
+
+    // recover the message id from the written file
+    let dir = c.dir.join("threads").join("general");
+    let md = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .expect("message file");
+    let body = std::fs::read_to_string(&md).unwrap();
+    let id = body
+        .lines()
+        .find_map(|l| l.strip_prefix("id:"))
+        .expect("id in frontmatter")
+        .trim()
+        .to_string();
+
+    // show renders the resolved snippet (pinned lines) + a [current] badge
+    let s = c.confer(&["show", &id]);
+    assert!(ok(&s), "show failed: {}", err(&s));
+    assert!(out(&s).contains("one") && out(&s).contains("two"), "snippet missing: {}", out(&s));
+    assert!(out(&s).contains("current"), "expected [current] badge: {}", out(&s));
+
+    // change the file at HEAD → the pinned ref is now stale ("changed")
+    std::fs::write(code.join("lib.rs"), "ONE\ntwo\nthree\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c1"]).status.success());
+
+    let s2 = c.confer(&["show", &id]);
+    assert!(out(&s2).contains("changed"), "show should flag drift: {}", out(&s2));
+    let r = c.confer(&["refs", "mylib:lib.rs"]);
+    assert!(out(&r).contains("changed"), "refs should flag drift: {}", out(&r));
+    // the snippet still shows the code AS PINNED (old bytes), not HEAD's
+    assert!(out(&s2).contains("one"), "snippet must read at the pinned sha: {}", out(&s2));
+}

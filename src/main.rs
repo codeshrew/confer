@@ -36,6 +36,7 @@ mod machineconfig;
 mod presence;
 mod projection;
 mod reconnect;
+mod refcode;
 mod repomap;
 mod repos;
 mod roster;
@@ -363,13 +364,24 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
     let hubs: Vec<std::path::PathBuf> =
         if all_hubs { crosshub::hub_dirs() } else { vec![config::repo_root()?] };
 
-    let mut hits: Vec<(String, projection::RefHit)> = Vec::new();
+    // (hub_label, hit, staleness). Staleness compares the pinned blob OID vs HEAD's in
+    // the locally-mapped clone (design/40 #5) — "unknown" when the repo isn't cloned here.
+    let mut hits: Vec<(String, projection::RefHit, &'static str)> = Vec::new();
     for hub in &hubs {
         let Ok(msgs) = store::all_messages(hub) else { continue };
         let idx = projection::RefIndex::fold(&msgs);
+        let repo_inv = repos::load(hub);
         let label = crosshub::hub_label(hub);
+        let mut clone_cache: std::collections::HashMap<String, Option<std::path::PathBuf>> =
+            std::collections::HashMap::new();
         for h in idx.query(&repo, path.as_deref(), range) {
-            hits.push((label.clone(), h.clone()));
+            let clone = clone_cache
+                .entry(h.repo.clone())
+                .or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo))
+                .clone();
+            let st = refcode::staleness(clone.as_deref(), &h.sha, &h.path, h.content_hash.as_deref())
+                .label();
+            hits.push((label.clone(), h.clone(), st));
         }
     }
 
@@ -379,7 +391,7 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
     }
 
     if json {
-        for (hub, h) in &hits {
+        for (hub, h, st) in &hits {
             let mut refj = serde_json::json!({ "repo": h.repo, "path": h.path, "sha": h.sha });
             if let Some(r) = h.range {
                 refj["range"] = serde_json::json!(r);
@@ -391,6 +403,7 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
                 "event": "ref-hit",
                 "hub": hub,
                 "ref": refj,
+                "staleness": st,
                 "message": {
                     "id": h.msg_id, "from": h.from, "type": h.msg_type,
                     "ts": h.ts, "topic": h.topic, "summary": h.summary,
@@ -412,13 +425,21 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
         return Ok(());
     }
     println!("{} conversation(s) reference {target_disp}:", hits.len());
-    for (hub, h) in &hits {
+    for (hub, h, st) in &hits {
         let hubp = if all_hubs { format!("{hub} · ") } else { String::new() };
         let loc = h.topic.as_deref().map(|t| format!("#{t}")).unwrap_or_else(|| "—".into());
-        let st = h.request_status.map(|s| format!(" [{s}]")).unwrap_or_default();
+        let status = h.request_status.map(|s| format!(" [{s}]")).unwrap_or_default();
         let rng = h.range.map(|r| format!("#L{}-{}", r[0], r[1])).unwrap_or_default();
+        // Flag drift: mark a ref whose code moved/changed under the pin (silent when
+        // "current"/"unknown" — no clone, or unchanged, needs no callout).
+        let stmark = match *st {
+            "changed" => "  ⚠changed",
+            "moved" => "  ⚠moved",
+            "unpinned" => "  ⚠unpinned",
+            _ => "",
+        };
         println!(
-            "  {hubp}{loc}  {}  {}{st}  {}  ({}:{}{rng})",
+            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{rng}){stmark}",
             short_id(&h.msg_id),
             h.from,
             h.summary,

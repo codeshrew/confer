@@ -313,6 +313,14 @@ pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
                 let who = roster::display(&roster, &m.front.from);
                 let body = schema::sanitize_term(&m.to_markdown()?, true);
                 println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+                // Resolve each --ref against its local clone (design/40 #5, #6):
+                // staleness + a bounded snippet when cloned here, pointer-only otherwise.
+                if !m.front.refs.is_empty() {
+                    let repo_inv = crate::repos::load(&root);
+                    for r in &m.front.refs {
+                        println!("{}", crate::refcode::render_resolved(&repo_inv, r, 40));
+                    }
+                }
                 // Supersession chain (the append-based "edit" model).
                 if let Some(newer) = msgs.iter().find(|x| {
                     x.front
