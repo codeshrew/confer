@@ -15,6 +15,12 @@
   the request's author, so closing a *broadcast* request left the peers who actually responded
   uninformed; `done`/`error`/`blocked`/`defer` now nudge you to `--to all` (or `--cc` the responders)
   when the request went to everyone.
+- **Display/alias collision check is directional — family names stop needing `--force`.** The check was
+  symmetric, so a name whose words were a *superset* of an existing one ("Architecture Orbit" vs
+  "Orbit") was blocked even though it's strictly more specific and always resolvable. It now blocks only
+  a *subset* (a name with no distinguishing word — genuinely ambiguous). Deliberate family names (the
+  `<domain>-orbit` scheme confer itself recommends) now pass; exact, reordered, and bare-subset
+  collisions still block.
 
 ## 0.6.10
 
