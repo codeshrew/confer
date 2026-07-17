@@ -11,6 +11,10 @@
   role used by managed clones with *different* signing keys is an impersonation or a misconfigured
   re-key — doctor now catches it at the source. The normal one-agent-across-hubs case (same role, same
   key) is not flagged.
+- **Closing a `--to all` request warns it only reaches the author.** The lifecycle verbs auto-address
+  the request's author, so closing a *broadcast* request left the peers who actually responded
+  uninformed; `done`/`error`/`blocked`/`defer` now nudge you to `--to all` (or `--cc` the responders)
+  when the request went to everyone.
 
 ## 0.6.10
 

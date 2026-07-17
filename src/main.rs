@@ -2202,6 +2202,17 @@ fn cmd_append(mut a: AppendArgs) -> Result<()> {
         if let Some(of_id) = &of {
             if let Some(req) = all.iter().find(|m| &m.front.id == of_id) {
                 to = vec![req.front.from.clone()];
+                // #5b (field report): closing a `--to all` request auto-addresses ONLY the author, so
+                // the peers who actually responded to the broadcast don't get the resolution. Nudge
+                // toward re-broadcasting when the request was a broadcast.
+                if matches!(a.msg_type.as_str(), "done" | "error" | "blocked" | "defer")
+                    && req.front.to.iter().any(|t| t == "all")
+                {
+                    hint(format!(
+                        "this closes a `--to all` request — it reaches only the author ({}). Add `--to all` (or `--cc` the responders) if the peers who replied should hear it.",
+                        req.front.from
+                    ));
+                }
             }
         }
     }
