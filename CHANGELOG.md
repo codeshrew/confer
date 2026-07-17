@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.2
+
+Fleet awareness — new ways for a human (or agent) to see what's going on (design/38).
+
+- **`confer threads`** — a new report listing the hub's topic threads: per topic, the message count,
+  active agents, last-activity age, open/total requests, and open|closed status. Filters `--open` /
+  `--closed` / `--stale[=days]` (open threads gone quiet — cleanup candidates, pairing with
+  `done --as obsolete`). `--json` snapshot.
+- **`confer fleet` now shows last-seen heartbeat age** (`● up 2m ago herald` / `✕ down 2h ago jarvis`) —
+  the "how connected am I" signal. `--json` gained `last_seen` + `age_secs`.
+- **New shipped skills** (they resync fleet-wide on the next update): **`/confer-board`** — the board
+  at a glance across all your hubs (threads + open task board + stale cleanup candidates), and
+  **`/confer-fleet`** — the multi-hub version/liveness view (previously local-only). Both take an
+  optional hub name to focus one.
+- **Universal `--hub <name|path>` selector** (`git -C` style): `confer --hub jarvis threads`,
+  `confer --hub agent-coord who` — target any hub by name or clone path, before the subcommand, on
+  every hub-scoped command.
+- **`confer serve` port + hub scope:** the default port moved off **8787** (it collides with RStudio
+  Server and studio apps) to **8422**, with easy overrides — `--port <PORT>`, the `CONFER_SERVE_PORT`
+  env var, or `--bind` for non-localhost. `serve`/`dashboard` now serve the **current hub** by default
+  (no cwd-magic), the whole fleet with **`--all-hubs`**, or one hub via the universal `--hub`.
+
 ## 0.7.1
 
 - **`doctor --check` / `--json` now cover the role↔key security check + the config/health advisories.**
