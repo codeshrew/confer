@@ -392,8 +392,11 @@ pub(crate) fn cmd_version(json: bool, check: bool, pin: bool) -> Result<()> {
         }
     }
 
+    // `version --check` is the scriptable gate: exit 1 when this build is behind the hub pin (a valid
+    // negative predicate result), exit 3 if the check itself failed (Err raised earlier). The bare
+    // `version` report always exits 0. (design/37 — no mid-stack process::exit.)
     if check && a.outdated {
-        std::process::exit(1);
+        return Err(crate::PredicateFalse.into());
     }
     Ok(())
 }

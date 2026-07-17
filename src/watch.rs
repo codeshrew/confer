@@ -545,7 +545,7 @@ mod tests {
 /// is keyed by (hub, role) on the machine, so ownership survives compaction — the
 /// new session is still "role X on host H" and can reclaim its own orphan safely.
 /// Exits 1 when action (re-arm) is needed so a hook/loop can branch. See DESIGN.md.
-pub(crate) fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
+pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
     let hub = config::hub_key(&root);
@@ -656,8 +656,12 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
             println!("  → {rec}");
         }
     }
-    if !healthy {
-        std::process::exit(1);
+    // `watch-status` is a REPORT: it always exits 0 once it has produced the report above, however bad
+    // the news. The scriptable gate lives behind `--check` — exit 1 when the watcher needs action. A
+    // genuine "couldn't determine" is an Err raised earlier → exit 3. (design/37; the report already
+    // printed, so this only sets the code — no mid-stack process::exit.)
+    if check && !healthy {
+        return Err(crate::PredicateFalse.into());
     }
     Ok(())
 }

@@ -336,7 +336,51 @@ pub(crate) fn to_json(m: &Message) -> Result<String> {
     Ok(serde_json::to_string(&v)?)
 }
 
-fn main() -> Result<()> {
+/// A predicate command's valid NEGATIVE result — e.g. `watch-status --check` on an unhealthy watcher,
+/// `verify` on a key mismatch. NOT an error: it maps to exit code 1 in `main`, distinct from an
+/// execution failure (exit 3). Carried through the `Result` channel so a predicate handler can `return`
+/// it AFTER printing its report, without a mid-stack `process::exit` (which would skip `Drop` on locks).
+#[derive(Debug)]
+pub(crate) struct PredicateFalse;
+impl std::fmt::Display for PredicateFalse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("predicate not satisfied")
+    }
+}
+impl std::error::Error for PredicateFalse {}
+
+/// The Claude Code Stop-hook "block the stop" signal (`poll --hook` with new mail): exit code 2, payload
+/// already on stderr for the model. An ADAPTER contract imposed by the host, not confer's own scheme —
+/// carried through `Result` like `PredicateFalse` so there's no mid-stack `process::exit`.
+#[derive(Debug)]
+pub(crate) struct StopHookBlock;
+impl std::fmt::Display for StopHookBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stop-hook: new mail")
+    }
+}
+impl std::error::Error for StopHookBlock {}
+
+/// Exit-code contract (DESIGN.md): 0 = success / report produced / predicate YES; 1 = predicate NO (a
+/// valid negative, ONLY from predicate commands); 2 = usage (clap) or the Stop-hook block; 3 =
+/// execution/environment error. Codes return UP through here — never `process::exit` mid-stack — so
+/// clone locks and cursor state always `Drop`.
+fn main() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.is::<PredicateFalse>() => ExitCode::from(1),
+        Err(e) if e.is::<StopHookBlock>() => ExitCode::from(2),
+        Err(e) => {
+            // Match Rust's default Result-termination output so error TEXT is unchanged; only the CODE
+            // moves (1 → 3), decoupling "confer failed" from a predicate's "the answer is no".
+            eprintln!("Error: {e:?}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn run() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Join {
             role,
@@ -397,15 +441,33 @@ fn main() -> Result<()> {
             all,
             to_me,
             ..
-        } => cmd_poll(PollArgs {
-            advance,
-            topic,
-            hook,
-            json,
-            role,
-            all,
-            to_me,
-        }),
+        } => {
+            let r = cmd_poll(PollArgs {
+                advance,
+                topic,
+                hook,
+                json,
+                role,
+                all,
+                to_me,
+            });
+            // Hook adapters are FAIL-OPEN: `poll --hook`'s own malfunction must NEVER block the agent's
+            // Stop (a transient git/IO error would otherwise wedge the session). Swallow non-signal errors
+            // → exit 0 with a stderr note; the StopHookBlock signal (new mail) still propagates. (design/37)
+            if hook {
+                match r {
+                    Err(e) if !e.is::<StopHookBlock>() => {
+                        warn_safety(format!(
+                            "poll --hook: {e:#} — continuing without blocking the stop (fail-open)"
+                        ));
+                        Ok(())
+                    }
+                    other => other,
+                }
+            } else {
+                r
+            }
+        }
         Cmd::Show { id } => cmd_show(id),
         Cmd::Requests {
             open,
@@ -555,7 +617,7 @@ fn main() -> Result<()> {
                 delivery,
             })
         }
-        Cmd::WatchStatus { role, json } => watch::cmd_watch_status(role, json),
+        Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status => cmd_status(),
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { hub } => cmd_dashboard(hub),
@@ -714,7 +776,10 @@ fn cmd_poll(p: PollArgs) -> Result<()> {
         // polling loop can't silently clear mail it merely streamed past (inbox.rs).
     }
     if p.hook && !new.is_empty() {
-        std::process::exit(2);
+        // Claude Code Stop-hook protocol: exit 2 = block the stop, the payload (already on stderr in
+        // hook mode) is fed to the model. Signalled via a marker so `main` sets the code — no mid-stack
+        // process::exit. (design/37 — this is an ADAPTER contract, not confer's own exit scheme.)
+        return Err(StopHookBlock.into());
     }
     Ok(())
 }

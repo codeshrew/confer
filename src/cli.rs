@@ -241,12 +241,17 @@ pub(crate) enum Cmd {
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether
-    /// to re-arm (`watch --replace`). Exits non-zero when action is needed.
+    /// to re-arm (`watch --replace`). A REPORT: exits 0 whenever it produces the report
+    /// (even when the watcher is unhealthy). For a scriptable gate, add `--check`.
     WatchStatus {
         #[arg(long)]
         role: Option<String>,
         #[arg(long)]
         json: bool,
+        /// scriptable gate: exit 1 if the watcher needs action (re-arm), 3 if it can't be
+        /// determined, 0 if healthy. Without this, the command always exits 0 (it's a report).
+        #[arg(long)]
+        check: bool,
     },
     /// Queryable health: hub reachability, unpushed/unintegrated commits, watch
     /// state, disk headroom. Pull-not-push — confer handles transient degradation
