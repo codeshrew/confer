@@ -99,6 +99,44 @@ pub fn hub_key(root: &Path) -> String {
         .collect()
 }
 
+/// The strict, PIN-GRADE hub root identity for the `known_hubs` trust store (design/35). Unlike
+/// [`hub_key`] — which is lenient (first-line of `rev-list`, with a URL-string fallback) because it's
+/// only KEYING clones/keyrings — this refuses to guess: a multi-root history is ambiguous (which root
+/// is "the" identity depends on traversal order, not on any stable rule) → hard error; an empty repo
+/// is a DISTINCT state, never a URL string masquerading as a SHA (pinning that fallback before the
+/// first commit lands would permanently mismatch the real root — a self-inflicted DoS). Only a single
+/// unambiguous root commit is pinnable.
+pub enum HubRoot {
+    /// The single root-commit SHA — the pinnable identity.
+    Commit(String),
+    /// The repo has no commits yet — NOT pinnable (pin only after the first commit exists).
+    NoCommits,
+}
+
+pub fn hub_root_strict(root: &Path) -> Result<HubRoot> {
+    let o = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--max-parents=0", "HEAD"])
+        .output()?;
+    if !o.status.success() {
+        // No HEAD / no commits yet — a fresh or empty repo.
+        return Ok(HubRoot::NoCommits);
+    }
+    let out = String::from_utf8_lossy(&o.stdout);
+    let roots: Vec<&str> = out.split_whitespace().collect();
+    match roots.as_slice() {
+        [] => Ok(HubRoot::NoCommits),
+        [sha] => Ok(HubRoot::Commit((*sha).to_string())),
+        many => Err(anyhow!(
+            "hub at {} has {} root commits — an ambiguous/multi-root history is not a stable identity \
+             and cannot be pinned; investigate before trusting it (a legitimate hub has exactly one root)",
+            root.display(),
+            many.len()
+        )),
+    }
+}
+
 /// The agent's SSH signing key path recorded at join (`.confer/identity.json`),
 /// if this clone is configured to sign commits. See DESIGN.md.
 pub fn signing_key(root: &Path) -> Option<PathBuf> {

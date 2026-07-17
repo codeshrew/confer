@@ -24,6 +24,17 @@ across the co-resident sessions that share one machine — plus two board-correc
   strict chronological order (first terminal state wins), so a later `supersedes` can't retroactively
   flip a finished request back to SUPERSEDED. `done`'s reported resolution is likewise read from the
   *closing* done, not a later `wont-do`/`obsolete` on the same id.
+- **`reconnect` no longer joins you keyless.** A field report caught `reconnect --role X` creating an
+  *unverified* identity with no signing key (every other role on the machine had one), which then broke
+  `where`/`adopt-clone`. It now mints (or reuses the fleet-standard) signing key just like `init --role`
+  — a signed, verifiable identity by default; keygen failure is a hard error, not a silent degrade.
+- **`who`'s cross-hub `≡` line is deduped.** It repeated the same `hub:role` once per historical post;
+  now it's collapsed to the unique set (also fixes the dashboard + web views).
+- **Machine config foundation (`confer config`).** New `~/.confer/config.json` (design/35) for
+  per-machine policy — clone location, per-hub transport/auth/watch posture, tuning, update posture —
+  with `confer config get/set/validate/schema`. Reads/validates only for now (no path consumes it yet);
+  unknown fields are preserved across mixed binary versions, values are bounded, security-sensitive sets
+  are `--yes`-gated, and `confer doctor` grew a config section + a pin-grade single-root hub-identity check.
 
 ## 0.6.8
 

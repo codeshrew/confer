@@ -17,6 +17,7 @@ mod gitcmd;
 mod groups;
 mod inbox;
 mod keyring;
+mod machineconfig;
 mod presence;
 mod projection;
 mod repos;
@@ -403,6 +404,21 @@ enum Cmd {
         /// on | off | status | prune
         action: String,
         /// with `prune`: actually remove stale targets (default is a dry-run listing).
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Inspect or set this machine's policy config (`~/.confer/config.json`: clone location,
+    /// per-hub transport/auth, tuning, update posture — design/35). NOT the shared repo contract
+    /// and NOT trust state. Confer-managed; don't hand-edit the JSON.
+    Config {
+        /// show | get | set | validate | schema  (omit → show)
+        #[arg(default_value = "show")]
+        action: String,
+        /// dotted key for get/set, e.g. `machine.clone_root`, `hubs.<name>.scheme`, `tuning.git_timeout_secs`
+        key: Option<String>,
+        /// value, for `set`
+        value: Option<String>,
+        /// confirm a security-gated `set` (url / auth / auto_update / clone_root / a new hub block)
         #[arg(long)]
         yes: bool,
     },
@@ -1169,6 +1185,7 @@ fn main() -> Result<()> {
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
         Cmd::SessionHeal => cmd_session_heal(),
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
+        Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
@@ -3278,6 +3295,107 @@ fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// `confer config` — inspect/set machine-policy config (`~/.confer/config.json`, design/35). Phase 1:
+/// pure read/validate/set; no other code consumes these values yet (no behavior change). `set` writes
+/// under the config lock (read-modify-write), refuses a hard-invalid result, and gates security-
+/// sensitive fields behind `--yes`.
+fn cmd_config(action: String, key: Option<String>, value: Option<String>, yes: bool) -> Result<()> {
+    use machineconfig as mc;
+    match action.as_str() {
+        "show" => {
+            let cfg = mc::load();
+            println!("{}", serde_json::to_string_pretty(&cfg)?);
+            for (f, m) in mc::validate(&cfg) {
+                if mc::is_advisory(&m) {
+                    hint(&format!("config {f}: {m}"));
+                } else {
+                    warn_safety(&format!("config {f}: {m}"));
+                }
+            }
+            Ok(())
+        }
+        "get" => {
+            let key = key.ok_or_else(|| anyhow!("usage: confer config get <key>"))?;
+            match mc::get_field(&mc::load(), &key) {
+                Some(v) => {
+                    println!("{v}");
+                    Ok(())
+                }
+                None => Err(anyhow!("'{key}' is unset or unknown — see `confer config schema`")),
+            }
+        }
+        "set" => {
+            let key = key.ok_or_else(|| anyhow!("usage: confer config set <key> <value> [--yes]"))?;
+            let value = value.ok_or_else(|| anyhow!("usage: confer config set <key> <value> [--yes]"))?;
+            mc::update_with(|cfg| {
+                let outcome = mc::set_field(cfg, &key, &value)?;
+                // Refuse to persist a config with a HARD (non-advisory) validation error anywhere.
+                if let Some((f, m)) = mc::validate(cfg).into_iter().find(|(_, m)| !mc::is_advisory(m)) {
+                    return Err(anyhow!("refusing to write — {f}: {m}"));
+                }
+                if let Some(reason) = &outcome.gated {
+                    if !yes {
+                        return Err(anyhow!(
+                            "this change is security-sensitive ({reason}).\n\
+                             re-run with --yes to confirm:  confer config set {key} {value} --yes"
+                        ));
+                    }
+                }
+                Ok(())
+            })?;
+            println!("set {key} = {value}");
+            Ok(())
+        }
+        "validate" => {
+            let findings = mc::validate(&mc::load());
+            if findings.is_empty() {
+                println!("config OK.");
+                return Ok(());
+            }
+            let mut hard = 0usize;
+            for (f, m) in &findings {
+                if mc::is_advisory(m) {
+                    hint(&format!("{f}: {m}"));
+                } else {
+                    warn_safety(&format!("{f}: {m}"));
+                    hard += 1;
+                }
+            }
+            if hard > 0 {
+                return Err(anyhow!("{hard} config problem(s) need fixing"));
+            }
+            Ok(())
+        }
+        "schema" => {
+            print_config_schema();
+            Ok(())
+        }
+        other => Err(anyhow!(
+            "unknown config action '{other}' (use: show | get | set | validate | schema)"
+        )),
+    }
+}
+
+/// The settable keys, for `confer config schema` — the annotated view that a JSON file (no comments)
+/// can't carry inline.
+fn print_config_schema() {
+    println!("confer machine config — ~/.confer/config.json (design/35). Keys for `config get/set`:");
+    println!();
+    println!("  machine.clone_root          path      where managed clones live (default ~/.confer/clones)");
+    println!("  update.version_notice       bool      surface a 'newer confer available' watch notice");
+    println!("  update.auto_update          bool      [gated] act on a hub version-pin bump (own hubs only)");
+    println!("  tuning.git_timeout_secs     1..=120   per-git-op timeout");
+    println!("  tuning.op_budget_secs       1..=300   overall operation budget");
+    println!("  hubs.<name>.url             url       [gated] routing for a hub (NOT the pin)");
+    println!("  hubs.<name>.scheme          ssh|https transport scheme");
+    println!("  hubs.<name>.auth.method     ssh|confer-app|system   [gated] how the hub authenticates");
+    println!("  hubs.<name>.auth.key        path      [gated] transport key path (a pointer, never a secret)");
+    println!("  hubs.<name>.watch           reactive|poll|off        session auto-watch posture");
+    println!();
+    println!("[gated] changes need --yes. <name> is the normalized (lowercase) hub name.");
+    println!("This is machine policy — NOT the shared repo contract, NOT trust state (pins live elsewhere).");
+}
+
 /// Best-effort free space (GB) on the volume holding `root`, via `df -Pk`.
 /// Queryable health — the pull-not-push side of the resilience model.
 fn cmd_status() -> Result<()> {
@@ -5336,6 +5454,33 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
         );
     }
 
+    // Machine-policy config (design/35): validate ~/.confer/config.json, and run the pin-grade
+    // identity check on this hub (a multi-root history is not a stable identity).
+    {
+        let cfg = machineconfig::load();
+        let findings = machineconfig::validate(&cfg);
+        if findings.is_empty() {
+            println!("✓ machine config: OK ({} hub block(s)).", cfg.hubs.len());
+        } else {
+            for (f, m) in &findings {
+                if machineconfig::is_advisory(m) {
+                    println!("· config {f}: {m}");
+                } else {
+                    println!("⚠ config {f}: {m}");
+                }
+            }
+        }
+        match config::hub_root_strict(&root) {
+            Ok(config::HubRoot::Commit(sha)) => {
+                println!("✓ hub identity: single-root {} (pinnable).", &sha[..sha.len().min(12)])
+            }
+            Ok(config::HubRoot::NoCommits) => {
+                println!("· hub identity: no commits yet — not pinnable until the first commit lands.")
+            }
+            Err(e) => println!("⚠ hub identity: {e}"),
+        }
+    }
+
     // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
     println!(
         "\nlegend:  ✓ ok   ⚠ safety — action recommended   ‼ trust violation — do NOT proceed   · advisory — no action needed"
@@ -6250,7 +6395,29 @@ fn cmd_reconnect(
     // 2. Refresh + (re)join with the requested host (idempotent).
     let _ = gitcmd::integrate(&root); // pull latest, best-effort
     if let Some(r) = &role {
-        let sk = config::signing_key(&root).map(|p| p.to_string_lossy().into_owned());
+        // Ensure a signing identity, exactly like `init --role`: reuse this clone's existing key,
+        // else the fleet-standard per-role key at ~/.confer/keys/<role>, MINTING it if absent — so
+        // reconnect yields a SIGNED, verifiable identity by default. Previously it passed whatever
+        // `signing_key(&root)` returned (None when the clone had no key), producing a silent keyless,
+        // UNVERIFIED join that then broke `where`/`adopt-clone` and left a cold agent unverified on
+        // the happy path without realizing it (field report). Keygen failure is a hard error, never a
+        // quiet degrade; `join --signing-key <path>` (or pre-placing the key) still bypasses.
+        let sk = match config::signing_key(&root).map(|p| p.to_string_lossy().into_owned()) {
+            Some(existing) => Some(existing),
+            None => {
+                let kp = config::home()?.join(".confer").join("keys").join(r);
+                if !kp.exists() {
+                    cmd_keygen(Some(r.clone()), false).map_err(|e| {
+                        anyhow!(
+                            "could not mint a signing key for '{r}': {e}\n\
+                             install ssh-keygen (openssh) and ensure ~/.confer/keys is writable, \
+                             or run `confer join --role {r} --signing-key <path>` with an existing key"
+                        )
+                    })?;
+                }
+                Some(kp.to_string_lossy().into_owned())
+            }
+        };
         // Propagate — every cmd_join failure here is a hard precondition (invalid/reserved slug,
         // homoglyph display, re-key mismatch, or a re-role clobber of a clone already bound to
         // another role). None are transient, so aborting beats printing "✅ reconnected" over a

@@ -199,6 +199,13 @@ pub fn appearances(exclude: &Path) -> HashMap<String, Vec<(String, String)>> {
             }
         }
     }
+    // Dedupe each identity's appearances: the registry can list the same hub dir many times (one per
+    // historical post/session), which otherwise repeats the same `hub:role` in the `≡` line and makes
+    // `who`/dashboard hard to scan (field report). Collapse to unique, first-seen order.
+    for v in idx.values_mut() {
+        let mut seen = std::collections::HashSet::new();
+        v.retain(|pair| seen.insert(pair.clone()));
+    }
     idx
 }
 
