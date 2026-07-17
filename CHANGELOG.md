@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.0
+
+**A real CLI contract — exit codes, streams, and machine output (design/37).** confer is driven by
+hooks and agent loops, so this release makes its exit codes and JSON a dependable API. **Breaking**
+(exit codes changed), hence the minor bump.
+
+- **Exit-code contract.** Documented, consistent codes (see DESIGN.md): **0** success / report produced
+  / predicate-yes, **1** predicate-no, **2** usage, **3** execution/environment error. Errors are now
+  **3** — distinct from a predicate's **1** — so a hook can finally tell "act on this state" from
+  "confer itself broke" (they were both `1` before). `main()` returns `ExitCode`; no more mid-stack
+  `process::exit` (which skipped `Drop` on clone locks).
+- **`watch-status` is a report** — it always exits **0** once it prints, however unhealthy the watcher.
+  The scriptable gate moved to `watch-status --check` (1 = needs action, 3 = undeterminable). A
+  `status`-named command should never report "failure" for a state it successfully reports.
+  `version --check` aligned to the same 0/1/3.
+- **`verify` is a proper predicate.** It used to print `‼ KEY MISMATCH` and exit **0** — a false green
+  for the attribution-gating command. Now: 0 if attributable, **1** if unsigned / unknown-key /
+  KEY MISMATCH, 3 if the check can't run. `--strict` also fails an unconfirmed first-sight pin.
+- **`poll --hook` is fail-open.** Its own error can never block the agent's Stop (exit 0 + a stderr
+  note); exit 2 stays reserved for the Stop-hook "new mail, block" protocol.
+- **`--json` carries verified provenance.** Every message object now includes `trust`
+  (status/fpr/detail), `tier`, and `screen` — so an agent on the JSON path sees KEY MISMATCH instead of
+  trusting the self-declared `from`. Informational notices are typed events
+  (`{"event":"update-available",…}`); `watch --json` stays a clean, parseable stream.
+- **`--json` added** to `show`, `inbox`, `thread`, `who`, `status`, `seen`, and `doctor`.
+  `doctor --check` gates on the git-identity audit (its advisory diagnostics stay report-only —
+  documented in `--help`).
+- **Typed action args.** `config`, `hub`, and `autoheal` take a fixed set of actions — a typo is now a
+  usage error (2) with completions, not a runtime error.
+- Internal: this follows the `main.rs` decomposition (0.6.13) and adds CI size guardrails; the CLI
+  contract is written into DESIGN.md + CLAUDE.md so it can't silently drift.
+
 ## 0.6.13
 
 - **Internal: `main.rs` decomposed into focused modules (no behavior change).** The CLI had grown a
