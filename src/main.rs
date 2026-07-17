@@ -3659,9 +3659,10 @@ fn cmd_rewatch(only: Option<String>) -> Result<()> {
         if !std::path::Path::new(&t.hub).exists() {
             continue; // missing hub — a prune candidate, not a re-arm target
         }
-        if !autoheal::owned_by_session(t, &me_session, &me_role) {
-            continue; // a co-resident peer's watcher — never mine to re-arm
-        }
+        let own = match autoheal::ownership(t, &me_session, &me_role) {
+            Some(o) => o,
+            None => continue, // a co-resident peer's watcher — never mine to re-arm
+        };
         let name = current_hub_name(std::path::Path::new(&t.hub)).ok();
         if let Some(only) = &only {
             if name.as_deref() != Some(only.as_str()) && !t.hub.contains(only.as_str()) {
@@ -3671,11 +3672,30 @@ fn cmd_rewatch(only: Option<String>) -> Result<()> {
         let label = name.unwrap_or_else(|| t.hub.clone());
         match hub_watch_mode(&cfg, std::path::Path::new(&t.hub)) {
             machineconfig::WatchMode::Reactive => {
-                println!(
-                    "• {label} [{}]: arm reactive → cd {} && confer watch --role {} --replace",
-                    t.role, t.hub, t.role
-                );
-                reactive += 1;
+                // Peer-hijack safety: a target owned only by the ROLE fallback (not the arming
+                // session) could — under a role-name collision the design forbids — be a co-resident
+                // PEER's watcher. If a HEALTHY (live, current-build) watcher already holds it, do NOT
+                // emit a bare `--replace` (that SIGTERMs the process); flag it for confirmation. A
+                // session-owned target, or a role-owned one that's stale/dead, is safe to re-arm.
+                let hk = config::hub_key(std::path::Path::new(&t.hub));
+                let live_and_ambiguous = own == autoheal::Ownership::Role
+                    && matches!(
+                        watchlock::classify(&watchlock::inspect(&hk, &t.role, 90), BUILD_SHA),
+                        watchlock::WatchState::Healthy
+                    );
+                if live_and_ambiguous {
+                    println!(
+                        "• {label} [{}]: ⚠ a HEALTHY watcher already holds this (matched by role, not this session — could be a co-resident peer). Confirm it's yours, THEN: cd {} && confer watch --role {} --replace",
+                        t.role, t.hub, t.role
+                    );
+                    other += 1;
+                } else {
+                    println!(
+                        "• {label} [{}]: arm reactive → cd {} && confer watch --role {} --replace",
+                        t.role, t.hub, t.role
+                    );
+                    reactive += 1;
+                }
             }
             machineconfig::WatchMode::Poll => {
                 println!("• {label} [{}]: poll → loop `confer poll --role {}` (watch=poll)", t.role, t.role);
@@ -5777,6 +5797,35 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
                 println!("· hub identity: no commits yet — not pinnable until the first commit lands.")
             }
             Err(e) => println!("⚠ hub identity: {e}"),
+        }
+    }
+
+    // Role↔key invariant (DESIGN.md: identity IS the key). A role used by managed clones with
+    // DIFFERENT signing keys is either an impersonation or a misconfigured re-key — and it's the
+    // precondition for the (low-severity, self-inflicted) `rewatch` ownership ambiguity, so catch it
+    // at the source. Same role + same key across hubs is the legitimate one-agent-multi-hub case → no
+    // warning (compare algorithm+material only, ignoring the key's trailing comment).
+    {
+        use std::collections::{BTreeMap, BTreeSet};
+        let norm = |pk: &str| pk.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+        let mut by_role: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for c in clonehome::list() {
+            if let Some(pk) = clonehome::identity_pubkey(&c.path) {
+                by_role.entry(c.role).or_default().insert(norm(&pk));
+            }
+        }
+        let dupes: Vec<(&String, usize)> =
+            by_role.iter().filter(|(_, k)| k.len() > 1).map(|(r, k)| (r, k.len())).collect();
+        if dupes.is_empty() {
+            if !by_role.is_empty() {
+                println!("✓ role↔key: each managed role signs with a single key.");
+            }
+        } else {
+            for (role, n) in dupes {
+                println!(
+                    "⚠ role '{role}' is used by managed clones with {n} DIFFERENT signing keys — identity IS the key (DESIGN.md): one is an impersonation or a misconfigured re-key. Give each distinct agent its own role id."
+                );
+            }
         }
     }
 

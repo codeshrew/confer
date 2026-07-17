@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.11
+
+- **`confer rewatch` won't suggest killing a healthy peer's watcher.** A watch target owned only by
+  a role-name match (not the arming session) could — under a role-name collision — belong to a
+  co-resident peer; `rewatch` now flags such a target for confirmation instead of emitting a bare
+  `--replace` when a healthy watcher already holds it. (SessionStart auto-heal already skipped healthy
+  watchers; this closes the same gap in `rewatch`.)
+- **`confer doctor` flags a role signed by two different keys.** Identity IS the key (DESIGN.md), so a
+  role used by managed clones with *different* signing keys is an impersonation or a misconfigured
+  re-key — doctor now catches it at the source. The normal one-agent-across-hubs case (same role, same
+  key) is not flagged.
+
 ## 0.6.10
 
 Paved-path polish, mostly from a field report — the Heliosphere fleet's multi-agent onboarding notes:

@@ -132,22 +132,42 @@ pub fn prune() -> Vec<Target> {
 /// targets are healed ONLY via the role match (then self-stamp on re-arm), so a co-resident peer
 /// is never told to re-arm another role's watcher. With neither my session nor my role known we
 /// stay conservative and own nothing — better a missed nudge than hijacking a peer.
+/// WHY a target counts as owned — the caller needs this to stay safe. `Session` = the arming session
+/// id matched, so it is unambiguously mine (safe to auto-`--replace`). `Role` = only the role matched
+/// (a post-`--resume`/rotation reclaim — OR, under a role-name collision the design forbids, possibly a
+/// co-resident PEER's watcher). The two are informationally indistinguishable from the registry, so a
+/// `Role`-owned target that is HEALTHY must NOT be blindly `--replace`d (peer-hijack red-team: killing
+/// a live process on spec is the actual harm). Session-heal already skips healthy; `rewatch` must too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ownership {
+    Session,
+    Role,
+}
+
+pub fn ownership(
+    t: &Target,
+    me_session: &Option<String>,
+    me_role: &Option<String>,
+) -> Option<Ownership> {
+    if let Some(s) = me_session {
+        if t.session.as_deref() == Some(s.as_str()) {
+            return Some(Ownership::Session);
+        }
+    }
+    if let Some(r) = me_role {
+        if &t.role == r {
+            return Some(Ownership::Role);
+        }
+    }
+    None
+}
+
 pub fn owned_by_session(
     t: &Target,
     me_session: &Option<String>,
     me_role: &Option<String>,
 ) -> bool {
-    if let Some(s) = me_session {
-        if t.session.as_deref() == Some(s.as_str()) {
-            return true;
-        }
-    }
-    if let Some(r) = me_role {
-        if &t.role == r {
-            return true;
-        }
-    }
-    false
+    ownership(t, me_session, me_role).is_some()
 }
 
 #[cfg(test)]
@@ -172,6 +192,21 @@ mod tests {
         assert!(!owned_by_session(&t(Some("sess-B"), "carol"), &me_s, &me_r));
         // a legacy None-session target for a PEER role — NOT healed (no cross-role hijack)
         assert!(!owned_by_session(&t(None, "carol"), &me_s, &me_r));
+    }
+
+    #[test]
+    fn ownership_basis_distinguishes_session_from_role_fallback() {
+        // The basis matters for safety: Session = unambiguously mine (safe to auto --replace);
+        // Role = a resume/rotation reclaim OR a co-resident peer under a role collision (rewatch must
+        // not blindly kill a HEALTHY such watcher — peer-hijack red-team).
+        let me_s = Some("sess-A".to_string());
+        let me_r = Some("alice".to_string());
+        assert_eq!(ownership(&t(Some("sess-A"), "alice"), &me_s, &me_r), Some(Ownership::Session));
+        // my role but a rotated/stale session id → Role (indistinguishable from a live peer's id)
+        assert_eq!(ownership(&t(Some("sess-OLD"), "alice"), &me_s, &me_r), Some(Ownership::Role));
+        assert_eq!(ownership(&t(None, "alice"), &me_s, &me_r), Some(Ownership::Role));
+        // a co-resident peer → owned by neither basis
+        assert_eq!(ownership(&t(Some("sess-B"), "carol"), &me_s, &me_r), None);
     }
 
     #[test]
