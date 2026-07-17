@@ -5064,3 +5064,47 @@ fn repos_map_records_clone_lists_it_and_rejects_non_git() {
     assert!(!ok(&bad), "mapping a non-git dir must fail");
     assert!(err(&bad).contains("not a git repository"), "err: {}", err(&bad));
 }
+
+#[test]
+fn ref_pins_sha_and_records_content_hash_at_write() {
+    let c = new_hub().clone("alpha");
+    // a code repo with a committed file
+    let code = tmp("coderepo2");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("lib.rs"), "pub fn f() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    // register (layer 1) + map the clone (layer 2)
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // a symbolic (no-sha) ref must be pinned to HEAD's full sha at write time
+    let a = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:lib.rs",
+    ]);
+    assert!(ok(&a), "append with --ref failed: {}", err(&a));
+
+    let dir = c.dir.join("threads").join("general");
+    let md = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .expect("a message file was written");
+    let body = std::fs::read_to_string(&md).unwrap();
+    assert!(body.contains(&format!("sha: {head}")), "ref must pin the full sha {head}:\n{body}");
+    assert!(!body.contains("sha: HEAD"), "must never persist a moving HEAD:\n{body}");
+    assert!(body.contains("content_hash:"), "the blob OID should be recorded:\n{body}");
+
+    // a symbolic ref to an UNMAPPED repo can't be pinned → hard error
+    let bad = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "nomap:x.rs",
+    ]);
+    assert!(!ok(&bad), "symbolic ref to an unmapped repo must fail");
+    assert!(err(&bad).contains("no local clone"), "err: {}", err(&bad));
+}

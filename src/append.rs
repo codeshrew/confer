@@ -90,6 +90,63 @@ fn parse_range(span: &str) -> Result<[u64; 2]> {
     }
 }
 
+/// Pin a `--ref`'s sha to an immutable full sha AT WRITE TIME, and record the
+/// referenced blob's OID as `content_hash` when the repo is cloned here (design/40
+/// #2 + #3). A code reference must be reproducible — we never persist a moving
+/// `HEAD`/branch. Rules (per the Fable review):
+///  - an explicit full-hex sha (40 or 64) is accepted as-is (you may reference code
+///    you only have a sha for — no clone required); `content_hash` is filled in only
+///    if a clone is mapped AND has the object.
+///  - a symbolic sha (`HEAD`, a branch, a short sha) REQUIRES a local clone — resolved
+///    via the machine-local repo map, validated against the card's `root_sha` — and is
+///    resolved to a full sha there. Without a clone it's an error: we won't persist an
+///    unpinnable ref.
+fn resolve_and_pin_ref(repo_inv: &repos::Repos, r: &mut schema::CodeRef) -> Result<()> {
+    let is_full_hex =
+        (r.sha.len() == 40 || r.sha.len() == 64) && r.sha.chars().all(|c| c.is_ascii_hexdigit());
+    let card_root_sha = repo_inv.get(&r.repo).and_then(|c| c.root_sha.clone());
+    let clone = crate::repomap::resolve(&r.repo, card_root_sha.as_deref());
+
+    if !is_full_hex {
+        let Some(dir) = clone.as_ref() else {
+            return Err(anyhow!(
+                "cannot pin --ref {}:{}@{}: no local clone of '{}' is mapped on this machine, and a \
+                 non-sha ref can't be made durable without one. Map a clone (`confer repos map {} <path>`), \
+                 or pass an explicit full commit sha (`@<40-hex>`).",
+                r.repo, r.path, r.sha, r.repo, r.repo
+            ));
+        };
+        let spec = format!("{}^{{commit}}", r.sha);
+        let o = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &spec])?;
+        if !o.status.success() {
+            return Err(anyhow!(
+                "cannot resolve --ref {}:{}@{} in the mapped clone {} (unknown revision)",
+                r.repo, r.path, r.sha, dir.display()
+            ));
+        }
+        r.sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    }
+
+    // Best-effort content_hash: the blob OID of `<sha>:<path>`, when a clone has the
+    // object. Lets staleness be a one-line comparison later (design/40 #5) that works
+    // even if the pinned commit is GC'd/unfetched — you never need the commit to ask
+    // "have these bytes changed?".
+    if r.content_hash.is_none() {
+        if let Some(dir) = clone.as_ref() {
+            let spec = format!("{}:{}", r.sha, r.path);
+            if let Ok(o) = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &spec]) {
+                if o.status.success() {
+                    let oid = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if !oid.is_empty() {
+                        r.content_hash = Some(oid);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Warn (non-fatally) when a message's addressees can't receive it in THIS hub:
 /// a named `--to`/`--cc` role that hasn't joined, or a broadcast/group that
 /// resolves to no one but the sender. This is the guardrail for the split-brain
@@ -270,11 +327,19 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             ));
         }
     }
-    let refs = a
+    let mut refs = a
         .refs
         .iter()
         .map(|s| parse_ref(s))
         .collect::<Result<Vec<_>>>()?;
+    // Pin each --ref to an immutable full sha AT WRITE TIME + record its blob OID
+    // (design/40 #2, #3) — a durable reference never stores a moving HEAD/branch.
+    if !refs.is_empty() {
+        let repo_inv = repos::load(&root);
+        for r in refs.iter_mut() {
+            resolve_and_pin_ref(&repo_inv, r)?;
+        }
+    }
     // A blank value counts as absent (an empty `--of`/`--supersedes` must not slip
     // past the required-field guard — see C1).
     let blank = |o: &Option<String>| o.as_deref().is_none_or(|s| s.trim().is_empty());
