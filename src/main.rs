@@ -441,6 +441,15 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Emit a re-arm plan for ALL your hubs' watches at once, honoring each hub's `watch` mode in your
+    /// config (`reactive` → arm a Monitor watch; `poll` → loop; `off` → skip). confer PLANS the set;
+    /// your harness HOSTS the watch (confer can't spawn a persistent Monitor). Scoped to YOUR own
+    /// registered watch targets — never a co-resident peer's.
+    Rewatch {
+        /// limit to one hub (by name, or a clone-path substring)
+        #[arg(long)]
+        only: Option<String>,
+    },
     /// Your cross-hub identity: your signing-key fingerprint and where else the
     /// SAME key appears (the same agent across hubs you've joined). F3.
     Identity {
@@ -1206,6 +1215,7 @@ fn main() -> Result<()> {
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Hub { action, yes } => cmd_hub(action, yes),
+        Cmd::Rewatch { only } => cmd_rewatch(only),
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
@@ -3186,6 +3196,7 @@ fn cmd_session_heal() -> Result<()> {
             field("cwd").and_then(|d| config::resolve_role(None, std::path::Path::new(&d)).ok())
         });
     let cur = BUILD_SHA;
+    let mc_cfg = machineconfig::load(); // per-hub `watch` posture (design/35): don't nudge an `off` hub
     let mut nudges: Vec<String> = Vec::new();
     let mut stale = 0usize;
     for t in &reg.targets {
@@ -3195,6 +3206,12 @@ fn cmd_session_heal() -> Result<()> {
         }
         if !autoheal::owned_by_session(t, &me_session, &me_role) {
             continue; // a peer's watcher — not mine to re-arm
+        }
+        if matches!(
+            hub_watch_mode(&mc_cfg, std::path::Path::new(&t.hub)),
+            machineconfig::WatchMode::Off
+        ) {
+            continue; // hub explicitly set to `watch = off` — never nudge to re-arm it
         }
         let hub_key = config::hub_key(std::path::Path::new(&t.hub));
         let info = watchlock::inspect(&hub_key, &t.role, 90);
@@ -3576,6 +3593,68 @@ fn cmd_hub(action: String, yes: bool) -> Result<()> {
         }
         other => Err(anyhow!("unknown hub action '{other}' (use: status | repin | prune)")),
     }
+}
+
+/// The configured auto-watch mode for the hub clone at `path`, resolved by hub name from config.
+/// Defaults to `reactive` when unset — the tier-driven default (own→reactive, foreign→off) is a later
+/// refinement; today an explicit `poll`/`off` is honored, else reactive.
+fn hub_watch_mode(cfg: &machineconfig::Config, path: &std::path::Path) -> machineconfig::WatchMode {
+    current_hub_name(path)
+        .ok()
+        .and_then(|n| cfg.hubs.get(&n).cloned())
+        .and_then(|h| h.watch)
+        .and_then(|w| machineconfig::WatchMode::parse(&w))
+        .unwrap_or(machineconfig::WatchMode::Reactive)
+}
+
+/// `confer rewatch` — plan the re-arm of every watch target THIS session owns, honoring each hub's
+/// `watch` mode. confer can't host a watch (the harness/Monitor does), so it emits the plan; the agent
+/// arms the reactive ones. Scoped by `owned_by_session`, so a co-resident peer's watcher is never
+/// included (following its `--replace` would hijack the peer).
+fn cmd_rewatch(only: Option<String>) -> Result<()> {
+    let reg = autoheal::load();
+    let me_session = autoheal::current_session();
+    let me_role = std::env::var("CONFER_ROLE").ok().filter(|s| !s.is_empty());
+    let cfg = machineconfig::load();
+    let (mut reactive, mut other) = (0usize, 0usize);
+    for t in &reg.targets {
+        if !std::path::Path::new(&t.hub).exists() {
+            continue; // missing hub — a prune candidate, not a re-arm target
+        }
+        if !autoheal::owned_by_session(t, &me_session, &me_role) {
+            continue; // a co-resident peer's watcher — never mine to re-arm
+        }
+        let name = current_hub_name(std::path::Path::new(&t.hub)).ok();
+        if let Some(only) = &only {
+            if name.as_deref() != Some(only.as_str()) && !t.hub.contains(only.as_str()) {
+                continue;
+            }
+        }
+        let label = name.unwrap_or_else(|| t.hub.clone());
+        match hub_watch_mode(&cfg, std::path::Path::new(&t.hub)) {
+            machineconfig::WatchMode::Reactive => {
+                println!(
+                    "• {label} [{}]: arm reactive → cd {} && confer watch --role {} --replace",
+                    t.role, t.hub, t.role
+                );
+                reactive += 1;
+            }
+            machineconfig::WatchMode::Poll => {
+                println!("• {label} [{}]: poll → loop `confer poll --role {}` (watch=poll)", t.role, t.role);
+                other += 1;
+            }
+            machineconfig::WatchMode::Off => {
+                println!("• {label} [{}]: skip (watch=off)", t.role);
+                other += 1;
+            }
+        }
+    }
+    if reactive + other == 0 {
+        println!("(no watch targets for this session — arm one with `confer watch --role <you> --replace`, or set `hubs.<name>.watch`)");
+    } else if reactive > 0 {
+        println!("\narm the reactive one(s) under the Monitor tool — never background bash (it gets reaped). See /confer-watch.");
+    }
+    Ok(())
 }
 
 /// Best-effort free space (GB) on the volume holding `root`, via `df -Pk`.

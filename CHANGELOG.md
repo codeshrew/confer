@@ -44,6 +44,11 @@ across the co-resident sessions that share one machine — plus two board-correc
   `‼` trust violation; `confer hub repin` re-points the pin (human-gated); `confer hub prune` forgets
   pins for hubs no longer in your config. (Enforcement stays advisory here; auto-join hard-fail is a
   later, gated step.)
+- **`confer rewatch` — re-arm all your watches from one plan.** Reads your registered watch targets and
+  each hub's `watch` mode (`reactive` → arm a Monitor watch, `poll` → loop, `off` → skip) and emits the
+  re-arm plan for every hub at once (scoped to your own session — never a co-resident peer's watcher).
+  confer plans; your harness hosts the watch. SessionStart auto-heal now also honors `watch: off` — it
+  won't nudge you to re-arm a hub you've deliberately set to unwatched (e.g. a foreign/family hub).
 
 ## 0.6.8
 
