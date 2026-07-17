@@ -17,6 +17,7 @@ mod gitcmd;
 mod groups;
 mod inbox;
 mod keyring;
+mod knownhubs;
 mod machineconfig;
 mod presence;
 mod projection;
@@ -62,6 +63,12 @@ pub(crate) fn warn_safety(msg: impl std::fmt::Display) {
 /// it can be grepped/filtered separately from real problems.
 pub(crate) fn hint(msg: impl std::fmt::Display) {
     eprintln!("confer: · {msg}");
+}
+
+/// A TRUST-VIOLATION diagnostic — an identity mismatch / impersonation signal, the HIGHEST severity:
+/// do NOT proceed. Always `confer: ‼ …` on stderr (the same glyph the message feed + verify paths use).
+pub(crate) fn warn_trust(msg: impl std::fmt::Display) {
+    eprintln!("confer: ‼ {msg}");
 }
 
 /// If this role has ARMED a watch before (an auto-heal target exists) but no live watcher is running
@@ -419,6 +426,18 @@ enum Cmd {
         /// value, for `set`
         value: Option<String>,
         /// confirm a security-gated `set` (url / auth / auto_update / clone_root / a new hub block)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Hub-identity pins (`~/.confer/known_hubs.json` — confer's `known_hosts` for hubs, design/35):
+    /// `status` shows the pins + verifies this hub against its pin; `repin` deliberately re-points
+    /// this hub's pin (human-gated, verify out-of-band first); `prune` forgets pins for hubs no
+    /// longer in your machine config.
+    Hub {
+        /// status | repin | prune
+        #[arg(default_value = "status")]
+        action: String,
+        /// confirm a `repin`, or actually apply a `prune` (default is a dry-run listing)
         #[arg(long)]
         yes: bool,
     },
@@ -1186,6 +1205,7 @@ fn main() -> Result<()> {
         Cmd::SessionHeal => cmd_session_heal(),
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
+        Cmd::Hub { action, yes } => cmd_hub(action, yes),
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
@@ -1739,7 +1759,59 @@ fn cmd_join(
         }
     }
     crosshub::record(&root, &role); // remember this hub for cross-hub recognition (F3)
+    seed_hub_on_join(&root); // design/35 phase 2: record routing + TOFU-pin the hub identity
     Ok(())
+}
+
+/// Best-effort seed-on-join (design/35 phase 2). A human ran `join`, which IS the first-sight
+/// confirmation — so record this hub's routing into the machine config and TOFU-pin its identity in
+/// `known_hubs` (`confirmed=true`). Additive + best-effort: NEVER fails the join. A mismatch against an
+/// EXISTING pin is surfaced loudly (`‼`) but the pin is NOT silently re-pointed — a deliberate move is
+/// `confer hub repin`. (Phase-3 auto-join will hard-fail on a mismatch; here a human is present.)
+fn seed_hub_on_join(root: &std::path::Path) {
+    let name = match current_hub_name(root) {
+        Ok(n) => n,
+        Err(_) => return, // no origin / underivable name → nothing to seed
+    };
+    // Routing: remember url + scheme (create-if-absent so we never clobber an explicit config).
+    if let Ok(o) = gitcmd::output(root, &["config", "--get", "remote.origin.url"]) {
+        if o.status.success() {
+            let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let scheme = if url.starts_with("http") { "https" } else { "ssh" };
+            let (n, u, s) = (name.clone(), url.clone(), scheme.to_string());
+            let _ = machineconfig::update_with(move |cfg| {
+                let hub = cfg.hubs.entry(n).or_default();
+                if hub.url.is_none() {
+                    hub.url = Some(u);
+                }
+                if hub.scheme.is_none() {
+                    hub.scheme = Some(s);
+                }
+                Ok(())
+            });
+        }
+    }
+    // Identity: TOFU-pin (or advance the confirmed-good tip), confirmed by the human-run join.
+    match knownhubs::verify(&name, root) {
+        knownhubs::Verdict::FirstSight { root: r, tip } => {
+            if knownhubs::record(&name, &r, &tip, true).is_ok() {
+                hint(format!("pinned hub identity for '{name}' (root {}).", short12(&r)));
+            }
+        }
+        knownhubs::Verdict::Match { new_tip } => knownhubs::advance_tip(&name, &new_tip),
+        knownhubs::Verdict::RootMismatch { pinned, got } => warn_trust(format!(
+            "hub '{name}': ROOT MISMATCH — pinned {} but this repo's root is {}. NOT re-pinning; \
+             investigate, then `confer hub repin` if this is a legitimate move.",
+            short12(&pinned),
+            short12(&got)
+        )),
+        knownhubs::Verdict::TipUnreachable { pinned_tip } => warn_trust(format!(
+            "hub '{name}': confirmed-good tip {} not reachable from HEAD (history rewritten?). NOT \
+             advancing the pin; investigate.",
+            short12(&pinned_tip)
+        )),
+        knownhubs::Verdict::NotVerifiable(_) => {}
+    }
 }
 
 /// Shared flags for the lifecycle sugar verbs (`claim`/`done`/`error`/`blocked`/
@@ -3394,6 +3466,116 @@ fn print_config_schema() {
     println!();
     println!("[gated] changes need --yes. <name> is the normalized (lowercase) hub name.");
     println!("This is machine policy — NOT the shared repo contract, NOT trust state (pins live elsewhere).");
+}
+
+/// First 12 chars of a SHA (ASCII hex → byte-slicing is safe).
+fn short12(sha: &str) -> &str {
+    &sha[..sha.len().min(12)]
+}
+
+/// The stable hub name used as the `known_hubs` / config key: the normalized `owner/repo` shorthand
+/// from the origin remote (falls back to the full URL for a non-GitHub remote).
+fn current_hub_name(root: &std::path::Path) -> Result<String> {
+    let o = gitcmd::output(root, &["config", "--get", "remote.origin.url"])?;
+    if !o.status.success() {
+        return Err(anyhow!("this hub has no 'origin' remote — can't derive its name"));
+    }
+    let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let name = parse_remote(&url).shorthand.unwrap_or(url);
+    Ok(machineconfig::hub_name_normalized(&name))
+}
+
+/// `confer hub` — inspect/manage the hub-identity pin store (`known_hubs`, design/35). `repin` is the
+/// only write; it's human-gated (`--yes`) because it changes this machine's trust anchor for a hub.
+fn cmd_hub(action: String, yes: bool) -> Result<()> {
+    match action.as_str() {
+        "status" | "show" => {
+            let store = knownhubs::load();
+            if store.is_empty() {
+                println!("no hub pins yet (~/.confer/known_hubs.json is empty).");
+            } else {
+                println!("hub pins (~/.confer/known_hubs.json):");
+                for (name, rec) in &store {
+                    let tip = if rec.tip.is_empty() { "—".to_string() } else { short12(&rec.tip).to_string() };
+                    let c = if rec.confirmed { "✓ confirmed" } else { "· unconfirmed" };
+                    println!("  {name}   root {}   tip {tip}   [{c}]", short12(&rec.root));
+                }
+            }
+            // If we're inside a hub, verify it against its pin.
+            if let Ok(root) = config::repo_root() {
+                if let Ok(name) = current_hub_name(&root) {
+                    match knownhubs::verify(&name, &root) {
+                        knownhubs::Verdict::FirstSight { root: r, .. } => {
+                            println!("\nthis hub '{name}': · not yet pinned (first sight, root {}). `confer hub repin` to pin it.", short12(&r));
+                        }
+                        knownhubs::Verdict::Match { .. } => {
+                            println!("\nthis hub '{name}': ✓ pin holds (root matches, confirmed-good tip reachable).");
+                        }
+                        knownhubs::Verdict::RootMismatch { pinned, got } => {
+                            warn_trust(format!("this hub '{name}': ROOT MISMATCH — pinned {} but this repo's root is {} (a DIFFERENT repo / redirect). Do NOT trust; investigate.", short12(&pinned), short12(&got)));
+                        }
+                        knownhubs::Verdict::TipUnreachable { pinned_tip } => {
+                            warn_trust(format!("this hub '{name}': history rewritten — the confirmed-good tip {} is not reachable from HEAD (force-push?). Investigate before trusting.", short12(&pinned_tip)));
+                        }
+                        knownhubs::Verdict::NotVerifiable(e) => hint(format!("this hub '{name}': not verifiable — {e}")),
+                    }
+                }
+            }
+            Ok(())
+        }
+        "repin" => {
+            let root = config::repo_root()?;
+            let name = current_hub_name(&root)?;
+            let newroot = match config::hub_root_strict(&root)? {
+                config::HubRoot::Commit(r) => r,
+                config::HubRoot::NoCommits => return Err(anyhow!("this hub has no commits yet — nothing to pin")),
+            };
+            let head = {
+                let o = gitcmd::output(&root, &["rev-parse", "HEAD"])?;
+                String::from_utf8_lossy(&o.stdout).trim().to_string()
+            };
+            println!("repin '{name}':");
+            match knownhubs::get(&name) {
+                Some(e) => {
+                    let tip = if e.tip.is_empty() { "—".to_string() } else { short12(&e.tip).to_string() };
+                    println!("  from   root {}   tip {tip}", short12(&e.root));
+                }
+                None => println!("  (no existing pin — this is a first pin)"),
+            }
+            println!("  to     root {}   tip {}", short12(&newroot), short12(&head));
+            if !yes {
+                return Err(anyhow!(
+                    "repin changes this machine's TRUST ANCHOR for '{name}'. Verify the root/tip out-of-band \
+                     (this is the moment TOFU can't protect you), then re-run with --yes."
+                ));
+            }
+            knownhubs::record(&name, &newroot, &head, true)?;
+            println!("✓ pinned '{name}'.");
+            Ok(())
+        }
+        "prune" => {
+            let keep: std::collections::BTreeSet<String> =
+                machineconfig::load().hubs.keys().cloned().collect();
+            let store = knownhubs::load();
+            let gone: Vec<String> = store.keys().filter(|k| !keep.contains(*k)).cloned().collect();
+            if gone.is_empty() {
+                println!("no orphan pins (every pin has a matching config hub).");
+                return Ok(());
+            }
+            if !yes {
+                println!("orphan pins (no matching `hubs.<name>` in your config) — would forget:");
+                for g in &gone {
+                    println!("  {g}");
+                }
+                println!("re-run with --yes to apply.");
+                return Ok(());
+            }
+            let removed = knownhubs::prune(&keep)?;
+            println!("forgot {} orphan pin(s): {}", removed.len(), removed.join(", "));
+            Ok(())
+        }
+        other => Err(anyhow!("unknown hub action '{other}' (use: status | repin | prune)")),
+    }
 }
 
 /// Best-effort free space (GB) on the volume holding `root`, via `df -Pk`.

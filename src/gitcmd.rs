@@ -324,8 +324,9 @@ pub fn added_message_files(root: &Path, since: Option<&str>) -> Result<Vec<PathB
     Ok(collect("HEAD").unwrap_or_default())
 }
 
-/// Is `a` an ancestor of `b`? (false if `a` is unknown / unrelated.)
-fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
+/// Is `a` an ancestor of `b`? (false if `a` is unknown / unrelated.) The reachability primitive the
+/// known_hubs pin verify reuses (design/35): a rewritten-history fork won't contain our pinned tip.
+pub(crate) fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
     output(root, &["merge-base", "--is-ancestor", a, b])
         .map(|o| o.status.success())
         .unwrap_or(false)

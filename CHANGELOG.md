@@ -35,6 +35,15 @@ across the co-resident sessions that share one machine — plus two board-correc
   with `confer config get/set/validate/schema`. Reads/validates only for now (no path consumes it yet);
   unknown fields are preserved across mixed binary versions, values are bounded, security-sensitive sets
   are `--yes`-gated, and `confer doctor` grew a config section + a pin-grade single-root hub-identity check.
+- **Hub-identity pins + seed-on-join (`confer hub`).** New `~/.confer/known_hubs.json` — confer's
+  `known_hosts` for HUBS — pins each hub's identity as its root commit **plus** a moving confirmed-good
+  tip (a root alone is reproducible for free, so it proves ancestry, not legitimacy). A human-run
+  `join` now records the hub's routing into the config and TOFU-pins its identity (the join IS the
+  first-sight confirmation). `confer hub status` verifies this hub against its pin — by REACHABILITY, so
+  a true mirror still passes but a rewritten-history fork or a redirect to a different repo raises a
+  `‼` trust violation; `confer hub repin` re-points the pin (human-gated); `confer hub prune` forgets
+  pins for hubs no longer in your config. (Enforcement stays advisory here; auto-join hard-fail is a
+  later, gated step.)
 
 ## 0.6.8
 

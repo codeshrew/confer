@@ -551,6 +551,33 @@ fn join_registers_role_card_visible_in_who() {
 }
 
 #[test]
+fn join_seeds_machine_config_and_known_hubs() {
+    // design/35 phase 2 seed-on-join: a human-run join records the hub's routing in the machine
+    // config and TOFU-pins its identity in known_hubs (confirmed by the join itself). Best-effort —
+    // it must never fail the join, but on a normal join both files should appear + be populated.
+    let c = new_hub().clone("newbie");
+    let o = c.confer(&["join", "--role", "newbie"]);
+    assert!(ok(&o), "{}", err(&o));
+
+    let cfg = std::fs::read_to_string(c.home.join(".confer/config.json"))
+        .expect("config.json should be seeded by join");
+    assert!(cfg.contains("\"hubs\""), "config should carry a hubs block: {cfg}");
+    assert!(cfg.contains("\"url\""), "config should record the hub url: {cfg}");
+
+    let kh = std::fs::read_to_string(c.home.join(".confer/known_hubs.json"))
+        .expect("known_hubs.json should be seeded by join");
+    assert!(kh.contains("\"root\""), "known_hubs should pin a root: {kh}");
+    assert!(
+        kh.contains("\"confirmed\": true"),
+        "a human-run join is the first-sight confirmation: {kh}"
+    );
+
+    // And `confer hub status` verifies the just-pinned hub as a Match.
+    let st = c.confer(&["hub", "status"]);
+    assert!(out(&st).contains("pin holds"), "hub status should verify: {}", out(&st));
+}
+
+#[test]
 fn two_clone_delivery_and_no_reshow_after_advance() {
     let hub = new_hub();
     let a = hub.clone("alpha");
