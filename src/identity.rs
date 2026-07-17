@@ -7,7 +7,11 @@ use crate::warn_safety;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-pub(crate) fn cmd_who() -> Result<()> {
+/// `--json` mirrors the text columns — role/display/desc/host/expected_host/liveness/
+/// last_posted/aliases/card-trust/self-declared status/cross-hub appearances — as a JSON ARRAY
+/// (one snapshot object per role, not an NDJSON stream: `who` isn't a message feed). `[]` when
+/// there are no roles yet (design/37 item 6/11).
+pub(crate) fn cmd_who(json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let roster = roster::load(&root);
     let msgs = store::all_messages(&root)?;
@@ -37,8 +41,50 @@ pub(crate) fn cmd_who() -> Result<()> {
         .collect();
 
     let rows = projection::agents(&msgs, &roster, &pres, &xhub);
+
+    if json {
+        let mut vc = verify::Cache::default();
+        let mut arr = Vec::with_capacity(rows.len());
+        for a in &rows {
+            let ct = verify::card_trust(&root, &hub_key, &roster, &mut vc, &a.id);
+            let live = matches!(&a.presence, Some(p) if presence::liveness(p, now) == presence::Live::Up);
+            let liveness = a.presence.as_ref().map(|p| match presence::liveness(p, now) {
+                presence::Live::Up => "up",
+                presence::Live::Stale => "stale",
+                presence::Live::Down => "down",
+            });
+            let status = if matches!(ct, verify::Trust::Verified { .. }) {
+                roster.get(&a.id).and_then(|r| r.status.clone())
+            } else {
+                None
+            };
+            let aliases: Vec<&str> = roster
+                .get(&a.id)
+                .map(|r| r.aliases.iter().map(String::as_str).collect())
+                .unwrap_or_default();
+            arr.push(serde_json::json!({
+                "role": a.id,
+                "display": a.display,
+                "desc": a.desc,
+                "host": a.last_host,
+                "expected_host": a.expected_host,
+                "live": live,
+                "liveness": liveness,
+                "last_posted": a.last_ts,
+                "aliases": aliases,
+                "trust": { "status": ct.status_str(), "detail": ct.tag() },
+                "status": status,
+                "xhub": a.xhub.iter().map(|(h, r)| serde_json::json!({"hub": h, "role": r})).collect::<Vec<_>>(),
+            }));
+        }
+        println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
+        return Ok(());
+    }
+
     if rows.is_empty() {
-        println!("no roles yet (add roles.toml or have agents post).");
+        // Empty result: text-mode prose moves to stderr (item 11) — `who` is a command an agent
+        // shells out to for a live roster, and stdout must stay a clean payload stream.
+        eprintln!("no roles yet (add roles.toml or have agents post).");
     }
     // Card-trust: a role card's fields are only as trustworthy as the signature on
     // its latest edit. Every line carries a trust glyph (· unverified · ✓ verified · ‼ mismatch)

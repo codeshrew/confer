@@ -479,7 +479,11 @@ pub(crate) fn cmd_trust(tier: Option<String>) -> Result<()> {
 /// behind it; "no hb" = no heartbeat to compare. Honest semantics: this means the
 /// peer's watch PROCESSED the commit range — combined with the message being
 /// addressed to them, that's delivered-and-surfaced, not "comprehended".
-pub(crate) fn cmd_seen(id: String) -> Result<()> {
+/// `--json` emits one object `{"event":"seen","id","seen_by","pending_by","no_heartbeat_by"}`
+/// (design/37 item 6) — the same three buckets the text report computes (seen/pending/no
+/// heartbeat), by ROLE ID (not the sanitized display string the text path shows) so a machine
+/// consumer can act on them directly.
+pub(crate) fn cmd_seen(id: String, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let roster = roster::load(&root);
     let grps = groups::load(&root);
@@ -528,14 +532,27 @@ pub(crate) fn cmd_seen(id: String) -> Result<()> {
     audience.sort();
     audience.dedup();
 
-    println!(
-        "{} {short} — from {} [{sender}]  «{}»",
-        m.front.msg_type.to_uppercase(),
-        schema::sanitize_term(roster::display(&roster, &sender), false),
-        truncate(&m.summary_line(), 60)
-    );
+    if !json {
+        println!(
+            "{} {short} — from {} [{sender}]  «{}»",
+            m.front.msg_type.to_uppercase(),
+            schema::sanitize_term(roster::display(&roster, &sender), false),
+            truncate(&m.summary_line(), 60)
+        );
+    }
     if audience.is_empty() {
-        println!("  (nothing addressed — no audience to check)");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "seen", "id": m.front.id,
+                    "seen_by": Vec::<String>::new(), "pending_by": Vec::<String>::new(),
+                    "no_heartbeat_by": Vec::<String>::new(),
+                })
+            );
+        } else {
+            println!("  (nothing addressed — no audience to check)");
+        }
         return Ok(());
     }
 
@@ -551,8 +568,11 @@ pub(crate) fn cmd_seen(id: String) -> Result<()> {
             .map(|b| (b.p.role.clone(), b.p))
             .collect();
 
+    // Three buckets by ROLE ID (the machine-consumable identity) — the text rendering below
+    // additionally formats each into a display tag "Name (hb HH:MM)".
     let (mut seen, mut pending, mut no_hb): (Vec<String>, Vec<String>, Vec<String>) =
         (Vec::new(), Vec::new(), Vec::new());
+    let mut disp_tag: HashMap<String, String> = HashMap::new();
     for r in &audience {
         let disp = schema::sanitize_term(roster::display(&roster, r), false);
         match pres.get(r) {
@@ -563,23 +583,41 @@ pub(crate) fn cmd_seen(id: String) -> Result<()> {
                         .map(|o| o.status.success())
                         .unwrap_or(false)
                 });
-                let tag = format!("{disp} (hb {hb})");
+                disp_tag.insert(r.clone(), format!("{disp} (hb {hb})"));
                 if covered {
-                    seen.push(tag);
+                    seen.push(r.clone());
                 } else {
-                    pending.push(tag);
+                    pending.push(r.clone());
                 }
             }
-            None => no_hb.push(disp),
+            None => {
+                disp_tag.insert(r.clone(), disp);
+                no_hb.push(r.clone());
+            }
         }
     }
-    let line = |label: &str, v: &[String]| {
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "seen", "id": m.front.id,
+                "seen_by": seen, "pending_by": pending, "no_heartbeat_by": no_hb,
+            })
+        );
+        return Ok(());
+    }
+
+    let line = |label: &str, ids: &[String]| {
         println!(
             "  {label} {}",
-            if v.is_empty() {
+            if ids.is_empty() {
                 "(none)".to_string()
             } else {
-                v.join(", ")
+                ids.iter()
+                    .map(|r| disp_tag.get(r).map(String::as_str).unwrap_or(r.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
         );
     };

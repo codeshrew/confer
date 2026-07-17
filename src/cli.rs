@@ -81,7 +81,13 @@ pub(crate) enum Cmd {
     /// Release the role's lease (record a clean handoff). [stub]
     Leave,
     /// List known roles and their presence.
-    Who,
+    Who {
+        /// machine output: a JSON ARRAY of agent objects (one per role), mirroring the text
+        /// columns — `role`/`display`/`desc`/`host`/`expected_host`/`live`/`liveness`/
+        /// `last_posted`/`aliases`/`trust`/`status`/`xhub`. `[]` if no roles yet.
+        #[arg(long)]
+        json: bool,
+    },
     /// Append one message (Markdown body via --text or stdin).
     Append {
         /// message type: note | request | claim | done | error | supersede
@@ -300,8 +306,13 @@ pub(crate) enum Cmd {
     },
     /// Queryable health: hub reachability, unpushed/unintegrated commits, watch
     /// state, disk headroom. Pull-not-push — confer handles transient degradation
-    /// quietly and self-heals; this is how you check on demand if you care.
-    Status,
+    /// quietly and self-heals; this is how you check on demand if you care. A REPORT:
+    /// exits 0 once the report is produced, however bad the news.
+    Status {
+        /// machine output: one JSON object with the same fields the text report shows.
+        #[arg(long)]
+        json: bool,
+    },
     /// Live read-only TUI: agents (liveness + cross-hub identity), the task board +
     /// flow, health, and a live activity tail — folded from local hub clones, no
     /// server. `--hub <dir>` (repeatable) follows specific hubs; defaults to the
@@ -681,6 +692,10 @@ pub(crate) enum Cmd {
     Seen {
         /// message id (short or full)
         id: String,
+        /// machine output: one object `{"event":"seen","id","seen_by","pending_by",
+        /// "no_heartbeat_by"}` (role ids, not display names).
+        #[arg(long)]
+        json: bool,
     },
     /// Your unread inbox: directly-addressed mail (`--to` you) you haven't CONSUMED
     /// yet — the watch shows only summaries, so a resolution/answer re-surfaces here

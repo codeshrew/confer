@@ -308,8 +308,13 @@ pub(crate) fn cmd_rewatch(only: Option<String>) -> Result<()> {
 }
 
 /// Best-effort free space (GB) on the volume holding `root`, via `df -Pk`.
-/// Queryable health — the pull-not-push side of the resilience model.
-pub(crate) fn cmd_status() -> Result<()> {
+/// Queryable health — the pull-not-push side of the resilience model. `--json` emits ONE object
+/// with the same fields the text report shows (design/37 item 6): `role`, `hub_reachable`, `tier`,
+/// `pending` (unpushed local commits), `behind` (unintegrated upstream commits), `watch` (the
+/// `watchlock::WatchState` label, or null with no role), `disk_free_gb`. `status` always has
+/// SOMETHING to report (a hub root always exists once this runs), so there's no empty-result case
+/// to gate — unlike inbox/who.
+pub(crate) fn cmd_status(json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(None, &root).unwrap_or_default();
     let hub = config::hub_key(&root);
@@ -331,6 +336,28 @@ pub(crate) fn cmd_status() -> Result<()> {
                     .ok()
             })
     };
+    let pending = count("@{u}..HEAD");
+    let behind = count("HEAD..@{u}");
+    let watch_state = if me.is_empty() {
+        None
+    } else {
+        Some(watchlock::classify(&watchlock::inspect(&hub, &me, 90), cur))
+    };
+    let disk_free_gb = projection::disk_free_gb(&root);
+
+    if json {
+        let v = serde_json::json!({
+            "role": if me.is_empty() { None } else { Some(me.as_str()) },
+            "hub_reachable": reachable,
+            "tier": tiers::get(&hub).map(|t| t.as_str()),
+            "pending": pending,
+            "behind": behind,
+            "watch": watch_state.map(|s| format!("{s:?}")),
+            "disk_free_gb": disk_free_gb,
+        });
+        println!("{}", serde_json::to_string(&v)?);
+        return Ok(());
+    }
 
     println!(
         "confer status — role {}, hub {}",
@@ -358,18 +385,17 @@ pub(crate) fn cmd_status() -> Result<()> {
         ),
         None => println!("  tier:    unset — run `confer trust own|shared|foreign`"),
     }
-    if let Some(p) = count("@{u}..HEAD") {
+    if let Some(p) = pending {
         if p > 0 {
             println!("  pending: {p} local commit(s) not yet pushed (flush on reconnect)");
         }
     }
-    if let Some(b) = count("HEAD..@{u}") {
+    if let Some(b) = behind {
         if b > 0 {
             println!("  behind:  {b} upstream commit(s) not yet integrated");
         }
     }
-    if !me.is_empty() {
-        let state = watchlock::classify(&watchlock::inspect(&hub, &me, 90), cur);
+    if let Some(state) = watch_state {
         println!(
             "  watch:   {state:?}{}",
             if matches!(state, watchlock::WatchState::Healthy) {
@@ -379,7 +405,7 @@ pub(crate) fn cmd_status() -> Result<()> {
             }
         );
     }
-    if let Some(g) = projection::disk_free_gb(&root) {
+    if let Some(g) = disk_free_gb {
         println!(
             "  disk:    {g:.1} GB free{}",
             if g < 1.0 {

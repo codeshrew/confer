@@ -585,7 +585,7 @@ fn run() -> Result<()> {
         Cmd::Doctor { dir, fix } => cmd_doctor(dir, fix),
         Cmd::Trust { tier } => cmd_trust(tier),
         Cmd::Screen { corpus, text } => cmd_screen(corpus, text),
-        Cmd::Seen { id } => cmd_seen(id),
+        Cmd::Seen { id, json } => cmd_seen(id, json),
         Cmd::Inbox { role, peek, json } => cmd_inbox(role, peek, json),
         Cmd::Ack { id, role } => cmd_ack(id, role),
         Cmd::Credential { op } => ghapp::credential(&op),
@@ -661,7 +661,7 @@ fn run() -> Result<()> {
             })
         }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
-        Cmd::Status => cmd_status(),
+        Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { hub } => cmd_dashboard(hub),
         #[cfg(feature = "serve")]
@@ -688,7 +688,7 @@ fn run() -> Result<()> {
             cmd_set_status(role, if permanent { "retired" } else { "dormant" })
         }
         Cmd::Resume { role } => cmd_set_status(role, "active"),
-        Cmd::Who => cmd_who(),
+        Cmd::Who { json } => cmd_who(json),
         Cmd::Leave => {
             eprintln!(
                 "confer leave: not yet implemented (planned: release lease + handoff marker)"

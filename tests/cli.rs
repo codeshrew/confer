@@ -4556,3 +4556,78 @@ fn thread_json_is_ndjson_of_to_json_objects_oldest_first() {
     }
     assert!(ids.is_sorted(), "thread --json must be oldest-first: {ids:?}");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// design/37 item 6/11 — `--json` on who/status/seen: structured, machine-parseable
+// shapes (reviewed as the main schema-review point for this change).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn who_json_is_an_array_mirroring_the_text_columns() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    // No roles yet → `[]`.
+    let empty = a.confer(&["who", "--json"]);
+    assert!(ok(&empty), "who --json: {}", err(&empty));
+    let v: serde_json::Value = serde_json::from_str(out(&empty).trim())
+        .unwrap_or_else(|e| panic!("empty who --json must parse ({e}): {}", out(&empty)));
+    assert!(v.as_array().unwrap().is_empty(), "no roles yet → []: {v}");
+
+    // A post registers the author as a role.
+    a.send(&["--type", "note", "--to", "all", "--summary", "hi", "--text", "b"]);
+    let o = a.confer(&["who", "--json"]);
+    assert!(ok(&o), "who --json: {}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(out(&o).trim())
+        .unwrap_or_else(|e| panic!("who --json must parse ({e}): {}", out(&o)));
+    let arr = v.as_array().expect("who --json is an array");
+    assert_eq!(arr.len(), 1, "one role after one post: {arr:?}");
+    let row = &arr[0];
+    assert_eq!(row["role"], "alpha");
+    assert!(row["display"].is_string());
+    assert!(row["live"].is_boolean());
+    assert!(row["aliases"].is_array());
+    assert!(row["trust"]["status"].is_string(), "carries card trust: {row}");
+}
+
+#[test]
+fn status_json_reports_the_same_fields_as_the_text_report() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    a.send(&["--type", "note", "--to", "all", "--summary", "hi", "--text", "b"]);
+    let o = a.confer(&["status", "--json"]);
+    assert!(ok(&o), "status --json: {}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(out(&o).trim())
+        .unwrap_or_else(|e| panic!("status --json must parse ({e}): {}", out(&o)));
+    assert_eq!(v["role"], "alpha");
+    assert!(v["hub_reachable"].is_boolean());
+    for key in ["tier", "pending", "behind", "watch", "disk_free_gb"] {
+        assert!(v.get(key).is_some(), "status --json missing '{key}': {v}");
+    }
+}
+
+#[test]
+fn seen_json_buckets_audience_by_role_id() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let id = a.send(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "b"]);
+    b.pull();
+    // No heartbeat published for beta yet → falls in no_heartbeat_by.
+    let o = a.confer(&["seen", &id, "--json"]);
+    assert!(ok(&o), "seen --json: {}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(out(&o).trim())
+        .unwrap_or_else(|e| panic!("seen --json must parse ({e}): {}", out(&o)));
+    assert_eq!(v["event"], "seen");
+    assert_eq!(v["id"], id);
+    for key in ["seen_by", "pending_by", "no_heartbeat_by"] {
+        assert!(v[key].is_array(), "seen --json missing array '{key}': {v}");
+    }
+    assert!(
+        v["no_heartbeat_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "beta"),
+        "beta has no heartbeat yet, should be in no_heartbeat_by: {v}"
+    );
+}
