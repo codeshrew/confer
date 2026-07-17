@@ -519,7 +519,7 @@ fn main() -> Result<()> {
                 delivery,
             })
         }
-        Cmd::WatchStatus { role, json } => cmd_watch_status(role, json),
+        Cmd::WatchStatus { role, json } => watch::cmd_watch_status(role, json),
         Cmd::Status => cmd_status(),
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { hub } => cmd_dashboard(hub),
@@ -2300,128 +2300,6 @@ fn cmd_read(last: Option<usize>, topic: Option<String>, full: bool, json: bool) 
             let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
             println!("{}{sup}", format_line(&roster, m, false, Some(&t)));
         }
-    }
-    Ok(())
-}
-
-/// Report the local watcher state for a role so a compacted session can self-heal:
-/// is one running, is it MINE (this host), and is it on the CURRENT build? The lock
-/// is keyed by (hub, role) on the machine, so ownership survives compaction — the
-/// new session is still "role X on host H" and can reclaim its own orphan safely.
-/// Exits 1 when action (re-arm) is needed so a hook/loop can branch. See DESIGN.md.
-fn cmd_watch_status(role: Option<String>, json: bool) -> Result<()> {
-    let root = config::repo_root()?;
-    let me = config::resolve_role(role, &root).unwrap_or_default();
-    let hub = config::hub_key(&root);
-    let this_host = config::hostname().unwrap_or_default();
-    let cur = BUILD_SHA;
-    let info = watchlock::inspect(&hub, &me, 90);
-    let arm = format!(
-        "confer watch --role {} --replace",
-        if me.is_empty() { "<role>" } else { &me }
-    );
-    // Placeholder for the None arms below (never read when info is Some).
-    let i = info.as_ref();
-    let (state, detail, rec, healthy): (&str, String, String, bool) = match watchlock::classify(
-        &info, cur,
-    ) {
-        watchlock::WatchState::NotWatching => (
-            "not-watching",
-            "no watcher running for this role on this machine".into(),
-            format!("arm it: {arm}"),
-            false,
-        ),
-        watchlock::WatchState::OtherHost => {
-            let i = i.unwrap();
-            (
-                "other-host",
-                format!(
-                    "a watcher for '{me}' is registered on host '{}' (you are on '{this_host}')",
-                    i.host
-                ),
-                format!("if this machine should run it, re-arm here: {arm}"),
-                false,
-            )
-        }
-        watchlock::WatchState::Stale => {
-            let i = i.unwrap();
-            (
-                    "stale",
-                    format!(
-                        "a watch lock exists (pid {}) but it's {} (last heartbeat {}s ago) — likely a compaction orphan",
-                        i.pid,
-                        if !i.alive { "not running" } else { "unresponsive" },
-                        i.age_secs
-                    ),
-                    format!("reclaim it: {arm}"),
-                    false,
-                )
-        }
-        watchlock::WatchState::Outdated => {
-            let i = i.unwrap();
-            (
-                "outdated",
-                format!(
-                    "watching (pid {}, confer {}, since {}) — but your binary is {cur}",
-                    i.pid,
-                    i.version.as_deref().unwrap_or("?"),
-                    i.started_at.as_deref().unwrap_or("?")
-                ),
-                format!("replace to adopt the new build: {arm}"),
-                false,
-            )
-        }
-        watchlock::WatchState::Healthy => {
-            let i = i.unwrap();
-            (
-                "healthy",
-                format!(
-                    "watching (pid {}, confer {}, since {})",
-                    i.pid,
-                    i.version.as_deref().unwrap_or("?"),
-                    i.started_at.as_deref().unwrap_or("?")
-                ),
-                String::new(),
-                true,
-            )
-        }
-    };
-
-    let delivery = info.as_ref().and_then(|i| i.delivery.clone());
-    if json {
-        let obj = serde_json::json!({
-            "role": me, "host": this_host, "state": state, "healthy": healthy,
-            "your_version": cur,
-            "watcher_version": info.as_ref().and_then(|i| i.version.clone()),
-            "pid": info.as_ref().map(|i| i.pid),
-            "delivery": delivery,
-            "recommendation": rec,
-        });
-        println!("{}", serde_json::to_string(&obj)?);
-    } else {
-        let glyph = if healthy { "✓" } else { "⚠" };
-        println!(
-            "{glyph} watch [{}]: {state} — {detail}",
-            if me.is_empty() { "<role>" } else { &me }
-        );
-        // Running ≠ delivering: a Monitor-hosted watcher wakes the agent; a plain background one just
-        // streams to a place nobody reads. We can only affirm this from the self-declared stamp
-        // (design/36); absent it, flag the ambiguity rather than imply healthy-means-delivering.
-        if healthy {
-            match &delivery {
-                Some(m) => println!("  delivery: {m} — armed to deliver wakes."),
-                None => hint(
-                    "delivery method not recorded — if you didn't arm via /confer-watch (or another \
-                     event-delivering wrapper), this watcher may be RUNNING but not waking you. Re-arm via /confer-watch.",
-                ),
-            }
-        }
-        if !rec.is_empty() {
-            println!("  → {rec}");
-        }
-    }
-    if !healthy {
-        std::process::exit(1);
     }
     Ok(())
 }
