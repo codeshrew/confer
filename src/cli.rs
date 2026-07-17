@@ -340,22 +340,27 @@ pub(crate) enum Cmd {
     },
     /// Live read-only TUI: agents (liveness + cross-hub identity), the task board +
     /// flow, health, and a live activity tail — folded from local hub clones, no
-    /// server. `--hub <dir>` (repeatable) follows specific hubs; defaults to the
-    /// current hub. Keys: q quit · r refresh · c toggle closed · Tab switch.
+    /// server. Current hub by default; `--all-hubs` for the whole fleet, or the
+    /// top-level `--hub <name>` to focus one. Keys: q quit · r refresh · c toggle closed · Tab switch.
     #[cfg(feature = "dashboard")]
     Dashboard {
-        #[arg(long = "hub")]
-        hub: Vec<String>,
+        /// Show EVERY hub on this machine (the full fleet view). Without it, shows just the current
+        /// hub — narrow to a specific one with the top-level selector: `confer --hub jarvis dashboard`.
+        #[arg(long = "all-hubs")]
+        all_hubs: bool,
     },
     /// Read-only web view of the fleet (same data as `dashboard`) — a pure-Rust
     /// server rendering the board/agents/health/activity as HTML, auto-refreshing.
     /// Binds to LOCALHOST by default (the board is unauthenticated); to open it on
-    /// your phone, deliberately expose it with `--bind 0.0.0.0:<port>`. `--hub`
-    /// (repeatable) or the current hub. Read-only: never posts, never locks.
+    /// your phone, deliberately expose it with `--bind 0.0.0.0:<port>`. Current hub by
+    /// default; `--all-hubs` for the whole fleet, or top-level `--hub <name>` to focus one.
+    /// Read-only: never posts, never locks.
     #[cfg(feature = "serve")]
     Serve {
-        #[arg(long = "hub")]
-        hub: Vec<String>,
+        /// Serve EVERY hub on this machine (the full fleet view). Without it, serves just the current
+        /// hub — narrow to a specific one with the top-level selector: `confer --hub jarvis serve`.
+        #[arg(long = "all-hubs")]
+        all_hubs: bool,
         /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`).
         /// Also settable via the `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with
         /// RStudio Server and some studio apps).

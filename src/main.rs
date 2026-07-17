@@ -731,9 +731,9 @@ fn run() -> Result<()> {
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]
-        Cmd::Dashboard { hub } => cmd_dashboard(hub),
+        Cmd::Dashboard { all_hubs } => cmd_dashboard(all_hubs),
         #[cfg(feature = "serve")]
-        Cmd::Serve { hub, port, bind } => {
+        Cmd::Serve { all_hubs, port, bind } => {
             // Precedence: explicit --bind (full addr, for non-localhost) > --port (localhost
             // shorthand) > CONFER_SERVE_PORT env > default 8422 (8787 collides with RStudio et al.).
             let bind = bind.unwrap_or_else(|| {
@@ -742,7 +742,7 @@ fn run() -> Result<()> {
                     .unwrap_or(8422);
                 format!("127.0.0.1:{p}")
             });
-            serve::run(resolve_hubs(hub)?, &bind)
+            serve::run(resolve_hubs(all_hubs)?, &bind)
         }
         Cmd::InstallHook { project } => cmd_install_hook(project),
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
@@ -947,36 +947,31 @@ fn superseded_set(msgs: &[Message]) -> HashSet<String> {
 }
 
 /// Resolve the hubs a viewer (dashboard/serve) should show: explicit `--hub` paths
-/// (with a leading `~` expanded), else the current hub if we're in one (the common
-/// case — one predictable view), else every followed hub in the pruned registry.
+/// Which hubs a dashboard/serve view covers. `--all-hubs` → every hub on the machine (the full fleet
+/// view). Otherwise the CURRENT hub — one predictable view, honoring the top-level `--hub <name>`
+/// selector, `$CONFER_HUB`, or the cwd. Explicit rather than cwd-magic: you say `--all-hubs` when you
+/// mean the fleet, `--hub <name>` when you mean one, nothing when you mean where you are.
 #[cfg(any(feature = "dashboard", feature = "serve"))]
-fn resolve_hubs(hub: Vec<String>) -> Result<Vec<std::path::PathBuf>> {
-    if !hub.is_empty() {
-        let home = config::home().ok();
-        return Ok(hub
-            .into_iter()
-            .map(|h| match (h.strip_prefix("~/"), &home) {
-                (Some(rest), Some(home)) => home.join(rest),
-                _ => std::path::PathBuf::from(h),
-            })
-            .collect());
+fn resolve_hubs(all: bool) -> Result<Vec<std::path::PathBuf>> {
+    if all {
+        let ds = crosshub::hub_dirs();
+        if ds.is_empty() {
+            anyhow::bail!("no hubs found on this machine — join one first (confer reconnect / onboard)");
+        }
+        return Ok(ds);
     }
     match config::repo_root() {
         Ok(cwd) => Ok(vec![cwd]),
-        Err(_) => {
-            let ds = crosshub::hub_dirs();
-            if ds.is_empty() {
-                anyhow::bail!("no hubs found — run inside a hub clone or pass --hub <dir>");
-            }
-            Ok(ds)
-        }
+        Err(_) => anyhow::bail!(
+            "not inside a hub — run from a hub clone, or use `--hub <name>` (one hub) / `--all-hubs` (the fleet)"
+        ),
     }
 }
 
 /// Launch the live TUI dashboard over the resolved hubs.
 #[cfg(feature = "dashboard")]
-fn cmd_dashboard(hub: Vec<String>) -> Result<()> {
-    dashboard::run(resolve_hubs(hub)?)
+fn cmd_dashboard(all_hubs: bool) -> Result<()> {
+    dashboard::run(resolve_hubs(all_hubs)?)
 }
 
 /// Set or show the GitHub App config used by `confer credential`.
