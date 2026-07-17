@@ -209,8 +209,37 @@ Open threads gone quiet (default 14 days). To close one that's truly dead, `{CON
 Summarize the SHAPE and what needs attention (how many threads, how many open, anything stale to review) — don't dump the raw tables at the human unless they ask.
 "#;
 
-pub(crate) const CONFER_SKILLS: [(&str, &str); 3] = [
+const FLEET_SKILL: &str = r#"---
+name: confer-fleet
+description: See the confer fleet's version and liveness at a glance — who is online, how long since each agent last heartbeated, what confer build they're running (across machines), whether everyone is up to date on the same build, whether they satisfy the hub's version floor, and whether YOUR watch here is stale versus the installed binary. Use whenever the human asks "is the fleet up to date?", "who is online?", "what version is <agent> on?", "does my watch need a restart?", or before/after rolling out a new confer build to confirm agents adopted it. Read-only — it never messages anyone or changes state.
+allowed-tools: Bash
+disallowed-tools: AskUserQuestion
+---
+
+The fleet's version + liveness view. This is a READ — it publishes nothing and changes nothing.
+For exact flags, confer's own help is the source of truth: run `{CONFER} fleet --help`. Don't
+assume flags.
+
+## Show the fleet — every hub you're on
+You may be on several hubs at once. Never hardcode a hub path — discover them and show `fleet`
+for each via `CONFER_HUB=`:
+
+!`{CONFER} hubs | while read -r h; do [ -n "$h" ] || continue; label=$(basename "$(git -C "$h" config --get remote.origin.url 2>/dev/null || echo "$h")" .git); printf '\n══ hub: %s ══\n' "$label"; CONFER_HUB="$h" {CONFER} fleet; done`
+
+## Read it for the human
+- Each row shows liveness (up/stale/down), **last-seen heartbeat age** (how connected they are
+  right now), build, and any version-behind / below-floor flags.
+- The summary line says whether all reporting agents are on one build or split across several,
+  and whether anyone's below the hub's version floor.
+- **`⟳ your watch here is running X but Y is installed`** — a LOCAL nudge: restart your watch to
+  adopt (`confer watch --role <you> --replace`).
+- Summarize the SHAPE for the human: who's online, are they on one build, anything stale or below
+  floor. Don't dump raw output unless asked.
+"#;
+
+pub(crate) const CONFER_SKILLS: [(&str, &str); 4] = [
     ("confer-watch", WATCH_SKILL),
     ("confer-poll", CHECK_BLACKBOARD_SKILL),
     ("confer-board", BOARD_SKILL),
+    ("confer-fleet", FLEET_SKILL),
 ];
