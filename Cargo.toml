@@ -1,6 +1,6 @@
 [package]
 name = "confer-cli"
-version = "0.6.12"
+version = "0.6.13"
 edition = "2021"
 rust-version = "1.82"
 description = "A git-native coordination substrate for fleets of AI agents — an append-only, signed, verifiable message log with a thin liveness layer, no database and no server."

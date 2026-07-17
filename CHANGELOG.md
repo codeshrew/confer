@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.13
+
+- **Internal: `main.rs` decomposed into focused modules (no behavior change).** The CLI had grown a
+  single 7,666-line `main.rs` (~46% of the crate); it's now 1,280 lines, with the command families
+  split into `cli`, `templates`, `hooks`, `keygen_release`, `skills`, `config_hub`, `identity`,
+  `trust`, `fleet`, `reconnect`, `transport`, `append`, `join`, and `init` modules (and the
+  board-reading commands folded into `inbox`, `watch-status` into `watch`). Every step was a pure
+  move, verified by diffing the full `--help` surface (top-level + all 61 subcommands) byte-for-byte
+  against the prior release and keeping the test suite green — so this is a maintainability release
+  with zero user-facing change. Please report any behavioral difference; there shouldn't be one.
+
 ## 0.6.12
 
 - **`confer watch --delivery <method>` + `watch-status` confirms wake delivery.** A watcher that's
