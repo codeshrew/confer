@@ -4669,3 +4669,85 @@ fn doctor_check_exits_0_when_clean_and_bare_doctor_always_exits_0() {
         checked.status.code()
     );
 }
+
+// ── Exit-code contract (design/37 F1/F2/F6) ─────────────────────────────────
+// Locks down the `main() -> ExitCode` routing: 0 success/report/predicate-yes, 1 predicate-no,
+// 2 usage, 3 execution error — so a hook can tell "act on this state" from "confer broke".
+fn code(o: &Output) -> i32 {
+    o.status.code().expect("confer exited via a signal, not an exit code")
+}
+
+/// The newest message's id, pulled from `read --last 1 --json` (no serde dev-dep).
+fn newest_id(c: &Clone) -> String {
+    let js = out(&c.confer(&["read", "--last", "1", "--json"]));
+    js.split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.get(..26))
+        .map(str::to_string)
+        .expect("a 26-char id in read --json output")
+}
+
+#[test]
+fn exit_usage_error_is_2() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert_eq!(code(&c.confer(&["show"])), 2, "missing required <id> is a clap usage error");
+    assert_eq!(
+        code(&c.confer(&["hub", "prnue"])),
+        2,
+        "a bad ValueEnum action is a usage error, not a runtime error (item 9)"
+    );
+}
+
+#[test]
+fn exit_execution_error_is_3_not_1() {
+    // The F1 fix: a genuine error is 3, no longer colliding with a predicate's 1.
+    let h = new_hub();
+    let c = h.clone("a");
+    assert_eq!(
+        code(&c.confer(&["show", "01ZZZZZZZZZZZZZZZZZZZZZZZZ"])),
+        3,
+        "no such message = execution error (3)"
+    );
+    assert_eq!(
+        code(&c.confer(&["verify", "01ZZZZZZZZZZZZZZZZZZZZZZZZ"])),
+        3,
+        "verify on a missing id = error (3), NOT predicate-false (1)"
+    );
+}
+
+#[test]
+fn watch_status_is_a_report_zero_but_check_gates_one() {
+    // F2: bare `watch-status` always exits 0 (it's a report), `--check` makes it a predicate.
+    let h = new_hub();
+    let c = h.clone("a");
+    assert_eq!(
+        code(&c.confer(&["watch-status"])),
+        0,
+        "no watcher running, but the report itself still exits 0"
+    );
+    assert_eq!(
+        code(&c.confer(&["watch-status", "--check"])),
+        1,
+        "--check gates: no live watcher = action needed = 1"
+    );
+}
+
+#[test]
+fn verify_unsigned_is_predicate_false_one_not_error_three() {
+    // F6: `verify` is a predicate. Test-hub messages are unsigned → Unverified → exit 1 (a valid
+    // negative), distinct from a missing-id error (3). This is the security-relevant routing —
+    // `verify <id> && act` must refuse an unverifiable message.
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.append(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "body"])),
+        "append should succeed"
+    );
+    let id = newest_id(&c);
+    assert_eq!(
+        code(&c.confer(&["verify", &id])),
+        1,
+        "an unsigned (unverifiable) message = predicate-false (1)"
+    );
+}
