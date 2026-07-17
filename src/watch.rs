@@ -219,9 +219,11 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         // one-shot startup line, this catches a newer build that lands on the hub WHILE you're
         // watching — a long-lived watcher would otherwise never learn until a restart. Emitted ONCE
         // per session to STDOUT (so the Monitor host actually wakes you), and only for genuine
-        // semver drift (a sha-only rebuild is noise). The peer-message stream stays uncluttered:
-        // this is a single, distinct, opt-out line, not mixed into the KIND-wake format.
-        if !opts.no_version_notice && !version_noticed {
+        // semver drift (a sha-only rebuild is noise). SUPPRESSED in `--json`: that stream is a
+        // contract of parseable message objects, and a prose line here would break `watch --json | jq`
+        // (design/37 F5). A JSON consumer checks version out of band (`version --check`); the typed
+        // `update-available` stream event is future work (design/37 item 6).
+        if !opts.no_version_notice && !opts.json && !version_noticed {
             if let Some(pin) = crate::hub_pin(&root) {
                 let a = crate::version::assess(&crate::my_build(), Some(&pin));
                 if a.outdated && a.grade != "rebuild" {
@@ -306,12 +308,10 @@ pub fn run(opts: WatchOpts) -> Result<()> {
             }
         }
 
-        // Version drift is deliberately NOT pushed into the watch stream. `watch` stdout
-        // is the MESSAGE event stream — a Monitor-driven agent wakes on every line, so a
-        // repeated "update available" nag burned peers' turns for a non-actionable event
-        // (you adopt a new binary on restart, not mid-run). Update awareness now lives in
-        // two non-waking places: a one-shot stderr line at watch startup (check_version),
-        // and pull-time (`confer status` / `confer version`). See DESIGN.md.
+        // (Version-drift awareness is emitted above as a single ONE-shot text-mode stdout line per
+        // session — see the `!version_noticed` block — plus the startup stderr line (check_version)
+        // and pull-time `status`/`version`. It is one-shot precisely so a Monitor-driven agent isn't
+        // re-nagged every line for a non-actionable event, and it's suppressed in `--json`.)
 
         // Heartbeat: publish liveness + cursor on a throttle, best-effort. Only
         // when we have a role and the hub is reachable (else the push would fail).
