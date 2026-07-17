@@ -671,7 +671,17 @@ fn run() -> Result<()> {
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { hub } => cmd_dashboard(hub),
         #[cfg(feature = "serve")]
-        Cmd::Serve { hub, bind } => serve::run(resolve_hubs(hub)?, &bind),
+        Cmd::Serve { hub, port, bind } => {
+            // Precedence: explicit --bind (full addr, for non-localhost) > --port (localhost
+            // shorthand) > CONFER_SERVE_PORT env > default 8422 (8787 collides with RStudio et al.).
+            let bind = bind.unwrap_or_else(|| {
+                let p = port
+                    .or_else(|| std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok()))
+                    .unwrap_or(8422);
+                format!("127.0.0.1:{p}")
+            });
+            serve::run(resolve_hubs(hub)?, &bind)
+        }
         Cmd::InstallHook { project } => cmd_install_hook(project),
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
         Cmd::SessionHeal => cmd_session_heal(),

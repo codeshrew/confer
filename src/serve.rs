@@ -312,7 +312,7 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
 
     let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
     let n = cache.lock().map(|c| c.len()).unwrap_or(0);
-    let port = bind.rsplit(':').next().unwrap_or("8787");
+    let port = bind.rsplit(':').next().unwrap_or("8422");
     eprintln!("confer serve: {n} hub(s), read-only, on:");
     eprintln!("  http://localhost:{port}");
     if let Some(ip) = lan_ip() {

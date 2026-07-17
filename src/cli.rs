@@ -344,17 +344,22 @@ pub(crate) enum Cmd {
     /// Read-only web view of the fleet (same data as `dashboard`) — a pure-Rust
     /// server rendering the board/agents/health/activity as HTML, auto-refreshing.
     /// Binds to LOCALHOST by default (the board is unauthenticated); to open it on
-    /// your phone, deliberately expose it with `--bind 0.0.0.0:8787`. `--hub`
+    /// your phone, deliberately expose it with `--bind 0.0.0.0:<port>`. `--hub`
     /// (repeatable) or the current hub. Read-only: never posts, never locks.
     #[cfg(feature = "serve")]
     Serve {
         #[arg(long = "hub")]
         hub: Vec<String>,
-        /// Address to bind. Default 127.0.0.1:8787 — LOCALHOST only, because the board is
-        /// served WITHOUT auth. Pass e.g. `--bind 0.0.0.0:8787` to expose it on your LAN on
-        /// purpose (anyone who can reach that address can read your fleet's coordination board).
-        #[arg(long, default_value = "127.0.0.1:8787")]
-        bind: String,
+        /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`).
+        /// Also settable via the `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with
+        /// RStudio Server and some studio apps).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Full bind address — only needed for NON-localhost exposure; overrides `--port`. LOCALHOST
+        /// is the default; pass e.g. `0.0.0.0:8422` on purpose to expose it on your LAN (anyone who
+        /// can reach that address can read your board — it's served WITHOUT auth).
+        #[arg(long)]
+        bind: Option<String>,
     },
     /// Install the SessionStart auto-heal hook into Claude Code settings so a
     /// compacted session is told to re-arm a stale watcher. User scope by default;
