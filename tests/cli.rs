@@ -4852,3 +4852,24 @@ fn fleet_json_carries_last_seen_and_age_secs() {
     let t = out(&a.confer(&["fleet"]));
     assert!(t.contains("ago"), "fleet text must show heartbeat age: {t}");
 }
+
+// ── top-level `--hub <name|path>` selector (git -C style, design/38) ─────────
+#[test]
+fn top_level_hub_selector_overrides_the_env_hub() {
+    // Two distinct hubs. From hub B's context (CONFER_HUB=B), `--hub <A path>` must operate on A —
+    // proving the selector is universal (works on any hub-scoped command) and overrides the env hub.
+    let ha = new_hub();
+    let ca = ha.clone("a");
+    let hb = new_hub();
+    let cb = hb.clone("b");
+    assert!(
+        ok(&ca.append(&["--type", "note", "--to", "x", "--topic", "alpha", "--summary", "in-A", "--text", "body"])),
+        "seed a message in hub A"
+    );
+    let path_a = ca.dir.to_str().unwrap();
+    let out = out(&cb.confer(&["--hub", path_a, "threads"]));
+    assert!(
+        out.contains("alpha"),
+        "`confer --hub <A> threads` targets hub A even though CONFER_HUB points at B: {out}"
+    );
+}

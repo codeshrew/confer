@@ -423,8 +423,70 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// Resolve the top-level `--hub <name|path>` selector (git -C style) and point this whole invocation
+/// at that hub via CONFER_HUB, so every hub-scoped command respects it with no per-command plumbing. A
+/// path to an existing hub clone is used directly; otherwise the value is matched as a NAME against the
+/// machine's known hubs (case-insensitive substring of each hub's name). Exactly one match wins.
+fn apply_hub_selector(sel: &str) -> Result<()> {
+    let p = std::path::Path::new(sel);
+    if p.is_dir() && (p.join(".git").exists() || p.join(".confer-version").exists()) {
+        std::env::set_var("CONFER_HUB", p.canonicalize()?);
+        return Ok(());
+    }
+    let hub_label = |h: &std::path::Path| -> String {
+        gitcmd::output(h, &["config", "--get", "remote.origin.url"])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|u| !u.is_empty())
+            .map(|u| {
+                u.rsplit('/')
+                    .next()
+                    .unwrap_or(u.as_str())
+                    .trim_end_matches(".git")
+                    .to_string()
+            })
+            .unwrap_or_else(|| {
+                h.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            })
+    };
+    // Dedupe by hub NAME first — a single hub can have several clones (or a stale registry entry) on
+    // one machine, and all should collapse to that one name (prefer an existing clone). Only then is a
+    // needle that still matches >1 DISTINCT name genuinely ambiguous.
+    let needle = sel.to_lowercase();
+    let mut by_label: std::collections::BTreeMap<String, std::path::PathBuf> = Default::default();
+    for h in crosshub::hub_dirs() {
+        let entry = by_label.entry(hub_label(&h)).or_insert_with(|| h.clone());
+        if !entry.exists() && h.exists() {
+            *entry = h; // prefer a clone that's actually present
+        }
+    }
+    let matches: Vec<(String, std::path::PathBuf)> = by_label
+        .into_iter()
+        .filter(|(l, _)| l.to_lowercase().contains(&needle))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(anyhow!(
+            "no hub matches '{sel}' — see `confer hubs` for the hubs on this machine"
+        )),
+        [(_, path)] => {
+            std::env::set_var("CONFER_HUB", path);
+            Ok(())
+        }
+        many => Err(anyhow!(
+            "'{sel}' matches {} hubs ({}) — be more specific",
+            many.len(),
+            many.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
 fn run() -> Result<()> {
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    if let Some(sel) = &cli.hub {
+        apply_hub_selector(sel)?;
+    }
+    match cli.cmd {
         Cmd::Join {
             role,
             host,

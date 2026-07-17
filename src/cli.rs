@@ -50,6 +50,12 @@ pub(crate) enum HubAction {
     about = "git-native coordination blackboard for AI agents"
 )]
 pub(crate) struct Cli {
+    /// Operate on a specific hub — like `git -C`, before the subcommand: `confer --hub jarvis threads`,
+    /// `confer --hub agent-coord who`. Works with EVERY hub-scoped command. Give a hub NAME (matched
+    /// against `confer hubs` — a case-insensitive substring of the hub's name) or a clone PATH. Sets
+    /// the effective hub for this one invocation (overrides $CONFER_HUB / the current directory).
+    #[arg(long)]
+    pub(crate) hub: Option<String>,
     #[command(subcommand)]
     pub(crate) cmd: Cmd,
 }
