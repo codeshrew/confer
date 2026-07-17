@@ -4760,3 +4760,48 @@ fn verify_unsigned_is_predicate_false_one_not_error_three() {
         "an unsigned (unverifiable) message = predicate-false (1)"
     );
 }
+
+// ── `confer threads` (design/38) ────────────────────────────────────────────
+#[test]
+fn threads_json_is_valid_and_reports_topics() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.append(&["--type", "note", "--to", "b", "--topic", "chat", "--summary", "hi", "--text", "y"])),
+        "append"
+    );
+    let js = out(&c.confer(&["threads", "--json"]));
+    // valid JSON array (no serde dev-dep — check structural markers) mentioning the topic.
+    assert!(js.trim_start().starts_with('['), "threads --json is an array: {js}");
+    assert!(js.contains("\"topic\":\"chat\""), "lists the chat topic: {js}");
+    assert!(code(&c.confer(&["threads"])) == 0, "threads is a report → exit 0");
+}
+
+#[test]
+fn threads_tracks_open_then_closed_as_a_request_resolves() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.append(&["--type", "request", "--to", "b", "--topic", "work", "--summary", "do it", "--text", "body"])),
+        "append request"
+    );
+    let open = out(&c.confer(&["threads", "--json"]));
+    assert!(
+        open.contains("\"topic\":\"work\"") && open.contains("\"status\":\"open\"") && open.contains("\"open_requests\":1"),
+        "an open request makes its thread open with 1 open request: {open}"
+    );
+    // --open lists it, --closed does not.
+    assert!(out(&c.confer(&["threads", "--open"])).contains("work"), "--open lists the open thread");
+    assert!(!out(&c.confer(&["threads", "--closed"])).contains("work"), "--closed excludes the open thread");
+    // Resolve the request → its thread closes.
+    let id = newest_id(&c);
+    assert!(
+        ok(&c.append(&["--type", "done", "--of", &id, "--summary", "done"])),
+        "append done"
+    );
+    let closed = out(&c.confer(&["threads", "--json"]));
+    assert!(
+        closed.contains("\"status\":\"closed\"") && closed.contains("\"open_requests\":0"),
+        "the thread closes once its only request is done: {closed}"
+    );
+}

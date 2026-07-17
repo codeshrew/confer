@@ -60,7 +60,7 @@ use clap::Parser;
 use cli::{Cli, Cmd};
 use config_hub::{cmd_config, cmd_hub, cmd_rewatch, cmd_status};
 use fleet::{cmd_fleet, cmd_require, cmd_version, update_hint};
-use inbox::{cmd_ack, cmd_inbox, cmd_read, cmd_requests, cmd_show, cmd_thread};
+use inbox::{cmd_ack, cmd_inbox, cmd_read, cmd_requests, cmd_show, cmd_thread, cmd_threads};
 use init::{cmd_adopt_clone, cmd_clones, cmd_hubs, cmd_init, cmd_where};
 use hooks::{cmd_autoheal, cmd_install_hook, cmd_session_heal, cmd_uninstall_hook};
 use identity::{cmd_describe, cmd_identity, cmd_rename, cmd_set_status, cmd_who, cmd_whois};
@@ -521,6 +521,12 @@ fn run() -> Result<()> {
             blocked,
         } => cmd_requests(open, mine, role, json, backlog, blocked),
         Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
+        Cmd::Threads {
+            open,
+            closed,
+            stale,
+            json,
+        } => cmd_threads(open, closed, stale, json),
         Cmd::Init {
             url,
             dir,

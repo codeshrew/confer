@@ -697,3 +697,143 @@ pub(crate) fn cmd_read(last: Option<usize>, topic: Option<String>, full: bool, j
     }
     Ok(())
 }
+
+/// `confer threads` — list the hub's topic threads with activity + open-work state (design/38). A
+/// REPORT: exits 0. Folds every message by topic; a request is "open" until a terminal event
+/// (done/error/supersede). `--open`/`--closed` filter by open-work; `--stale[=days]` shows OPEN
+/// threads gone quiet past the threshold (cleanup candidates). `--json` emits a snapshot array.
+pub(crate) fn cmd_threads(
+    open_only: bool,
+    closed_only: bool,
+    stale: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    let root = config::repo_root()?;
+    let msgs = store::all_messages(&root)?;
+    let now = chrono::Utc::now();
+    let threshold_secs = stale.unwrap_or(14) as i64 * 86_400;
+
+    struct Agg {
+        count: usize,
+        participants: BTreeSet<String>,
+        last: String,
+        requests: usize,
+        open: usize,
+    }
+    let mut by_topic: std::collections::BTreeMap<String, Agg> = std::collections::BTreeMap::new();
+    for m in &msgs {
+        let topic = m.front.topic.clone().unwrap_or_else(|| "general".to_string());
+        let a = by_topic.entry(topic).or_insert_with(|| Agg {
+            count: 0,
+            participants: BTreeSet::new(),
+            last: String::new(),
+            requests: 0,
+            open: 0,
+        });
+        a.count += 1;
+        a.participants.insert(m.front.from.clone());
+        if m.front.ts > a.last {
+            a.last = m.front.ts.clone();
+        }
+        if m.front.msg_type == "request" {
+            a.requests += 1;
+            // Open = not yet terminally resolved. Reuses the SAME fold `requests`/the board use, so
+            // "open" here can't drift from what those show.
+            if !matches!(
+                projection::request_status(&msgs, &m.front.id),
+                "DONE" | "ERROR" | "SUPERSEDED"
+            ) {
+                a.open += 1;
+            }
+        }
+    }
+
+    struct Row {
+        topic: String,
+        count: usize,
+        participants: Vec<String>,
+        last: String,
+        age_secs: i64,
+        requests: usize,
+        open: usize,
+        status: &'static str,
+        stale: bool,
+    }
+    let mut rows: Vec<Row> = by_topic
+        .into_iter()
+        .map(|(topic, a)| {
+            let age_secs = chrono::DateTime::parse_from_rfc3339(&a.last)
+                .map(|t| (now - t.with_timezone(&chrono::Utc)).num_seconds().max(0))
+                .unwrap_or(0);
+            let status = if a.open > 0 { "open" } else { "closed" };
+            let stale = status == "open" && age_secs > threshold_secs;
+            Row {
+                topic,
+                count: a.count,
+                participants: a.participants.into_iter().collect(),
+                last: a.last,
+                age_secs,
+                requests: a.requests,
+                open: a.open,
+                status,
+                stale,
+            }
+        })
+        .filter(|r| !open_only || r.status == "open")
+        .filter(|r| !closed_only || r.status == "closed")
+        .filter(|r| stale.is_none() || r.stale)
+        .collect();
+    // Default view: freshest activity first. Under `--stale`, interest flips to the deadest → oldest first.
+    if stale.is_some() {
+        rows.sort_by(|a, b| b.age_secs.cmp(&a.age_secs));
+    } else {
+        rows.sort_by(|a, b| a.age_secs.cmp(&b.age_secs));
+    }
+
+    if json {
+        let arr: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "topic": r.topic,
+                    "messages": r.count,
+                    "participants": r.participants,
+                    "last_activity": r.last,
+                    "age_secs": r.age_secs,
+                    "requests": r.requests,
+                    "open_requests": r.open,
+                    "status": r.status,
+                    "stale": r.stale,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        eprintln!("confer: · no threads match."); // empty-state → stderr (design/37 item 11)
+        return Ok(());
+    }
+    let n = rows.len();
+    let n_open = rows.iter().filter(|r| r.status == "open").count();
+    let n_stale = rows.iter().filter(|r| r.stale).count();
+    println!(
+        "{:<24} {:>5} {:>6} {:>9} {:>7}  {}",
+        "TOPIC", "MSGS", "AGENTS", "LAST", "REQ o/t", "STATUS"
+    );
+    for r in &rows {
+        println!(
+            "{:<24} {:>5} {:>6} {:>9} {:>7}  {}{}",
+            truncate(&r.topic, 24),
+            r.count,
+            r.participants.len(),
+            fmt_age(r.age_secs),
+            format!("{}/{}", r.open, r.requests),
+            r.status,
+            if r.stale { "  ⚠ stale" } else { "" }
+        );
+    }
+    println!("\n{n} thread(s) · {n_open} open · {n_stale} stale");
+    Ok(())
+}

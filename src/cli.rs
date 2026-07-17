@@ -240,6 +240,25 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// List the hub's topic THREADS (the folders under `threads/`) with activity + open-work state —
+    /// the board at a glance, newest-active first, and a way to find stale open threads to clean up.
+    /// `thread <id>` (singular) drills into one request's lifecycle; this lists them all. A REPORT
+    /// (exits 0). Combine `--stale` with lifecycle `done --as obsolete` to close what's gone dead.
+    Threads {
+        /// only threads with unresolved work (an open/claimed/blocked request)
+        #[arg(long)]
+        open: bool,
+        /// only threads with no open work (all requests resolved, or discussion-only)
+        #[arg(long)]
+        closed: bool,
+        /// only OPEN threads gone quiet longer than N days (default 14) — cleanup candidates
+        #[arg(long, num_args = 0..=1, default_missing_value = "14")]
+        stale: Option<u64>,
+        /// machine output: a JSON array of thread objects — topic, messages, participants,
+        /// last_activity, age_secs, requests, open_requests, status ("open"|"closed"), stale.
+        #[arg(long)]
+        json: bool,
+    },
     /// Browse/catch-up (does not touch the cursor).
     Read {
         #[arg(long)]
