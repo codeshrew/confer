@@ -14,11 +14,16 @@
 //! dismiss (`ack`) does. That is what lets directly-addressed mail persist in the inbox until the
 //! agent actually handles it, and lets you defer some while reading others.
 
-use crate::config;
 use crate::groups::{self, Groups};
+use crate::projection::id_ref_matches;
 use crate::schema::Message;
-use anyhow::Result;
-use std::collections::BTreeSet;
+use crate::{
+    config, format_line, framed_body, gitcmd, id_matches, projection, render_targets,
+    resolve_unique, roster, schema, short_id, store, superseded_set, tiers, to_json, truncate,
+    verify, warn_safety,
+};
+use anyhow::{anyhow, Result};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 /// A message id is a 26-char Crockford-base32 ULID. We only ever store/compare real ULIDs, so a
@@ -281,4 +286,387 @@ mod tests {
         // Only an explicit mark_all_read sets a floor; ordinary reads never do.
         assert_eq!(st.floor, None);
     }
+}
+
+// ---- command handlers (show / inbox / ack / requests / thread / read) ----
+
+/// Print one full message by id (or id-prefix) — the triage → open step.
+pub(crate) fn cmd_show(id: String) -> Result<()> {
+    let root = config::repo_root()?;
+    let msgs = store::all_messages(&root)?;
+    let hits: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| id_matches(&m.front.id, &id))
+        .collect();
+    match hits.as_slice() {
+        [] => Err(anyhow!("no message with id (or prefix) '{id}'")),
+        [m] => {
+            let roster = roster::load(&root);
+            let hub_key = config::hub_key(&root);
+            let t = verify::status(&root, &hub_key, &roster, &mut verify::Cache::default(), m);
+            let who = roster::display(&roster, &m.front.from);
+            let body = schema::sanitize_term(&m.to_markdown()?, true);
+            println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+            // Supersession chain (the append-based "edit" model).
+            if let Some(newer) = msgs.iter().find(|x| {
+                x.front
+                    .supersedes
+                    .as_deref()
+                    .is_some_and(|s| id_matches(&m.front.id, s))
+            }) {
+                println!(
+                    "> ⚠ superseded by {} — see the newer message",
+                    short_id(&newer.front.id)
+                );
+            }
+            if let Some(old) = &m.front.supersedes {
+                println!("> (this supersedes {})", short_id(old));
+            }
+            // In-place edit detection via git history of the message file.
+            let topic = m.front.topic.as_deref().unwrap_or("general");
+            let path = store::message_path(&root, topic, &m.front.id, &m.front.from, &m.front.ts);
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            if let Ok(o) = gitcmd::output(&root, &["log", "--format=%cI", "--", &rel]) {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let times: Vec<&str> = stdout.lines().collect();
+                if times.len() > 1 {
+                    println!(
+                        "> ✎ edited in place: created {}, last edited {} ({} commits)",
+                        times.last().copied().unwrap_or("?"),
+                        times.first().copied().unwrap_or("?"),
+                        times.len()
+                    );
+                }
+            }
+            // Opening a message's body reads THAT message — mark only this id (not a high-water
+            // mark sweeping every older message read; inbox.rs). The deferred rest stay unread.
+            if let Ok(me) = config::resolve_role(None, &root) {
+                let _ = mark_read(&config::hub_key(&root), &me, &m.front.id);
+            }
+            Ok(())
+        }
+        many => {
+            eprintln!("ambiguous prefix '{id}' matches {} messages:", many.len());
+            for m in many {
+                eprintln!("  {} — {}", m.front.id, m.summary_line());
+            }
+            Err(anyhow!("specify a longer id"))
+        }
+    }
+}
+
+/// The unread inbox: directly-addressed mail past the read frontier. Prints the full
+/// messages and (unless `--peek`) marks them read. The "did I actually see it"
+/// backstop, distinct from the delivery cursor.
+pub(crate) fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
+    let root = config::repo_root()?;
+    let me = config::resolve_role(role, &root).unwrap_or_default();
+    if me.is_empty() {
+        return Err(anyhow!(
+            "no role — set one to have an inbox (join, or --role <you>)"
+        ));
+    }
+    // Checking your mail must show FRESH mail — integrate first (like poll/status),
+    // else the working-tree fold is stale and the inbox lies by omission.
+    if let Err(e) = gitcmd::integrate(&root) {
+        warn_safety(format!("hub sync failed ({e}); showing local state"));
+    }
+    let hub = config::hub_key(&root);
+    let roster = roster::load(&root);
+    let grps = groups::load(&root);
+    let msgs = store::all_messages(&root)?;
+    // Fold the contiguous already-read prefix of my direct-mail history into the floor — keeps the
+    // local read state small over time.
+    let _ = compact_and_save(&hub, &me, &direct_ids_for_me(&msgs, &me, &grps));
+    let st = load_state(&hub, &me);
+    let unread = unread_for_me(&msgs, &me, &grps, &st);
+
+    if unread.is_empty() {
+        println!("inbox clear — no unread mail addressed to {me}.");
+        return Ok(());
+    }
+    println!("── {} unread for {me} ──\n", unread.len());
+    let mut vc = verify::Cache::default();
+    for m in &unread {
+        let t = verify::status(&root, &hub, &roster, &mut vc, m);
+        if peek {
+            // Compact triage line — scan the list, then open the ones you want.
+            println!(
+                "  {} · from {} — {}",
+                short_id(&m.front.id),
+                schema::sanitize_term(roster::display(&roster, &m.front.from), false),
+                truncate(&m.summary_line(), 72)
+            );
+            let _ = t;
+        } else {
+            let who = roster::display(&roster, &m.front.from);
+            let body = schema::sanitize_term(&m.to_markdown()?, true);
+            println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub)));
+            println!();
+        }
+    }
+    // The inbox LISTS — it never marks mail read (that was the single-high-water-mark bug: opening
+    // one message read all the older deferred mail). You mark mail read explicitly, one at a time.
+    println!(
+        "(nothing marked read — `confer show <id>` opens one, `confer ack <id>` dismisses one, `confer ack` clears all)"
+    );
+    Ok(())
+}
+
+/// Acknowledge mail as read without re-opening it. `ack <id>` dismisses just that one (the deferred
+/// rest stay unread); `ack` with no id catches up — marks EVERYTHING read.
+pub(crate) fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
+    let root = config::repo_root()?;
+    let me = config::resolve_role(role, &root).unwrap_or_default();
+    if me.is_empty() {
+        return Err(anyhow!(
+            "no role — set one to ack mail (join, or --role <you>)"
+        ));
+    }
+    let hub = config::hub_key(&root);
+    let msgs = store::all_messages(&root)?;
+    match id {
+        Some(raw) => {
+            let target = resolve_unique(&msgs, &raw)?.to_string();
+            mark_read(&hub, &me, &target)?;
+            println!("acked {} — marked read (others left unread).", short_id(&target));
+        }
+        None => match latest_id(&msgs) {
+            Some(latest) => {
+                mark_all_read(&hub, &me, &latest)?;
+                println!("acked all — inbox clear for {me}.");
+            }
+            None => println!("no messages to ack."),
+        },
+    }
+    Ok(())
+}
+
+/// Derived status of a request id, folded over its claim/done/error/supersede
+/// messages. Tolerant of short-id references (id_matches) for older data.
+/// Roles that have claimed a request, in fold order (first = current owner). More
+/// than one distinct role ⇒ a contested claim (a race on a broadcast request).
+/// See DESIGN.md.
+pub(crate) fn cmd_requests(
+    open_only: bool,
+    mine: bool,
+    role: Option<String>,
+    json: bool,
+    backlog: bool,
+    blocked_only: bool,
+) -> Result<()> {
+    let root = config::repo_root()?;
+    let me = config::resolve_role(role, &root).unwrap_or_default();
+    // The board is THE shared-state view — integrate first (like poll/inbox/status)
+    // so an ad-hoc `requests` reflects peers' latest, not a stale working tree. A fetch that
+    // FAILED (offline / timed out under load) is not an Err but leaves the board stale — surface
+    // that so a stale view is never silently presented as current (a review finding).
+    match gitcmd::integrate(&root) {
+        Ok(r) if !r.fetched => {
+            eprintln!("confer: couldn't refresh from the hub — the board below may be stale")
+        }
+        Err(e) => warn_safety(format!("hub sync failed ({e}); showing local state")),
+        _ => {}
+    }
+    let roster = roster::load(&root);
+    let msgs = store::all_messages(&root)?;
+    // Fold the whole board once (shared with the dashboard TUI); then apply the
+    // view filter and render. See projection::Board.
+    let board = projection::Board::fold(&msgs, chrono::Utc::now());
+    let by_id: HashMap<&str, &Message> = msgs.iter().map(|m| (m.front.id.as_str(), m)).collect();
+
+    for row in &board.rows {
+        // --backlog: deferred/someday; --blocked: waiting; --open: the ACTIVE board
+        // (open/claimed, not deferred, not blocked); default: everything.
+        if backlog {
+            if !row.is_backlog() {
+                continue;
+            }
+        } else if blocked_only {
+            if row.status != "BLOCKED" {
+                continue;
+            }
+        } else if open_only && !row.is_active() {
+            continue;
+        }
+        if mine && row.from != me && !row.to.iter().any(|t| t == me.as_str()) {
+            continue;
+        }
+        if json {
+            // Re-serialize the full frontmatter (from the original message) + the
+            // folded status/claimants/age/resolution — the stable JSON contract.
+            let m = by_id[row.id.as_str()];
+            let mut v = serde_json::to_value(&m.front)?;
+            if let serde_json::Value::Object(map) = &mut v {
+                map.insert(
+                    "status".into(),
+                    serde_json::Value::String(row.status.into()),
+                );
+                map.insert("claimants".into(), serde_json::json!(row.claimants));
+                map.insert("age_secs".into(), serde_json::json!(row.age_secs));
+                if let Some(res) = &row.resolution {
+                    map.insert("resolution".into(), serde_json::json!(res));
+                }
+            }
+            println!("{}", serde_json::to_string(&v)?);
+        } else {
+            let owner = match row.claimants.as_slice() {
+                [] => String::new(),
+                [one] => format!(" [by {one}]"),
+                [first, rest @ ..] => format!(" [by {first}; ⚠ contested: {}]", rest.join(",")),
+            };
+            // Resolution shows why a request left the board; ⏳ marks backlog; a
+            // stale (>3d) still-open request gets a ⚠ so the debt is visible.
+            let status_disp = match &row.resolution {
+                Some(x) => format!("DONE·{x}"),
+                None => row.status.to_string(),
+            };
+            let tag = if row.deferred { " ⏳" } else { "" };
+            println!(
+                "{}{status_disp:<11} {:>4}  {} | {}{}{tag} — {}{owner}",
+                if row.stale { "⚠ " } else { "  " },
+                fmt_age(row.age_secs),
+                short_id(&row.id),
+                schema::sanitize_term(roster::display(&roster, &row.from), false),
+                render_targets(&roster, &row.to),
+                truncate(&row.summary, 66),
+            );
+        }
+    }
+    // Flow / WIP footer — the ambient health signal. Skip for --json.
+    if !json {
+        let wip_s = if board.wip.is_empty() {
+            "none".to_string()
+        } else {
+            board
+                .wip
+                .iter()
+                .map(|(a, n)| format!("{a}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!(
+            "── flow: {} open · {} claimed · {} blocked · {} backlog · {} closed ──  WIP: {wip_s}",
+            board.open, board.claimed, board.blocked, board.backlog, board.closed
+        );
+    }
+    Ok(())
+}
+
+/// Compact relative age: `12m` / `3h` / `5d`.
+pub(crate) fn fmt_age(secs: i64) -> String {
+    if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
+}
+
+pub(crate) fn cmd_thread(id: String, full: bool) -> Result<()> {
+    let root = config::repo_root()?;
+    let roster = roster::load(&root);
+    let msgs = store::all_messages(&root)?;
+
+    // Seed = the single message the id resolves to (ambiguity-checked, so a short
+    // leading prefix can't merge two unrelated requests into one thread — C2), then
+    // grow transitively over of/reply_to/supersedes links in BOTH directions.
+    let seed = resolve_unique(&msgs, &id)?.to_string();
+    let mut set: HashSet<String> = HashSet::from([seed]);
+    loop {
+        let before = set.len();
+        for m in &msgs {
+            let links: Vec<&String> = [&m.front.of, &m.front.reply_to, &m.front.supersedes]
+                .into_iter()
+                .flatten()
+                .collect();
+            // in-thread if this message is a member, or any of its links resolves
+            // (strictly — exact/suffix, never leading prefix) to a member.
+            let touches = set.contains(&m.front.id)
+                || links
+                    .iter()
+                    .any(|l| set.iter().any(|s| id_ref_matches(s, l)));
+            if touches {
+                set.insert(m.front.id.clone());
+                for l in &links {
+                    if let Some(t) = msgs.iter().find(|x| id_ref_matches(&x.front.id, l)) {
+                        set.insert(t.front.id.clone());
+                    }
+                }
+            }
+        }
+        if set.len() == before {
+            break;
+        }
+    }
+
+    let mut thread: Vec<&Message> = msgs.iter().filter(|m| set.contains(&m.front.id)).collect();
+    thread.sort_by(|a, b| a.front.id.cmp(&b.front.id));
+    let hub_key = config::hub_key(&root);
+    let mut vc = verify::Cache::default();
+    for m in &thread {
+        let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
+        if full {
+            let who = roster::display(&roster, &m.front.from);
+            let body = schema::sanitize_term(&m.to_markdown()?, true);
+            println!("{}\n", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+        } else {
+            println!("{}", format_line(&roster, m, false, Some(&t)));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_read(last: Option<usize>, topic: Option<String>, full: bool, json: bool) -> Result<()> {
+    let root = config::repo_root()?;
+    let roster = roster::load(&root);
+    let mut msgs = store::all_messages(&root)?;
+    if let Some(t) = &topic {
+        msgs.retain(|m| m.front.topic.as_deref() == Some(t.as_str()));
+    }
+    let superseded = superseded_set(&msgs);
+    msgs.sort_by(|a, b| a.front.id.cmp(&b.front.id));
+    if let Some(n) = last {
+        let len = msgs.len();
+        if len > n {
+            msgs = msgs.split_off(len - n);
+        }
+    }
+    let hub_key = config::hub_key(&root);
+    let mut vc = verify::Cache::default();
+    for m in &msgs {
+        let sup = if superseded.contains(&m.front.id) {
+            "  [superseded]"
+        } else {
+            ""
+        };
+        if json {
+            println!("{}", to_json(m)?);
+        } else if full {
+            let who = roster::display(&roster, &m.front.from);
+            let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
+            // Compact scan header, then the peer body inside the untrusted-data envelope
+            // (control-sanitized; the frame's provenance carries the verified attribution).
+            let hdr = format!(
+                "### {} {}{}{sup}",
+                m.front.msg_type.to_uppercase(),
+                short_id(&m.front.id),
+                render_targets(&roster, &m.front.to),
+            );
+            let body = schema::sanitize_term(&m.body, true);
+            println!(
+                "\n{hdr}\n{}",
+                framed_body(&body, m, who, &t, tiers::get(&hub_key))
+            );
+        } else {
+            let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
+            println!("{}{sup}", format_line(&roster, m, false, Some(&t)));
+        }
+    }
+    Ok(())
 }

@@ -397,7 +397,7 @@ fn draw_board(f: &mut Frame, area: Rect, h: &HubView, show_closed: bool) {
         let spans = vec![
             Span::styled(stale, Style::default().fg(C_ERR)),
             Span::styled(format!("{status_disp:<12}"), Style::default().fg(status_color(row.status)).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{:>4}  ", crate::fmt_age(row.age_secs)), Style::default().fg(C_DIM)),
+            Span::styled(format!("{:>4}  ", crate::inbox::fmt_age(row.age_secs)), Style::default().fg(C_DIM)),
             Span::styled(
                 format!(
                     "{} → {}{tag} — {}{owner}",
