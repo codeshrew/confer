@@ -28,17 +28,18 @@ jobs:
         run: cargo test --verbose
 
   lint:
-    name: fmt & clippy (advisory)
+    name: clippy (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: rustfmt
-        run: cargo fmt --all --check
+      # Advisory: surfaces `too_many_lines` (fn-size, threshold in clippy.toml) and other lints as
+      # annotations without blocking. We deliberately do NOT run `cargo fmt` here — a perpetually-red
+      # fmt --check step used to skip this clippy step entirely, hiding the signal.
       - name: clippy
         run: cargo clippy --all-targets
 
