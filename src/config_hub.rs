@@ -2,9 +2,10 @@
 //! (`~/.confer/config.json`) and hub-identity pinning (`known_hubs`), plus the shared
 //! `short12` / `current_hub_name` / `hub_watch_mode` helpers those and other families lean on.
 
+use crate::reconnect::canonical_hub_id;
 use crate::{
-    autoheal, canonical_hub_id, config, gitcmd, hint, knownhubs, machineconfig, projection, tiers,
-    warn_safety, warn_trust, watchlock, BUILD_SHA,
+    autoheal, config, gitcmd, hint, knownhubs, machineconfig, projection, tiers, warn_safety,
+    warn_trust, watchlock, BUILD_SHA,
 };
 use anyhow::{anyhow, Result};
 
