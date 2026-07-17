@@ -1,12 +1,20 @@
 # cargo-dist checksums the release ARCHIVES (each tarball gets a .sha256, all go in sha256.sum) but
 # NOT its own shell installer — so `confer-cli-installer.sh`, the artifact users pipe into a shell,
-# is the one thing they can't verify. Backwards from a threat POV. This closes the gap: after a
-# release is published, checksum the installer, publish a `confer-cli-installer.sh.sha256` companion
-# (matching the tarballs), and append the installer line to `sha256.sum`.
+# is the one thing they can't verify. Backwards from a threat POV. This closes the gap: after the
+# Release workflow completes, checksum the installer, publish a `confer-cli-installer.sh.sha256`
+# companion (matching the tarballs), and append the installer line to `sha256.sum`.
 name: checksum installer
 on:
-  release:
-    types: [published]
+  # Auto-fire after "Release" finishes. We CAN'T use `release: [published]`: the Release workflow
+  # creates the GitHub release with the default GITHUB_TOKEN, and GitHub deliberately does NOT let
+  # GITHUB_TOKEN-created events trigger downstream workflows (anti-recursion) — so `release: published`
+  # never started this job, forcing a manual `gh workflow run` every release. `workflow_run` fires
+  # regardless of what triggered the upstream run, closing that gap. `workflow_dispatch` stays as a
+  # manual fallback/backfill. (workflow_run uses this file from the DEFAULT branch, so it only takes
+  # effect once merged to main.)
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -18,12 +26,18 @@ permissions:
 
 jobs:
   add-installer-checksum:
+    # Manual backfill always runs; the auto path runs only if the Release workflow SUCCEEDED (a failed
+    # or cancelled Release must not produce a checksum for a release that didn't publish).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checksum the installer, attach companion + append to sha256.sum
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          # workflow_dispatch → the input tag; workflow_run (tag push) → the tag in head_branch.
+          TAG: ${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
