@@ -8,7 +8,8 @@ use crate::skills::cmd_install_skill;
 use crate::transport::{git_ssh_command, parse_remote, validate_transport_key, Scheme};
 use crate::{clonehome, config, gitcmd, schema};
 use crate::join::{cmd_join, safe_clone_dir, warn_if_nested};
-use crate::{cmd_init, valid_slug};
+use crate::init::cmd_init;
+use crate::valid_slug;
 
 /// Write the canonical /confer-watch + /confer-poll skills, adapted to this machine.
 /// Bulletproof (re)connect. Idempotent: resolve-or-clone the hub, (re)join, install
