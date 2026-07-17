@@ -148,6 +148,8 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
         build: Option<version::BuildId>,
         grade: &'static str,
         compat: Option<bool>,
+        last_seen: String,
+        age_secs: Option<i64>,
     }
     let mut rows: Vec<Row> = agents
         .iter()
@@ -161,6 +163,11 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
                 (Some(b), Some(r)) => Some(version::satisfies(b, r)),
                 _ => None,
             };
+            // Heartbeat age — the "how connected am I" signal. `None` only if the
+            // published `last_seen` fails to parse (shouldn't happen on a real beat).
+            let age_secs = chrono::DateTime::parse_from_rfc3339(&a.last_seen)
+                .ok()
+                .map(|seen| (now - seen.with_timezone(&chrono::Utc)).num_seconds());
             Row {
                 role: a.role.clone(),
                 host: a.host.clone().unwrap_or_else(|| "?".into()),
@@ -168,6 +175,8 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
                 build,
                 grade,
                 compat,
+                last_seen: a.last_seen.clone(),
+                age_secs,
             }
         })
         .collect();
@@ -188,6 +197,8 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
                     "build": r.build.as_ref().map(|b| b.label()),
                     "grade": r.grade,
                     "satisfies_floor": r.compat,
+                    "last_seen": r.last_seen,
+                    "age_secs": r.age_secs,
                 })
             })
             .collect();
@@ -218,6 +229,15 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
     }
     for r in &rows {
         let g = presence::glyph(&r.live);
+        let word = match r.live {
+            presence::Live::Up => "up",
+            presence::Live::Stale => "stale",
+            presence::Live::Down => "down",
+        };
+        let age = match r.age_secs {
+            Some(s) => format!("{} ago", crate::inbox::fmt_age(s)),
+            None => "?".into(),
+        };
         let bl = r
             .build
             .as_ref()
@@ -236,7 +256,7 @@ pub(crate) fn cmd_fleet(json: bool) -> Result<()> {
             ""
         };
         println!(
-            "  {g} {:<16} {:<12} {bl}{flag}{cflag}",
+            "  {g} {word:<5} {age:>8}  {:<16} {:<12} {bl}{flag}{cflag}",
             r.role,
             schema::sanitize_term(&r.host, false)
         );

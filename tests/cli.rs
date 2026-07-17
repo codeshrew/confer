@@ -4805,3 +4805,50 @@ fn threads_tracks_open_then_closed_as_a_request_resolves() {
         "the thread closes once its only request is done: {closed}"
     );
 }
+
+#[test]
+fn fleet_json_carries_last_seen_and_age_secs() {
+    // design/38 — `confer fleet` must surface the heartbeat AGE (last-seen), not just
+    // liveness/build, so `--json` consumers (skills/web) get it too. Additive-only: the
+    // existing fields (`build`,`grade`,`host`,`live`,`role`,`satisfies_floor`) stay put.
+    let h = new_hub();
+    let a = h.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.append(&[
+        "--type", "note", "--to", "beta", "--summary", "x", "--text", "y"
+    ])));
+
+    // Fabricate a fresh (unsigned/advisory) presence beat carrying a build — same raw-git
+    // technique as `who_rejects_an_unsigned_heartbeat_downgrade_after_a_role_has_signed`.
+    let now = chrono::Utc::now().to_rfc3339();
+    let push_beat = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{dir}' && printf '{{\"role\":\"alpha\",\"last_seen\":\"{now}\",\"poll_secs\":10,\"build\":\"0.1.0 abc123\"}}' > pres.json && \
+             b=$(git hash-object -w pres.json) && \
+             t=$(printf '100644 blob %s\\tpresence.json\\n' \"$b\" | git mktree) && \
+             c=$(git commit-tree $t -m beat) && \
+             git update-ref refs/presence/alpha $c && \
+             git push --force origin refs/presence/alpha:refs/presence/alpha && rm -f pres.json",
+            dir = a.dir.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(push_beat.status.success(), "push_beat: {}", String::from_utf8_lossy(&push_beat.stderr));
+
+    let j = out(&a.confer(&["fleet", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(j.trim())
+        .unwrap_or_else(|e| panic!("fleet --json must parse ({e}): {j}"));
+    let agent = &v["agents"][0];
+    for key in ["role", "host", "live", "build", "grade", "satisfies_floor"] {
+        assert!(agent.get(key).is_some(), "fleet --json missing existing field '{key}': {v}");
+    }
+    assert!(agent["last_seen"].is_string(), "fleet --json must carry last_seen: {v}");
+    let age = agent["age_secs"].as_i64();
+    assert!(age.is_some(), "fleet --json must carry a numeric age_secs: {v}");
+    assert!(age.unwrap() < 60, "a just-published beat should be seconds old: {v}");
+
+    // Text mode shows the same age as a human-readable "... ago".
+    let t = out(&a.confer(&["fleet"]));
+    assert!(t.contains("ago"), "fleet text must show heartbeat age: {t}");
+}
