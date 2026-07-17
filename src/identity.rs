@@ -1,8 +1,9 @@
 //! Identity / roster-card commands: `who`, `identity`, `whois`, `rename`, `describe`,
 //! and the dormant/retired/resume status setter. Moved verbatim from `main.rs`.
 
-use crate::{cmd_append, warn_safety, AppendArgs};
+use crate::append::{cmd_append, AppendArgs};
 use crate::{alias, config, crosshub, gitcmd, presence, projection, roster, schema, store, verify};
+use crate::warn_safety;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
