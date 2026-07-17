@@ -6,8 +6,9 @@
 //! skills. `cmd_autoheal` is the manual registry-pruning counterpart. The heavy lifting lives in the
 //! `autoheal`/`watch`/`config` modules — this is the command + settings.json plumbing around them.
 
+use crate::config_hub::hub_watch_mode;
 use crate::skills::resync_skills_if_stale;
-use crate::{autoheal, config, hub_watch_mode, machineconfig, roster, schema, watchlock, BUILD_SHA};
+use crate::{autoheal, config, machineconfig, roster, schema, watchlock, BUILD_SHA};
 use anyhow::{anyhow, Result};
 use std::io::Read;
 
