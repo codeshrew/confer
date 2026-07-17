@@ -124,7 +124,8 @@ pub(crate) fn cmd_repos(json: bool) -> Result<()> {
                 id.clone(),
                 serde_json::json!({
                     "role": r.role, "url": r.url, "access": r.access,
-                    "docs": r.docs, "owner": r.owner,
+                    "docs": r.docs, "owner": r.owner, "root_sha": r.root_sha,
+                    "clone": crate::repomap::path(id).map(|p| p.to_string_lossy().into_owned()),
                 }),
             );
         }
@@ -158,7 +159,13 @@ pub(crate) fn cmd_repos(json: bool) -> Result<()> {
             .as_deref()
             .map(|d| format!("  docs:{d}"))
             .unwrap_or_default();
-        println!("{id}  [{}]  access:{access}  {url}{docs}", r.role);
+        // Show whether THIS machine has it cloned (so `--ref` can resolve to real
+        // code here) — a local-only fact, from ~/.confer/repos.json.
+        let clone = match crate::repomap::path(id) {
+            Some(p) => format!("  ✓ cloned:{}", p.display()),
+            None => "  (not cloned here — `confer repos map` to point at a clone)".to_string(),
+        };
+        println!("{id}  [{}]  access:{access}  {url}{docs}{clone}", r.role);
     }
     Ok(())
 }

@@ -5023,3 +5023,44 @@ fn request_reply_to_promotes_a_note_into_a_tracked_request() {
     let reqs = out(&c.confer(&["requests", "--open"]));
     assert!(reqs.contains("please investigate"), "the escalated request is OPEN: {reqs}");
 }
+
+#[test]
+fn repos_map_records_clone_lists_it_and_rejects_non_git() {
+    let c = new_hub().clone("alpha");
+    // a hub card so the repo is layer-1 registered (local read; no commit needed)
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("myrepo.md"),
+        "---\nrole: code\nurl: https://example.com/myrepo\n---\n",
+    )
+    .unwrap();
+    // a separate "code" repo with one commit, to map
+    let code = tmp("coderepo");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "fn main() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+
+    // map it → success, echoes the mapping + a root-sha anchor
+    let m = c.confer(&["repos", "map", "myrepo", code.to_str().unwrap()]);
+    assert!(ok(&m), "repos map failed: {}", err(&m));
+    assert!(out(&m).contains("mapped myrepo"), "map stdout: {}", out(&m));
+    assert!(out(&m).contains("root-sha"), "map should show the identity anchor: {}", out(&m));
+
+    // listing now shows it cloned locally
+    let l = c.confer(&["repos"]);
+    assert!(ok(&l));
+    assert!(out(&l).contains("myrepo"), "listing: {}", out(&l));
+    assert!(out(&l).contains("cloned"), "listing should mark it cloned: {}", out(&l));
+
+    // mapping an UNREGISTERED slug (no hub card) still succeeds but warns on stderr
+    let un = c.confer(&["repos", "map", "unreg", code.to_str().unwrap()]);
+    assert!(ok(&un), "mapping an unregistered slug should still succeed");
+    assert!(err(&un).contains("isn't in this hub"), "expected unregistered note: {}", err(&un));
+
+    // mapping a non-git directory is a hard error
+    let plain = tmp("plaindir");
+    let bad = c.confer(&["repos", "map", "nope", plain.to_str().unwrap()]);
+    assert!(!ok(&bad), "mapping a non-git dir must fail");
+    assert!(err(&bad).contains("not a git repository"), "err: {}", err(&bad));
+}

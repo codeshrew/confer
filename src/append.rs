@@ -70,14 +70,24 @@ fn parse_ref(s: &str) -> Result<schema::CodeRef> {
     })
 }
 
-/// Parse `Lstart-Lend` / `start-end` into a line range — errors (not silently
-/// drops) on a malformed or overflowing span, since the ref would lose its span.
+/// Parse `Lstart-Lend` (range) or `L46` / `46` (single line → `[n, n]`) into a line
+/// range — errors (not silently drops) on a malformed or overflowing span, since the
+/// ref would lose its span.
 fn parse_range(span: &str) -> Result<[u64; 2]> {
-    let bad = || anyhow!("invalid line range '{span}': expected Lstart-Lend");
-    let (a, b) = span.split_once('-').ok_or_else(bad)?;
-    let a = a.trim_start_matches('L').parse().map_err(|_| bad())?;
-    let b = b.trim_start_matches('L').parse().map_err(|_| bad())?;
-    Ok([a, b])
+    let bad = || anyhow!("invalid line range '{span}': expected Lstart-Lend or Lstart");
+    match span.split_once('-') {
+        Some((a, b)) => {
+            let a = a.trim_start_matches('L').parse().map_err(|_| bad())?;
+            let b = b.trim_start_matches('L').parse().map_err(|_| bad())?;
+            Ok([a, b])
+        }
+        // A single line `#L46` — a legitimate, common reference (one line), not a
+        // malformed range. Fold it to the degenerate range [n, n].
+        None => {
+            let n = span.trim_start_matches('L').parse().map_err(|_| bad())?;
+            Ok([n, n])
+        }
+    }
 }
 
 /// Warn (non-fatally) when a message's addressees can't receive it in THIS hub:
@@ -681,6 +691,9 @@ mod tests {
         assert_eq!(ranged.path, "src/main.rs");
         assert_eq!(ranged.sha, "abc");
         assert_eq!(ranged.range, Some([10, 42]));
+        // single-line ref (#L46) → degenerate range [46, 46]
+        let one = parse_ref("app:src/main.rs@abc#L46").unwrap();
+        assert_eq!(one.range, Some([46, 46]));
         // malformed → error, not panic
         assert!(parse_ref("no-colon").is_err());
         assert!(parse_ref("repo:").is_err());
@@ -691,8 +704,12 @@ mod tests {
     fn parse_range_errors_on_malformed() {
         assert_eq!(parse_range("10-42").unwrap(), [10, 42]);
         assert_eq!(parse_range("L10-L42").unwrap(), [10, 42]);
-        assert!(parse_range("10").is_err()); // no dash
+        // single line (#L46 / #46) → the degenerate range [n, n], not an error
+        assert_eq!(parse_range("46").unwrap(), [46, 46]);
+        assert_eq!(parse_range("L46").unwrap(), [46, 46]);
         assert!(parse_range("L10-Lx").is_err()); // nonnumeric
+        assert!(parse_range("Lx").is_err()); // nonnumeric single
+        assert!(parse_range("").is_err()); // empty
         assert!(parse_range("99999999999999999999-2").is_err()); // overflow
     }
 }

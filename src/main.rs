@@ -36,6 +36,7 @@ mod machineconfig;
 mod presence;
 mod projection;
 mod reconnect;
+mod repomap;
 mod repos;
 mod roster;
 mod schema;
@@ -297,6 +298,36 @@ pub(crate) fn format_line(
         ),
         false,
     )
+}
+
+/// `confer repos map <slug> [path]` — record this machine's clone of a repo (design/40
+/// layer 2). Local-only (`~/.confer/repos.json`), never in the hub. Warns if the slug
+/// isn't in the hub's repos registry (peers can't resolve `--ref <slug>:…` until it is).
+fn cmd_repos_map(slug: String, path: Option<String>) -> Result<()> {
+    if !valid_slug(&slug) {
+        return Err(anyhow!(
+            "invalid repo slug '{slug}': must match a repos/<slug> key ([a-z0-9][a-z0-9-]*)"
+        ));
+    }
+    let dir = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let abs = repomap::set(&slug, &dir)?;
+    println!("mapped {slug} → {}", abs.display());
+    if let Some(rsha) = crosshub::root_sha(&abs) {
+        println!("  root-sha {} (identity anchor)", &rsha[..rsha.len().min(12)]);
+    }
+    // Layer-1 check: without a hub card, the slug is private to this machine — peers
+    // can't resolve it. Surface that as a diagnostic (stderr), not an error.
+    let known = config::repo_root().ok().map(|r| repos::load(&r).contains_key(&slug)).unwrap_or(false);
+    if !known {
+        eprintln!(
+            "note: '{slug}' isn't in this hub's repos/ registry — peers can't resolve `--ref {slug}:…` \
+             until it's shared (add repos/{slug}.md with its url + root_sha)."
+        );
+    }
+    Ok(())
 }
 
 /// Compact pointer tag for the one-line view: ` ⟶ repo:path` (first ref, +N more).
@@ -649,7 +680,10 @@ fn run() -> Result<()> {
             ssh,
             https,
         } => cmd_invite(role, host, scheme_from(ssh, https)),
-        Cmd::Repos { json } => cmd_repos(json),
+        Cmd::Repos { action, json } => match action {
+            Some(cli::ReposAction::Map { slug, path }) => cmd_repos_map(slug, path),
+            None => cmd_repos(json),
+        },
         Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
         Cmd::Doctor { dir, fix, json, check } => cmd_doctor(dir, fix, json, check),

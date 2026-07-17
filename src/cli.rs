@@ -43,6 +43,20 @@ pub(crate) enum HubAction {
     Prune,
 }
 
+/// `confer repos <action>` — `map` records THIS machine's clone of a repo (design/40 layer 2:
+/// `~/.confer/repos.json`, local-only, never in the hub) so `--ref <slug>:…` resolves to real
+/// code here. No action = the listing.
+#[derive(Subcommand, Clone)]
+pub(crate) enum ReposAction {
+    /// Point a repo slug at its clone on THIS machine (path defaults to the current dir).
+    Map {
+        /// the repos/<slug> key (matches `--ref <slug>:…`)
+        slug: String,
+        /// clone path (default: the current directory)
+        path: Option<String>,
+    },
+}
+
 #[derive(Parser)]
 #[command(
     name = "confer",
@@ -687,8 +701,12 @@ pub(crate) enum Cmd {
         hub: Option<String>,
     },
     /// List the repos this hub is "about" (role, access, url, docs) — the
-    /// inventory that `--ref` points into. See DESIGN.md.
+    /// inventory that `--ref` points into — plus whether each is cloned on THIS
+    /// machine. `repos map <slug> [path]` records where your clone lives (local-only,
+    /// never in the hub) so `--ref <slug>:…` resolves to real code here. See DESIGN.md.
     Repos {
+        #[command(subcommand)]
+        action: Option<ReposAction>,
         #[arg(long)]
         json: bool,
     },
