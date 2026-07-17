@@ -5,7 +5,8 @@
 //! `cmd_changelog` renders sections of the embedded CHANGELOG. Small shared helpers (`which`,
 //! `changelog_sections`, `parse_semver_prefix`, `delegate_to_package_manager`) stay private here.
 
-use crate::{config, read_pubkey, valid_slug, CHANGELOG_MD};
+use crate::join::read_pubkey;
+use crate::{config, valid_slug, CHANGELOG_MD};
 use anyhow::{anyhow, Result};
 
 /// Mint a dedicated ed25519 signing key for a role at the fleet-standard location
