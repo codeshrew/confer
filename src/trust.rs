@@ -301,7 +301,12 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
             _ => {}
         }
     }
-    let findings = doctor::audit(&root);
+    // `findings` folds the typed `doctor::audit` signing/identity checks together with the
+    // CONFIG/SECURITY/HEALTH advisories below (transport, clone shape, machine config, hub
+    // identity, role↔key) into ONE gated set: a security signal like role↔key impersonation must
+    // not be a false-green just because it lived in text-only prose (bug that prompted this fix).
+    let mut findings = doctor::audit(&root);
+    findings.extend(advisory_findings(&root));
     let any_hard = findings.iter().any(|f| f.level == doctor::Level::Warn);
     if json {
         let arr: Vec<serde_json::Value> = findings
@@ -313,29 +318,11 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
     }
     print!("{}", doctor::render(&findings));
 
-    // Transport self-containment (#1 field feedback): a headless watch — or this clone on another
-    // machine — must REACH the hub without the ambient ~/.ssh identity. Flag an SSH origin that has
-    // no pinned local `core.sshCommand`: it works today from your shell but is a silent time-bomb.
-    let origin = gitcmd::output(&root, &["config", "--get", "remote.origin.url"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if origin.starts_with("git@") || origin.starts_with("ssh://") {
-        let pinned = gitcmd::output(&root, &["config", "--local", "--get", "core.sshCommand"])
-            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-            .unwrap_or(false);
-        if pinned {
-            println!("✓ transport: self-contained — core.sshCommand is pinned to this clone.");
-        } else {
-            println!("⚠ transport: depends on your ambient ~/.ssh (no local core.sshCommand).");
-            println!("  A headless watch or another machine may fail to reach a PRIVATE hub. Pin the key:");
-            println!("    confer reconnect --role <you> --hub <origin> --ssh-key <path>");
-        }
-    }
-
     // Reactive layer: is a live watcher actually running for this role? (The incident this grew from:
     // a backgrounded watch died and the agent silently missed mail — doctor should catch that.)
+    // Deliberately kept OUT of `findings`/`--check`/`--json`: it's per-session ("is a watcher
+    // running on THIS machine right now"), not a property of the repo/config, so a CI gate must
+    // never fail just because nobody happens to be watching at the moment `doctor --check` runs.
     if let Ok(me) = config::resolve_role(None, &root) {
         if !me.is_empty() {
             let hub = config::hub_key(&root);
@@ -359,45 +346,117 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
         }
     }
 
+    // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
+    println!(
+        "\nlegend:  ✓ ok   ⚠ safety — action recommended   ‼ trust violation — do NOT proceed   · advisory — no action needed"
+    );
+    // `doctor` is a REPORT (always exits 0) unless `--check` opts into the scriptable gate: exit
+    // 1 if any finding (audit OR advisory) is `warn`-severity (design/37 item 10 + followup), via
+    // the same `PredicateFalse` marker `verify`/`watch-status` use — never a bare `process::exit`.
+    if check && any_hard {
+        return Err(crate::PredicateFalse.into());
+    }
+    Ok(())
+}
+
+/// The CONFIG/SECURITY/HEALTH advisories `cmd_doctor` used to print as ad-hoc text AFTER
+/// `doctor::audit` — folded into the same typed `Finding` model so they gate `--check` and appear
+/// in `--json` too. Deliberately EXCLUDES the per-session watch-liveness check (see the comment at
+/// its text-only call site in `cmd_doctor`): that one must stay report-only.
+fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
+    let mut out = Vec::new();
+
+    // Transport self-containment (#1 field feedback): a headless watch — or this clone on another
+    // machine — must REACH the hub without the ambient ~/.ssh identity. Flag an SSH origin that has
+    // no pinned local `core.sshCommand`: it works today from your shell but is a silent time-bomb.
+    let origin = gitcmd::output(root, &["config", "--get", "remote.origin.url"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if origin.starts_with("git@") || origin.starts_with("ssh://") {
+        let pinned = gitcmd::output(root, &["config", "--local", "--get", "core.sshCommand"])
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false);
+        if pinned {
+            out.push(doctor::Finding {
+                level: doctor::Level::Ok,
+                title: "transport: self-contained — core.sshCommand is pinned to this clone."
+                    .to_string(),
+                fix: None,
+            });
+        } else {
+            out.push(doctor::Finding {
+                level: doctor::Level::Warn,
+                title: "transport: depends on your ambient ~/.ssh (no local core.sshCommand). A headless watch or another machine may fail to reach a PRIVATE hub.".to_string(),
+                fix: Some("confer reconnect --role <you> --hub <origin> --ssh-key <path>".to_string()),
+            });
+        }
+    }
+
     // Clone health: shallow breaks merge-base cursors; nested-in-a-work-repo invites stray commits.
-    if gitcmd::output(&root, &["rev-parse", "--is-shallow-repository"])
+    if gitcmd::output(root, &["rev-parse", "--is-shallow-repository"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
     {
-        println!("⚠ clone: SHALLOW — merge-base cursors can break (events re-emit/skip). Run `git fetch --unshallow`.");
+        out.push(doctor::Finding {
+            level: doctor::Level::Warn,
+            title: "clone: SHALLOW — merge-base cursors can break (events re-emit/skip)."
+                .to_string(),
+            fix: Some("git fetch --unshallow".to_string()),
+        });
     } else {
-        println!("✓ clone: not shallow.");
+        out.push(doctor::Finding {
+            level: doctor::Level::Ok,
+            title: "clone: not shallow.".to_string(),
+            fix: None,
+        });
     }
-    if is_nested_path(&root) {
-        println!(
-            "⚠ clone: NESTED inside another git repo — the outer repo may see it as stray files. Move it to a sibling / managed path (`confer clones`)."
-        );
+    if is_nested_path(root) {
+        out.push(doctor::Finding {
+            level: doctor::Level::Warn,
+            title: "clone: NESTED inside another git repo — the outer repo may see it as stray files.".to_string(),
+            fix: Some("move it to a sibling / managed path (`confer clones`)".to_string()),
+        });
     }
 
     // Machine-policy config (design/35): validate ~/.confer/config.json, and run the pin-grade
     // identity check on this hub (a multi-root history is not a stable identity).
     {
         let cfg = machineconfig::load();
-        let findings = machineconfig::validate(&cfg);
-        if findings.is_empty() {
-            println!("✓ machine config: OK ({} hub block(s)).", cfg.hubs.len());
+        let mc_findings = machineconfig::validate(&cfg);
+        if mc_findings.is_empty() {
+            out.push(doctor::Finding {
+                level: doctor::Level::Ok,
+                title: format!("machine config: OK ({} hub block(s)).", cfg.hubs.len()),
+                fix: None,
+            });
         } else {
-            for f in &findings {
-                if f.hard {
-                    println!("⚠ config {}: {}", f.field, f.message);
-                } else {
-                    println!("· config {}: {}", f.field, f.message);
-                }
+            for f in &mc_findings {
+                out.push(doctor::Finding {
+                    level: if f.hard { doctor::Level::Warn } else { doctor::Level::Info },
+                    title: format!("config {}: {}", f.field, f.message),
+                    fix: None,
+                });
             }
         }
-        match config::hub_root_strict(&root) {
-            Ok(config::HubRoot::Commit(sha)) => {
-                println!("✓ hub identity: single-root {} (pinnable).", &sha[..sha.len().min(12)])
-            }
-            Ok(config::HubRoot::NoCommits) => {
-                println!("· hub identity: no commits yet — not pinnable until the first commit lands.")
-            }
-            Err(e) => println!("⚠ hub identity: {e}"),
+        match config::hub_root_strict(root) {
+            Ok(config::HubRoot::Commit(sha)) => out.push(doctor::Finding {
+                level: doctor::Level::Ok,
+                title: format!("hub identity: single-root {} (pinnable).", &sha[..sha.len().min(12)]),
+                fix: None,
+            }),
+            Ok(config::HubRoot::NoCommits) => out.push(doctor::Finding {
+                level: doctor::Level::Info,
+                title: "hub identity: no commits yet — not pinnable until the first commit lands."
+                    .to_string(),
+                fix: None,
+            }),
+            Err(e) => out.push(doctor::Finding {
+                level: doctor::Level::Warn,
+                title: format!("hub identity: {e}"),
+                fix: None,
+            }),
         }
     }
 
@@ -419,28 +478,26 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
             by_role.iter().filter(|(_, k)| k.len() > 1).map(|(r, k)| (r, k.len())).collect();
         if dupes.is_empty() {
             if !by_role.is_empty() {
-                println!("✓ role↔key: each managed role signs with a single key.");
+                out.push(doctor::Finding {
+                    level: doctor::Level::Ok,
+                    title: "role↔key: each managed role signs with a single key.".to_string(),
+                    fix: None,
+                });
             }
         } else {
             for (role, n) in dupes {
-                println!(
-                    "⚠ role '{role}' is used by managed clones with {n} DIFFERENT signing keys — identity IS the key (DESIGN.md): one is an impersonation or a misconfigured re-key. Give each distinct agent its own role id."
-                );
+                out.push(doctor::Finding {
+                    level: doctor::Level::Warn,
+                    title: format!(
+                        "role '{role}' is used by managed clones with {n} DIFFERENT signing keys — identity IS the key (DESIGN.md): one is an impersonation or a misconfigured re-key."
+                    ),
+                    fix: Some("give each distinct agent its own role id".to_string()),
+                });
             }
         }
     }
 
-    // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
-    println!(
-        "\nlegend:  ✓ ok   ⚠ safety — action recommended   ‼ trust violation — do NOT proceed   · advisory — no action needed"
-    );
-    // `doctor` is a REPORT (always exits 0) unless `--check` opts into the scriptable gate: exit
-    // 1 if any `doctor::audit` finding is `warn`-severity (design/37 item 10), via the same
-    // `PredicateFalse` marker `verify`/`watch-status` use — never a bare `process::exit`.
-    if check && any_hard {
-        return Err(crate::PredicateFalse.into());
-    }
-    Ok(())
+    out
 }
 
 /// Run the heuristic injection screen: score a corpus, or classify one body.
@@ -662,5 +719,50 @@ pub(crate) fn cmd_seen(id: String, json: bool) -> Result<()> {
         line("? no hb:  ", &no_hb);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod advisory_findings_tests {
+    use super::*;
+
+    /// `advisory_findings` is what folds the CONFIG/SECURITY/HEALTH advisories (transport, clone
+    /// shape, machine config, hub identity, role↔key) into the typed `Finding` model that now
+    /// gates `doctor --check`/`--json` (this was the whole point of the fix: a role↔key
+    /// impersonation signal used to be text-only prose that never failed a scriptable gate). This
+    /// is a plain unit test on a bare temp repo rather than the full `tests/cli.rs` hub harness
+    /// (cheaply constructing two managed clones sharing a role but signing with different keys —
+    /// to exercise the role↔key dup path specifically — would need real `~/.confer/clones` state
+    /// under an isolated `$HOME`, which races with parallel test threads; not worth it here).
+    #[test]
+    fn advisory_findings_on_a_plain_repo_includes_a_non_signing_finding() {
+        let dir = std::env::temp_dir().join(format!(
+            "confer-advisory-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let findings = advisory_findings(&dir);
+        // A freshly `git init`'d dir is never shallow, and has no `remote.origin.url` at all (so
+        // no transport finding) — the deterministic-regardless-of-machine signal is the clone
+        // shallow/not-shallow check, which fires unconditionally. That alone proves the CONFIG/
+        // SECURITY/HEALTH advisories now flow through `doctor::Finding`, not raw `println!`.
+        assert!(
+            findings.iter().any(|f| f.title.starts_with("clone: not shallow")),
+            "expected a 'clone: not shallow' Finding, got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 

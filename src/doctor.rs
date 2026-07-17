@@ -342,7 +342,7 @@ pub fn remote_visibility(root: &Path) -> (Option<String>, Visibility) {
 
 /// Render an audit as a human-readable report.
 pub fn render(findings: &[Finding]) -> String {
-    let mut out = String::from("confer doctor — git identity & signing audit\n");
+    let mut out = String::from("confer doctor — health & identity audit\n");
     for f in findings {
         out.push_str(&format!("  {} {}\n", f.level.glyph(), f.title));
         if let Some(fix) = &f.fix {

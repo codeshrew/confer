@@ -4652,6 +4652,15 @@ fn doctor_json_emits_a_findings_array_with_severity_and_ok() {
         assert!(f["title"].is_string());
     }
     assert!(v["ok"].is_boolean());
+    // design/37 followup: `--json` used to cover ONLY the typed `doctor::audit` (signing/identity)
+    // findings — the CONFIG/SECURITY/HEALTH advisories (transport, clone shape, machine config,
+    // hub identity, role↔key) were text-only prose printed AFTER the early-return, so a role↔key
+    // impersonation signal could exit 0/`"ok":true`. Assert at least one advisory finding is now
+    // in the array too (the clone-shallow check fires unconditionally and deterministically).
+    assert!(
+        findings.iter().any(|f| f["title"].as_str().is_some_and(|t| t.starts_with("clone:"))),
+        "doctor --json should include the folded-in advisory findings (e.g. clone shape), not just the signing audit: {v}"
+    );
 }
 
 #[test]

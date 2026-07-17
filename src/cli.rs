@@ -669,15 +669,18 @@ pub(crate) enum Cmd {
         #[arg(long)]
         fix: bool,
         /// machine output: `{"findings":[{"severity","title","fix"}],"ok":bool}` — the git
-        /// identity/signing `audit` findings (severity: ok | warn | info). SCOPE: covers the audit
-        /// only; the advisory text diagnostics (transport, watch liveness, clone shape, machine
-        /// config, role↔key) are report-only and not in this array.
+        /// identity/signing `audit` findings PLUS the config/security/health advisories
+        /// (severity: ok | warn | info): transport self-containment, clone shape, machine config,
+        /// hub identity, and the peer role↔key check. SCOPE: only the per-session watch-liveness
+        /// check (is a watcher running on THIS machine right now) is report-only and excluded —
+        /// everything else that `doctor` prints is in this array.
         #[arg(long)]
         json: bool,
-        /// scriptable gate on the git identity/signing audit: exit 1 if any audit finding is
-        /// `warn`-severity, 0 if the audit is clean, 3 on error. NOTE: gates the audit only — the
-        /// advisory diagnostics (incl. the peer role↔key check) are report-only; run plain `doctor`
-        /// for the full picture. Without `--check`, `doctor` always exits 0 (it's a report).
+        /// scriptable gate on the full finding set: exit 1 if any finding — audit OR advisory,
+        /// INCLUDING the role↔key impersonation check — is `warn`-severity, 0 if clean, 3 on
+        /// error. NOTE: the per-session watch-liveness check is deliberately excluded (a CI gate
+        /// must not fail just because no watcher happens to be running right now). Without
+        /// `--check`, `doctor` always exits 0 (it's a report).
         #[arg(long)]
         check: bool,
     },
