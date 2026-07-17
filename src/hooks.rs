@@ -6,6 +6,7 @@
 //! skills. `cmd_autoheal` is the manual registry-pruning counterpart. The heavy lifting lives in the
 //! `autoheal`/`watch`/`config` modules — this is the command + settings.json plumbing around them.
 
+use crate::cli::AutohealAction;
 use crate::config_hub::hub_watch_mode;
 use crate::skills::resync_skills_if_stale;
 use crate::{autoheal, config, machineconfig, roster, schema, watchlock, BUILD_SHA};
@@ -281,10 +282,11 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
     Ok(())
 }
 
-/// Toggle/inspect auto-heal.
-pub(crate) fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
-    match action.as_str() {
-        "prune" => {
+/// Toggle/inspect auto-heal. `action` is a `ValueEnum` (design/37 item 9): a bad value is now a
+/// clap usage error (code 2), not a runtime error (code 3).
+pub(crate) fn cmd_autoheal(action: AutohealAction, yes: bool) -> Result<()> {
+    match action {
+        AutohealAction::Prune => {
             // MANUAL, human-verified prune (never automatic — a transiently-absent hub must not
             // silently drop a live watcher). Dry-run lists; `--yes` removes.
             let stale = autoheal::stale_targets();
@@ -309,18 +311,18 @@ pub(crate) fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
                 );
             }
         }
-        "on" | "enable" => {
+        AutohealAction::On => {
             autoheal::set_enabled(true)?;
             println!(
                 "auto-heal ON — SessionStart will nudge you to re-arm a stale/outdated watcher."
             );
             println!("(hook installed? if not: confer install-hook)");
         }
-        "off" | "disable" => {
+        AutohealAction::Off => {
             autoheal::set_enabled(false)?;
             println!("auto-heal OFF (targets kept; the hook now no-ops).");
         }
-        "status" => {
+        AutohealAction::Status => {
             let reg = autoheal::load();
             println!("auto-heal: {}", if reg.enabled { "ON" } else { "OFF" });
             if reg.targets.is_empty() {
@@ -332,11 +334,6 @@ pub(crate) fn cmd_autoheal(action: String, yes: bool) -> Result<()> {
                 let state = watchlock::classify(&watchlock::inspect(&hub_key, &t.role, 90), cur);
                 println!("  {:?}  role '{}' @ {}", state, t.role, t.hub);
             }
-        }
-        other => {
-            return Err(anyhow!(
-                "unknown autoheal action '{other}' (use: on | off | status | prune)"
-            ));
         }
     }
     Ok(())

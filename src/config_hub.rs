@@ -2,6 +2,7 @@
 //! (`~/.confer/config.json`) and hub-identity pinning (`known_hubs`), plus the shared
 //! `short12` / `current_hub_name` / `hub_watch_mode` helpers those and other families lean on.
 
+use crate::cli::{ConfigAction, HubAction};
 use crate::reconnect::canonical_hub_id;
 use crate::{
     autoheal, config, gitcmd, hint, knownhubs, machineconfig, projection, tiers, warn_safety,
@@ -12,11 +13,12 @@ use anyhow::{anyhow, Result};
 /// `confer config` — inspect/set machine-policy config (`~/.confer/config.json`, design/35). Phase 1:
 /// pure read/validate/set; no other code consumes these values yet (no behavior change). `set` writes
 /// under the config lock (read-modify-write), refuses a hard-invalid result, and gates security-
-/// sensitive fields behind `--yes`.
-pub(crate) fn cmd_config(action: String, key: Option<String>, value: Option<String>, yes: bool) -> Result<()> {
+/// sensitive fields behind `--yes`. `action` is a `ValueEnum` (design/37 item 9) — clap rejects a bad
+/// action itself (usage error, code 2) instead of this function returning a runtime error (code 3).
+pub(crate) fn cmd_config(action: ConfigAction, key: Option<String>, value: Option<String>, yes: bool) -> Result<()> {
     use machineconfig as mc;
-    match action.as_str() {
-        "show" => {
+    match action {
+        ConfigAction::Show => {
             let cfg = mc::load();
             println!("{}", serde_json::to_string_pretty(&cfg)?);
             for f in mc::validate(&cfg) {
@@ -28,7 +30,7 @@ pub(crate) fn cmd_config(action: String, key: Option<String>, value: Option<Stri
             }
             Ok(())
         }
-        "get" => {
+        ConfigAction::Get => {
             let key = key.ok_or_else(|| anyhow!("usage: confer config get <key>"))?;
             match mc::get_field(&mc::load(), &key) {
                 Some(v) => {
@@ -38,7 +40,7 @@ pub(crate) fn cmd_config(action: String, key: Option<String>, value: Option<Stri
                 None => Err(anyhow!("'{key}' is unset or unknown — see `confer config schema`")),
             }
         }
-        "set" => {
+        ConfigAction::Set => {
             let key = key.ok_or_else(|| anyhow!("usage: confer config set <key> <value> [--yes]"))?;
             let value = value.ok_or_else(|| anyhow!("usage: confer config set <key> <value> [--yes]"))?;
             mc::update_with(|cfg| {
@@ -61,7 +63,7 @@ pub(crate) fn cmd_config(action: String, key: Option<String>, value: Option<Stri
             println!("set {key} = {value}");
             Ok(())
         }
-        "validate" => {
+        ConfigAction::Validate => {
             let findings = mc::validate(&mc::load());
             if findings.is_empty() {
                 println!("config OK.");
@@ -81,13 +83,10 @@ pub(crate) fn cmd_config(action: String, key: Option<String>, value: Option<Stri
             }
             Ok(())
         }
-        "schema" => {
+        ConfigAction::Schema => {
             print_config_schema();
             Ok(())
         }
-        other => Err(anyhow!(
-            "unknown config action '{other}' (use: show | get | set | validate | schema)"
-        )),
     }
 }
 
@@ -136,9 +135,9 @@ pub(crate) fn current_hub_name(root: &std::path::Path) -> Result<String> {
 
 /// `confer hub` — inspect/manage the hub-identity pin store (`known_hubs`, design/35). `repin` is the
 /// only write; it's human-gated (`--yes`) because it changes this machine's trust anchor for a hub.
-pub(crate) fn cmd_hub(action: String, yes: bool) -> Result<()> {
-    match action.as_str() {
-        "status" | "show" => {
+pub(crate) fn cmd_hub(action: HubAction, yes: bool) -> Result<()> {
+    match action {
+        HubAction::Status => {
             let store = knownhubs::load();
             if store.is_empty() {
                 println!("no hub pins yet (~/.confer/known_hubs.json is empty).");
@@ -172,7 +171,7 @@ pub(crate) fn cmd_hub(action: String, yes: bool) -> Result<()> {
             }
             Ok(())
         }
-        "repin" => {
+        HubAction::Repin => {
             let root = config::repo_root()?;
             let name = current_hub_name(&root)?;
             let newroot = match config::hub_root_strict(&root)? {
@@ -202,7 +201,7 @@ pub(crate) fn cmd_hub(action: String, yes: bool) -> Result<()> {
             println!("✓ pinned '{name}'.");
             Ok(())
         }
-        "prune" => {
+        HubAction::Prune => {
             let keep: std::collections::BTreeSet<String> =
                 machineconfig::load().hubs.keys().cloned().collect();
             let store = knownhubs::load();
@@ -223,7 +222,6 @@ pub(crate) fn cmd_hub(action: String, yes: bool) -> Result<()> {
             println!("forgot {} orphan pin(s): {}", removed.len(), removed.join(", "));
             Ok(())
         }
-        other => Err(anyhow!("unknown hub action '{other}' (use: status | repin | prune)")),
     }
 }
 

@@ -6,8 +6,42 @@
 //! claim/done/error/blocked/defer flag block) still lives in `main.rs`; it's referenced here via
 //! `crate::LifecycleArgs` for the `#[command(flatten)]`.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use crate::{LifecycleArgs, VERSION};
+
+/// `confer autoheal <action>` — was a freeform `String` (a typo exited as a runtime error, code 3,
+/// with no shell completion); a `ValueEnum` makes clap reject a bad value itself (usage error, code
+/// 2) and enables completion. Same accepted values as before, `enable`/`disable` kept as aliases.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutohealAction {
+    #[value(alias = "enable")]
+    On,
+    #[value(alias = "disable")]
+    Off,
+    Status,
+    Prune,
+}
+
+/// `confer config <action>` — see `AutohealAction` (design/37 item 9): a typed value so a bad
+/// action is a clap usage error, not a runtime one. Same accepted values as before.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigAction {
+    Show,
+    Get,
+    Set,
+    Validate,
+    Schema,
+}
+
+/// `confer hub <action>` — see `AutohealAction` (design/37 item 9). `show` kept as an alias of
+/// `status` (the handler already treated them as synonyms).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HubAction {
+    #[value(alias = "show")]
+    Status,
+    Repin,
+    Prune,
+}
 
 #[derive(Parser)]
 #[command(
@@ -299,7 +333,8 @@ pub(crate) enum Cmd {
     /// Toggle/inspect auto-heal: `on` | `off` | `status` | `prune`.
     Autoheal {
         /// on | off | status | prune
-        action: String,
+        #[arg(value_enum)]
+        action: AutohealAction,
         /// with `prune`: actually remove stale targets (default is a dry-run listing).
         #[arg(long)]
         yes: bool,
@@ -309,8 +344,8 @@ pub(crate) enum Cmd {
     /// and NOT trust state. Confer-managed; don't hand-edit the JSON.
     Config {
         /// show | get | set | validate | schema  (omit → show)
-        #[arg(default_value = "show")]
-        action: String,
+        #[arg(value_enum, default_value = "show")]
+        action: ConfigAction,
         /// dotted key for get/set, e.g. `machine.clone_root`, `hubs.<name>.scheme`, `tuning.git_timeout_secs`
         key: Option<String>,
         /// value, for `set`
@@ -325,8 +360,8 @@ pub(crate) enum Cmd {
     /// longer in your machine config.
     Hub {
         /// status | repin | prune
-        #[arg(default_value = "status")]
-        action: String,
+        #[arg(value_enum, default_value = "status")]
+        action: HubAction,
         /// confirm a `repin`, or actually apply a `prune` (default is a dry-run listing)
         #[arg(long)]
         yes: bool,
