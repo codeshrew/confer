@@ -5108,3 +5108,44 @@ fn ref_pins_sha_and_records_content_hash_at_write() {
     assert!(!ok(&bad), "symbolic ref to an unmapped repo must fail");
     assert!(err(&bad).contains("no local clone"), "err: {}", err(&bad));
 }
+
+#[test]
+fn refs_reverse_lookup_finds_conversations_about_code() {
+    let c = new_hub().clone("alpha");
+    // code repo + register (layer 1) + map (layer 2)
+    let code = tmp("coderepo3");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("lib.rs"), "a\nb\nc\nd\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // a request that references lib.rs lines 10-20
+    let a = c.append(&[
+        "--type", "request", "--to", "beta", "--summary", "wire search",
+        "--text", "b", "--ref", "mylib:lib.rs#L10-20",
+    ]);
+    assert!(ok(&a), "append failed: {}", err(&a));
+
+    // reverse lookup by file → finds the thread
+    let r = c.confer(&["refs", "mylib:lib.rs"]);
+    assert!(ok(&r), "refs failed: {}", err(&r));
+    assert!(out(&r).contains("wire search"), "refs out: {}", out(&r));
+    assert!(out(&r).contains("mylib:lib.rs"), "refs out: {}", out(&r));
+    assert!(out(&r).contains("[OPEN]"), "should carry the request status: {}", out(&r));
+
+    // predicate: referenced → exit 0; not referenced → exit 1
+    assert!(ok(&c.confer(&["refs", "mylib:lib.rs", "--check"])), "check should pass");
+    assert!(!ok(&c.confer(&["refs", "mylib:other.rs", "--check"])), "check on unreferenced file must exit 1");
+
+    // range overlap: L15 ∈ [10,20] hits; L30 misses
+    assert!(out(&c.confer(&["refs", "mylib:lib.rs#L15"])).contains("wire search"));
+    assert!(out(&c.confer(&["refs", "mylib:lib.rs#L30"])).contains("no conversations"));
+
+    // NDJSON event
+    let j = c.confer(&["refs", "mylib:lib.rs", "--json"]);
+    assert!(out(&j).contains("\"event\":\"ref-hit\""), "json: {}", out(&j));
+    assert!(out(&j).contains("\"repo\":\"mylib\""), "json: {}", out(&j));
+}

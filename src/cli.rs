@@ -710,6 +710,23 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Reverse index — "given this code, what conversations reference it?" Folds every
+    /// `--ref` in the log by (repo, path) and lists the threads that touched it. A
+    /// REPORT (exits 0). `--check` makes it a PREDICATE: exit 1 if nothing references the
+    /// target — a scriptable "is there conversation behind this code?" gate. See design/40.
+    Refs {
+        /// `<repo>` | `<repo>:<path>` | `<repo>:<path>#L44-49` (or `#L46`) — what to look up.
+        target: String,
+        /// predicate mode: exit 1 (not 0) if nothing references the target.
+        #[arg(long)]
+        check: bool,
+        /// fold every hub you follow (~/.confer/hubs.json), not just the current one.
+        #[arg(long = "all-hubs")]
+        all_hubs: bool,
+        /// machine output: NDJSON, one `ref-hit` event per line (versioned, additive).
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify a message's commit signature against the sender role's LOCALLY PINNED
     /// key (TOFU, ~/.confer) — attribution / anti-spoof. A PREDICATE: prints the verdict and
     /// exits 0 if the sender is cryptographically attributed (verified, or an unconfirmed

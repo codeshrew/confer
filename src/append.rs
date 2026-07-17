@@ -73,7 +73,7 @@ fn parse_ref(s: &str) -> Result<schema::CodeRef> {
 /// Parse `Lstart-Lend` (range) or `L46` / `46` (single line → `[n, n]`) into a line
 /// range — errors (not silently drops) on a malformed or overflowing span, since the
 /// ref would lose its span.
-fn parse_range(span: &str) -> Result<[u64; 2]> {
+pub(crate) fn parse_range(span: &str) -> Result<[u64; 2]> {
     let bad = || anyhow!("invalid line range '{span}': expected Lstart-Lend or Lstart");
     match span.split_once('-') {
         Some((a, b)) => {

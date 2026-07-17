@@ -197,6 +197,110 @@ impl Board {
     }
 }
 
+/// Walk `of` → `reply_to` → `supersedes` back to the conversation HEAD (the request
+/// or original message a message hangs off), so a reverse-lookup hit answers with a
+/// THREAD, not a loose message id. Bounded against cycles / dangling parents.
+pub fn thread_root<'a>(msgs: &'a [Message], m: &'a Message) -> &'a Message {
+    let mut cur = m;
+    for _ in 0..64 {
+        let Some(pref) = cur
+            .front
+            .of
+            .as_deref()
+            .or(cur.front.reply_to.as_deref())
+            .or(cur.front.supersedes.as_deref())
+        else {
+            break;
+        };
+        match msgs.iter().find(|x| id_ref_matches(&x.front.id, pref)) {
+            Some(p) if !std::ptr::eq(p, cur) => cur = p,
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// One code reference as the reverse index sees it: the ref itself + the message and
+/// thread that made it (resolved to the thread root + its request status).
+#[derive(Debug, Clone)]
+pub struct RefHit {
+    pub repo: String,
+    pub path: String,
+    pub sha: String,
+    pub range: Option<[u64; 2]>,
+    pub content_hash: Option<String>,
+    pub msg_id: String,
+    pub from: String,
+    pub msg_type: String,
+    pub ts: String,
+    pub topic: Option<String>,
+    pub summary: String,
+    /// The conversation head this ref hangs off (walk of/reply_to/supersedes).
+    pub thread_root: String,
+    /// Folded status when the thread root is a request (OPEN|CLAIMED|…), else None.
+    pub request_status: Option<&'static str>,
+}
+
+/// Reverse index — `(repo, path) → refs`, folded from the log. The backbone of
+/// "given this code, what conversations reference it": a PURE projection (no server
+/// index), rebuilt per query, mirroring `Board::fold`. `git blame` is a later
+/// precision layer, never the discovery mechanism (design/40).
+#[derive(Debug, Clone, Default)]
+pub struct RefIndex {
+    pub by_file: BTreeMap<(String, String), Vec<RefHit>>,
+}
+
+impl RefIndex {
+    pub fn fold(msgs: &[Message]) -> RefIndex {
+        let mut idx = RefIndex::default();
+        for m in msgs {
+            if m.front.refs.is_empty() {
+                continue;
+            }
+            let root = thread_root(msgs, m);
+            let rstatus =
+                (root.front.msg_type == "request").then(|| request_status(msgs, &root.front.id));
+            for r in &m.front.refs {
+                idx.by_file.entry((r.repo.clone(), r.path.clone())).or_default().push(RefHit {
+                    repo: r.repo.clone(),
+                    path: r.path.clone(),
+                    sha: r.sha.clone(),
+                    range: r.range,
+                    content_hash: r.content_hash.clone(),
+                    msg_id: m.front.id.clone(),
+                    from: m.front.from.clone(),
+                    msg_type: m.front.msg_type.clone(),
+                    ts: m.front.ts.clone(),
+                    topic: m.front.topic.clone(),
+                    summary: m.summary_line(),
+                    thread_root: root.front.id.clone(),
+                    request_status: rstatus,
+                });
+            }
+        }
+        idx
+    }
+
+    /// Hits matching `repo` (+ optional `path`), overlapping `range` when given. A hit
+    /// with no range matches any line query (a whole-file reference). Newest-first.
+    pub fn query(&self, repo: &str, path: Option<&str>, range: Option<[u64; 2]>) -> Vec<&RefHit> {
+        let overlaps = |hr: Option<[u64; 2]>| match (hr, range) {
+            (_, None) => true,
+            (None, Some(_)) => true,
+            (Some(h), Some(q)) => h[0] <= q[1] && q[0] <= h[1],
+        };
+        let mut out: Vec<&RefHit> = self
+            .by_file
+            .iter()
+            .filter(|((rp, pt), _)| rp == repo && path.is_none_or(|p| pt == p))
+            .flat_map(|(_, hits)| hits.iter())
+            .filter(|h| overlaps(h.range))
+            .collect();
+        out.sort_by(|a, b| b.msg_id.cmp(&a.msg_id));
+        out
+    }
+}
+
 /// One agent as the roster/presence fold sees it — resolved display fields so a
 /// renderer only formats. `presence` is carried raw so the renderer computes
 /// liveness against its own `now`.

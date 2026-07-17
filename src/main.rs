@@ -330,6 +330,105 @@ fn cmd_repos_map(slug: String, path: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Parse a reverse-lookup target `repo[:path[@sha][#Lstart-Lend]]` into
+/// `(repo, path?, range?)`. The sha is accepted but ignored for the query — we match
+/// by file + line-range across ALL shas ("what was ever said about these lines").
+fn parse_ref_query(s: &str) -> Result<(String, Option<String>, Option<[u64; 2]>)> {
+    let bad = || anyhow!("invalid refs target '{s}': expected repo[:path[#Lstart-Lend]]");
+    let (repo, rest) = match s.split_once(':') {
+        Some((r, rest)) => (r.to_string(), Some(rest)),
+        None => (s.to_string(), None),
+    };
+    if repo.is_empty() {
+        return Err(bad());
+    }
+    let (path, range) = match rest {
+        None => (None, None),
+        Some(rest) => {
+            let (before_hash, range) = match rest.split_once('#') {
+                Some((p, span)) => (p, Some(append::parse_range(span)?)),
+                None => (rest, None),
+            };
+            let path = before_hash.split('@').next().unwrap_or(before_hash);
+            (if path.is_empty() { None } else { Some(path.to_string()) }, range)
+        }
+    };
+    Ok((repo, path, range))
+}
+
+/// `confer refs <repo[:path[#range]]>` — the reverse index (design/40 #4): the threads
+/// that reference this code. A report; `--check` is a predicate (exit 1 if none).
+fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<()> {
+    let (repo, path, range) = parse_ref_query(&target)?;
+    let hubs: Vec<std::path::PathBuf> =
+        if all_hubs { crosshub::hub_dirs() } else { vec![config::repo_root()?] };
+
+    let mut hits: Vec<(String, projection::RefHit)> = Vec::new();
+    for hub in &hubs {
+        let Ok(msgs) = store::all_messages(hub) else { continue };
+        let idx = projection::RefIndex::fold(&msgs);
+        let label = crosshub::hub_label(hub);
+        for h in idx.query(&repo, path.as_deref(), range) {
+            hits.push((label.clone(), h.clone()));
+        }
+    }
+
+    // Predicate: 0 if something references it, 1 if not. No listing (stdout stays clean).
+    if check {
+        return if hits.is_empty() { Err(PredicateFalse.into()) } else { Ok(()) };
+    }
+
+    if json {
+        for (hub, h) in &hits {
+            let mut refj = serde_json::json!({ "repo": h.repo, "path": h.path, "sha": h.sha });
+            if let Some(r) = h.range {
+                refj["range"] = serde_json::json!(r);
+            }
+            if let Some(ch) = &h.content_hash {
+                refj["content_hash"] = serde_json::json!(ch);
+            }
+            let line = serde_json::json!({
+                "event": "ref-hit",
+                "hub": hub,
+                "ref": refj,
+                "message": {
+                    "id": h.msg_id, "from": h.from, "type": h.msg_type,
+                    "ts": h.ts, "topic": h.topic, "summary": h.summary,
+                },
+                "thread": { "root": h.thread_root, "status": h.request_status },
+            });
+            println!("{}", serde_json::to_string(&line)?);
+        }
+        return Ok(());
+    }
+
+    let target_disp = match (&path, range) {
+        (Some(p), Some(r)) => format!("{repo}:{p}#L{}-{}", r[0], r[1]),
+        (Some(p), None) => format!("{repo}:{p}"),
+        (None, _) => repo.clone(),
+    };
+    if hits.is_empty() {
+        println!("no conversations reference {target_disp}");
+        return Ok(());
+    }
+    println!("{} conversation(s) reference {target_disp}:", hits.len());
+    for (hub, h) in &hits {
+        let hubp = if all_hubs { format!("{hub} · ") } else { String::new() };
+        let loc = h.topic.as_deref().map(|t| format!("#{t}")).unwrap_or_else(|| "—".into());
+        let st = h.request_status.map(|s| format!(" [{s}]")).unwrap_or_default();
+        let rng = h.range.map(|r| format!("#L{}-{}", r[0], r[1])).unwrap_or_default();
+        println!(
+            "  {hubp}{loc}  {}  {}{st}  {}  ({}:{}{rng})",
+            short_id(&h.msg_id),
+            h.from,
+            h.summary,
+            h.repo,
+            h.path
+        );
+    }
+    Ok(())
+}
+
 /// Compact pointer tag for the one-line view: ` ⟶ repo:path` (first ref, +N more).
 fn render_refs(refs: &[schema::CodeRef]) -> String {
     let Some(first) = refs.first() else {
@@ -684,6 +783,7 @@ fn run() -> Result<()> {
             Some(cli::ReposAction::Map { slug, path }) => cmd_repos_map(slug, path),
             None => cmd_repos(json),
         },
+        Cmd::Refs { target, check, all_hubs, json } => cmd_refs(target, check, all_hubs, json),
         Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
         Cmd::Doctor { dir, fix, json, check } => cmd_doctor(dir, fix, json, check),
