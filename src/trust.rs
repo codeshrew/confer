@@ -4,13 +4,14 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
+use crate::transport::{parse_remote, Scheme};
 use crate::{
     clonehome, config, crosshub, doctor, gitcmd, groups, keyring, machineconfig, presence, repos,
     roster, schema, screen, store, tiers, verify, watchlock,
 };
 use crate::{
-    is_nested_path, is_reserved_name, parse_remote, pubkey_material_eq, resolve_unique, short_id,
-    ssh_keygen_path, truncate, valid_slug, Scheme, BUILD_SHA, TOOL_REPO_HTTPS, TOOL_REPO_SSH,
+    is_nested_path, is_reserved_name, pubkey_material_eq, resolve_unique, short_id,
+    ssh_keygen_path, truncate, valid_slug, BUILD_SHA, TOOL_REPO_HTTPS, TOOL_REPO_SSH,
 };
 
 /// Print a paste-ready onboarding invite for a cold agent, filled from live hub

@@ -5,11 +5,9 @@ use anyhow::{anyhow, Result};
 
 use crate::keygen_release::cmd_keygen;
 use crate::skills::cmd_install_skill;
+use crate::transport::{git_ssh_command, parse_remote, validate_transport_key, Scheme};
 use crate::{clonehome, config, gitcmd, schema};
-use crate::{
-    cmd_init, cmd_join, git_ssh_command, parse_remote, safe_clone_dir, valid_slug,
-    validate_transport_key, warn_if_nested, Scheme,
-};
+use crate::{cmd_init, cmd_join, safe_clone_dir, valid_slug, warn_if_nested};
 
 /// Write the canonical /confer-watch + /confer-poll skills, adapted to this machine.
 /// Bulletproof (re)connect. Idempotent: resolve-or-clone the hub, (re)join, install
