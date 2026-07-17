@@ -328,10 +328,53 @@ fn render_targets(roster: &roster::Roster, targets: &[String]) -> String {
 }
 
 /// JSON view of a message: frontmatter fields + a `body` string.
-pub(crate) fn to_json(m: &Message) -> Result<String> {
+/// The injection-screen note for a message body (`⚠ possible injection (…)`), or `None` if it screens
+/// clean. Computed from the RAW body (not framed markdown, whose frontmatter would self-trigger). Shared
+/// by the framed TEXT rendering and the JSON `screen` field so the two paths can't disagree. (design/37 F4)
+pub(crate) fn screen_note(m: &Message, tier: Option<tiers::Tier>) -> Option<String> {
+    let v = screen::heuristic(&screen::Input {
+        body: &m.body,
+        from_role: &m.front.from,
+        tier,
+        refs: vec![],
+    });
+    match v.level {
+        screen::Level::Allow => None,
+        _ => Some(format!("⚠ possible injection ({})", v.category.unwrap_or("?"))),
+    }
+}
+
+/// A message as one JSON object for `--json`/NDJSON consumers. Carries `"event":"message"` (the stream
+/// discriminator, so message lines coexist with notice events like `update-available`), the frontmatter
+/// + `body`, AND the VERIFIED provenance the text path renders — `trust` (status/fpr/detail), `tier`,
+/// `screen` — so a machine consumer sees KEY MISMATCH etc. instead of trusting the self-declared `from`.
+/// The `from` field stays self-declared; `trust.status` is the authenticated verdict. (design/37 F4)
+pub(crate) fn to_json(
+    m: &Message,
+    trust: &verify::Trust,
+    tier: Option<tiers::Tier>,
+    screen: Option<&str>,
+) -> Result<String> {
     let mut v = serde_json::to_value(&m.front)?;
     if let serde_json::Value::Object(map) = &mut v {
+        map.insert("event".into(), serde_json::Value::String("message".into()));
         map.insert("body".into(), serde_json::Value::String(m.body.clone()));
+        map.insert(
+            "trust".into(),
+            serde_json::json!({
+                "status": trust.status_str(),
+                "fpr": trust.fpr(),
+                "detail": trust.tag(),
+            }),
+        );
+        map.insert(
+            "tier".into(),
+            tier.map_or(serde_json::Value::Null, |t| serde_json::Value::String(t.as_str().into())),
+        );
+        map.insert(
+            "screen".into(),
+            screen.map_or(serde_json::Value::Null, |s| serde_json::Value::String(s.into())),
+        );
     }
     Ok(serde_json::to_string(&v)?)
 }
@@ -755,7 +798,9 @@ fn cmd_poll(p: PollArgs) -> Result<()> {
     let mut vc = verify::Cache::default();
     for m in &new {
         let line = if p.json {
-            to_json(m)?
+            let t = verify::status(&root, &hub, &roster, &mut vc, m);
+            let tier = tiers::get(&hub);
+            to_json(m, &t, tier, screen_note(m, tier).as_deref())?
         } else {
             let t = verify::status(&root, &hub, &roster, &mut vc, m);
             format_line(&roster, m, true, Some(&t))
@@ -806,19 +851,7 @@ fn framed_body(
     trust: &verify::Trust,
     tier: Option<tiers::Tier>,
 ) -> String {
-    let v = screen::heuristic(&screen::Input {
-        body: &m.body,
-        from_role: &m.front.from,
-        tier,
-        refs: vec![],
-    });
-    let note = match v.level {
-        screen::Level::Allow => None,
-        _ => Some(format!(
-            "⚠ possible injection ({})",
-            v.category.unwrap_or("?")
-        )),
-    };
+    let note = screen_note(m, tier);
     envelope::frame(display_md, who, &m.front.from, trust, tier, note.as_deref())
 }
 
@@ -961,6 +994,48 @@ mod tests {
     use crate::join::published_pubkey;
     use crate::projection::request_status;
     use crate::transport::{clone_url_candidates, parse_remote, Scheme};
+
+    #[test]
+    fn to_json_is_valid_json_carrying_verified_provenance() {
+        // Every `--json` line MUST parse as JSON and carry the authenticated verdict (trust/tier/screen),
+        // not just the self-declared `from` — an agent on the JSON path has to be able to SEE the
+        // verification state instead of trusting `from` blindly. (design/37 F4)
+        let m = tmsg("note", "01AAAAAAAAAAAAAAAAAAAAAAAA", None);
+        let cases = [
+            (verify::Trust::Verified { fpr: "SHA256:abc".into() }, "verified", true),
+            (verify::Trust::FirstSight { fpr: "SHA256:def".into() }, "first-sight", true),
+            (verify::Trust::Unverified { reason: "unsigned".into() }, "unverified", false),
+            (verify::Trust::Mismatch { reason: "key changed".into() }, "mismatch", false),
+        ];
+        for (trust, want_status, has_fpr) in cases {
+            let s = to_json(&m, &trust, Some(tiers::Tier::Foreign), Some("⚠ possible injection (x)"))
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_str(&s)
+                .unwrap_or_else(|e| panic!("to_json must emit parseable JSON ({e}): {s}"));
+            assert_eq!(v["event"], "message", "stream discriminator");
+            assert_eq!(v["trust"]["status"], want_status);
+            assert_eq!(v["trust"]["fpr"].is_string(), has_fpr, "fpr for {want_status}");
+            assert_eq!(v["tier"], "foreign");
+            assert_eq!(v["screen"], "⚠ possible injection (x)");
+            assert!(v["from"].is_string(), "self-declared from still present");
+            assert!(v["body"].is_string());
+        }
+    }
+
+    #[test]
+    fn to_json_mismatch_is_detectable_by_a_machine_consumer() {
+        // The security assertion: a script/agent parsing JSON can gate on `trust.status == "mismatch"`
+        // (KEY MISMATCH) — the impersonation signal that used to be text-only. Null tier/screen encode
+        // cleanly. (design/37 F4)
+        let m = tmsg("note", "01BBBBBBBBBBBBBBBBBBBBBBBB", None);
+        let s = to_json(&m, &verify::Trust::Mismatch { reason: "the role's key changed".into() }, None, None)
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["trust"]["status"], "mismatch");
+        assert_eq!(v["tier"], serde_json::Value::Null);
+        assert_eq!(v["screen"], serde_json::Value::Null);
+        assert!(v["trust"]["fpr"].is_null(), "a mismatch has no trustworthy fingerprint");
+    }
 
     #[test]
     fn short12_is_char_boundary_safe() {

@@ -218,25 +218,37 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         // Version-availability wake (on by default; `--no-version-notice` to disable). Unlike the
         // one-shot startup line, this catches a newer build that lands on the hub WHILE you're
         // watching — a long-lived watcher would otherwise never learn until a restart. Emitted ONCE
-        // per session to STDOUT (so the Monitor host actually wakes you), and only for genuine
-        // semver drift (a sha-only rebuild is noise). SUPPRESSED in `--json`: that stream is a
-        // contract of parseable message objects, and a prose line here would break `watch --json | jq`
-        // (design/37 F5). A JSON consumer checks version out of band (`version --check`); the typed
-        // `update-available` stream event is future work (design/37 item 6).
-        if !opts.no_version_notice && !opts.json && !version_noticed {
+        // per session to STDOUT (so the Monitor host actually wakes you), and only for genuine semver
+        // drift (a sha-only rebuild is noise). In TEXT mode it's a prose wake line; in `--json` it's a
+        // structured `update-available` EVENT, so the stream stays parseable AND still carries the
+        // signal — informational notices are typed events with a standard `event` key, never prose
+        // mixed into the message stream and never silently dropped. (design/37 F5 + notice contract)
+        if !opts.no_version_notice && !version_noticed {
             if let Some(pin) = crate::hub_pin(&root) {
                 let a = crate::version::assess(&crate::my_build(), Some(&pin));
                 if a.outdated && a.grade != "rebuild" {
                     let mut o = std::io::stdout().lock();
-                    let _ = writeln!(
-                        o,
-                        "⟳ UPDATE — a newer confer ({}) is running on this hub; you're on {}. Update \
-                         (`confer update`, or `brew update && brew upgrade confer` if brew is your \
-                         install path — the tap may need `brew update` first), then re-arm your watch \
-                         + `confer install-skill`. (silence: add --no-version-notice)",
-                        pin.pin_string(),
-                        crate::my_build().pin_string()
-                    );
+                    if opts.json {
+                        let _ = writeln!(
+                            o,
+                            "{}",
+                            serde_json::json!({
+                                "event": "update-available",
+                                "hub_version": pin.pin_string(),
+                                "your_version": crate::my_build().pin_string(),
+                            })
+                        );
+                    } else {
+                        let _ = writeln!(
+                            o,
+                            "⟳ UPDATE — a newer confer ({}) is running on this hub; you're on {}. Update \
+                             (`confer update`, or `brew update && brew upgrade confer` if brew is your \
+                             install path — the tap may need `brew update` first), then re-arm your watch \
+                             + `confer install-skill`. (silence: add --no-version-notice)",
+                            pin.pin_string(),
+                            crate::my_build().pin_string()
+                        );
+                    }
                     let _ = o.flush();
                     version_noticed = true;
                 }
@@ -433,7 +445,9 @@ fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>)
     let mut vc = crate::verify::Cache::default();
     for m in &new {
         let line = if opts.json {
-            crate::to_json(m)?
+            let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);
+            let tier = crate::tiers::get(&hub_key);
+            crate::to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?
         } else {
             // machine feed → full summary, with the read-path verification glyph
             let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);

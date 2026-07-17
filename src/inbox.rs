@@ -645,7 +645,9 @@ pub(crate) fn cmd_read(last: Option<usize>, topic: Option<String>, full: bool, j
             ""
         };
         if json {
-            println!("{}", to_json(m)?);
+            let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
+            let tier = tiers::get(&hub_key);
+            println!("{}", to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?);
         } else if full {
             let who = roster::display(&roster, &m.front.from);
             let t = verify::status(&root, &hub_key, &roster, &mut vc, m);

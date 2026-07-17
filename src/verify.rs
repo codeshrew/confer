@@ -53,6 +53,23 @@ impl Trust {
         }
     }
     pub fn is_mismatch(&self) -> bool { matches!(self, Trust::Mismatch { .. }) }
+    /// Machine-stable status token for `--json` (never the glyph, never reworded — it's an API).
+    /// A consumer gates on `trust.status == "mismatch"` to catch impersonation. (design/37 F4)
+    pub fn status_str(&self) -> &'static str {
+        match self {
+            Trust::Verified { .. } => "verified",
+            Trust::FirstSight { .. } => "first-sight",
+            Trust::Unverified { .. } => "unverified",
+            Trust::Mismatch { .. } => "mismatch",
+        }
+    }
+    /// The pinned key fingerprint (`SHA256:…`) for verified/first-sight; `None` otherwise.
+    pub fn fpr(&self) -> Option<&str> {
+        match self {
+            Trust::Verified { fpr } | Trust::FirstSight { fpr } => Some(fpr),
+            _ => None,
+        }
+    }
 }
 
 /// Per-invocation memo so each ADD-commit is located + signature-checked at most once,
