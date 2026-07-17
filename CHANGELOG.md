@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- **`doctor --check` / `--json` now cover the role↔key security check + the config/health advisories.**
+  They previously gated on / emitted only the git-identity signing audit, so `doctor --check` could
+  exit 0 while a role↔key impersonation signal (a role used by managed clones with different signing
+  keys) was present — a false green for a security gate. The advisory diagnostics (transport
+  self-containment, clone shape, machine-config, hub-identity, and role↔key) are now typed findings:
+  they gate `--check` and appear in `--json`. Only the per-session watch-liveness check stays
+  report-only (a CI gate must not fail because no watcher happens to be running on this machine).
+
 ## 0.7.0
 
 **A real CLI contract — exit codes, streams, and machine output (design/37).** confer is driven by
