@@ -120,8 +120,22 @@ pub fn hub_root_strict(root: &Path) -> Result<HubRoot> {
         .args(["rev-list", "--max-parents=0", "HEAD"])
         .output()?;
     if !o.status.success() {
-        // No HEAD / no commits yet — a fresh or empty repo.
-        return Ok(HubRoot::NoCommits);
+        // Distinguish a genuinely empty repo (no HEAD / no commits) from a REAL git failure (poisoned
+        // PATH, wedged worktree, disk pressure). Coalescing the latter into NoCommits masks the cause
+        // and can later pin a fallback that permanently mismatches the real root (red-team). Only the
+        // recognized no-HEAD signatures are NoCommits; anything else is a hard error.
+        let err = String::from_utf8_lossy(&o.stderr);
+        if err.contains("does not have any commits yet")
+            || err.contains("unknown revision")
+            || err.contains("ambiguous argument 'HEAD'")
+        {
+            return Ok(HubRoot::NoCommits);
+        }
+        return Err(anyhow!(
+            "could not resolve the root commit of {} (git rev-list failed): {}",
+            root.display(),
+            err.trim()
+        ));
     }
     let out = String::from_utf8_lossy(&o.stdout);
     let roots: Vec<&str> = out.split_whitespace().collect();

@@ -567,14 +567,49 @@ fn join_seeds_machine_config_and_known_hubs() {
     let kh = std::fs::read_to_string(c.home.join(".confer/known_hubs.json"))
         .expect("known_hubs.json should be seeded by join");
     assert!(kh.contains("\"root\""), "known_hubs should pin a root: {kh}");
+    // A bare `join` is NOT a human first-sight confirmation (an agent/script can run it), so the pin
+    // is recorded UNCONFIRMED; a human confirms with `confer hub repin`.
     assert!(
-        kh.contains("\"confirmed\": true"),
-        "a human-run join is the first-sight confirmation: {kh}"
+        kh.contains("\"confirmed\": false"),
+        "seed-on-join must record the pin UNCONFIRMED: {kh}"
     );
 
-    // And `confer hub status` verifies the just-pinned hub as a Match.
+    // The pin still VERIFIES (root matches + tip reachable) — confirmed-ness is orthogonal to verify.
     let st = c.confer(&["hub", "status"]);
     assert!(out(&st).contains("pin holds"), "hub status should verify: {}", out(&st));
+
+    // `confer hub repin --yes` is the human confirmation → confirmed:true.
+    let rp = c.confer(&["hub", "repin", "--yes"]);
+    assert!(ok(&rp), "repin: {}", err(&rp));
+    let kh2 = std::fs::read_to_string(c.home.join(".confer/known_hubs.json")).unwrap();
+    assert!(kh2.contains("\"confirmed\": true"), "repin --yes confirms: {kh2}");
+}
+
+#[test]
+fn hub_verify_fails_closed_on_a_blanked_tip() {
+    // red-team: a pin with an empty tip must NOT verify as Match (that skips reachability and trusts
+    // any same-root history). After tampering the tip to empty, `hub status` must not say "pin holds".
+    let c = new_hub().clone("newbie");
+    assert!(ok(&c.confer(&["join", "--role", "newbie"])), "join failed");
+    let khp = c.home.join(".confer/known_hubs.json");
+    let kh = std::fs::read_to_string(&khp).unwrap();
+    // blank the tip value
+    let tampered = {
+        let v: serde_json::Value = serde_json::from_str(&kh).unwrap();
+        let mut m = v.as_object().unwrap().clone();
+        for (_k, rec) in m.iter_mut() {
+            rec.as_object_mut().unwrap().insert("tip".into(), serde_json::Value::String(String::new()));
+        }
+        serde_json::to_string(&serde_json::Value::Object(m)).unwrap()
+    };
+    std::fs::write(&khp, tampered).unwrap();
+    let st = c.confer(&["hub", "status"]);
+    assert!(
+        !out(&st).contains("pin holds") && !err(&st).contains("pin holds"),
+        "a blanked-tip pin must fail closed, not verify: {}\n{}",
+        out(&st),
+        err(&st)
+    );
 }
 
 #[test]

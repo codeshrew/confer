@@ -1789,7 +1789,7 @@ fn seed_hub_on_join(root: &std::path::Path) {
             let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
             let scheme = if url.starts_with("http") { "https" } else { "ssh" };
             let (n, u, s) = (name.clone(), url.clone(), scheme.to_string());
-            let _ = machineconfig::update_with(move |cfg| {
+            if machineconfig::update_with(move |cfg| {
                 let hub = cfg.hubs.entry(n).or_default();
                 if hub.url.is_none() {
                     hub.url = Some(u);
@@ -1798,14 +1798,27 @@ fn seed_hub_on_join(root: &std::path::Path) {
                     hub.scheme = Some(s);
                 }
                 Ok(())
-            });
+            })
+            .is_err()
+            {
+                hint(format!("couldn't record routing for '{name}' (set it with `confer config set hubs.{name}.url <url>`)."));
+            }
         }
     }
-    // Identity: TOFU-pin (or advance the confirmed-good tip), confirmed by the human-run join.
+    // Identity: TOFU-RECORD the pin (or advance the tip). NOTE: recorded UNCONFIRMED — a `confer join`
+    // can be run by an agent/script/reconnect chain, so it is NOT a human first-sight confirmation
+    // (design/35: the pin-write must block on a human, which a bare join doesn't). A human confirms
+    // out-of-band with `confer hub repin` (which shows root+tip and is --yes-gated). Phase-3 auto-join
+    // will only trust a `confirmed:true` pin.
     match knownhubs::verify(&name, root) {
         knownhubs::Verdict::FirstSight { root: r, tip } => {
-            if knownhubs::record(&name, &r, &tip, true).is_ok() {
-                hint(format!("pinned hub identity for '{name}' (root {}).", short12(&r)));
+            if knownhubs::record(&name, &r, &tip, false).is_ok() {
+                hint(format!(
+                    "recorded (UNCONFIRMED) hub identity for '{name}' (root {}). Verify + confirm with `confer hub repin`.",
+                    short12(&r)
+                ));
+            } else {
+                warn_safety(format!("couldn't record the hub-identity pin for '{name}' — run `confer hub repin` once ~/.confer is writable."));
             }
         }
         knownhubs::Verdict::Match { new_tip } => knownhubs::advance_tip(&name, &new_tip),
@@ -3394,11 +3407,11 @@ fn cmd_config(action: String, key: Option<String>, value: Option<String>, yes: b
         "show" => {
             let cfg = mc::load();
             println!("{}", serde_json::to_string_pretty(&cfg)?);
-            for (f, m) in mc::validate(&cfg) {
-                if mc::is_advisory(&m) {
-                    hint(&format!("config {f}: {m}"));
+            for f in mc::validate(&cfg) {
+                if f.hard {
+                    warn_safety(&format!("config {}: {}", f.field, f.message));
                 } else {
-                    warn_safety(&format!("config {f}: {m}"));
+                    hint(&format!("config {}: {}", f.field, f.message));
                 }
             }
             Ok(())
@@ -3418,10 +3431,11 @@ fn cmd_config(action: String, key: Option<String>, value: Option<String>, yes: b
             let value = value.ok_or_else(|| anyhow!("usage: confer config set <key> <value> [--yes]"))?;
             mc::update_with(|cfg| {
                 let outcome = mc::set_field(cfg, &key, &value)?;
-                // Refuse to persist a config with a HARD (non-advisory) validation error anywhere.
-                if let Some((f, m)) = mc::validate(cfg).into_iter().find(|(_, m)| !mc::is_advisory(m)) {
-                    return Err(anyhow!("refusing to write — {f}: {m}"));
-                }
+                // `set_field` fully validates the field it just set (an invalid value already returned
+                // Err above). We deliberately do NOT re-validate the whole file and block on an
+                // UNRELATED pre-existing finding — that would let one stale field (e.g. from a
+                // newer binary that tightened validation) freeze every future edit with no CLI escape
+                // (red-team lockout).
                 if let Some(reason) = &outcome.gated {
                     if !yes {
                         return Err(anyhow!(
@@ -3442,12 +3456,12 @@ fn cmd_config(action: String, key: Option<String>, value: Option<String>, yes: b
                 return Ok(());
             }
             let mut hard = 0usize;
-            for (f, m) in &findings {
-                if mc::is_advisory(m) {
-                    hint(&format!("{f}: {m}"));
-                } else {
-                    warn_safety(&format!("{f}: {m}"));
+            for f in &findings {
+                if f.hard {
+                    warn_safety(&format!("{}: {}", f.field, f.message));
                     hard += 1;
+                } else {
+                    hint(&format!("{}: {}", f.field, f.message));
                 }
             }
             if hard > 0 {
@@ -3485,21 +3499,27 @@ fn print_config_schema() {
     println!("This is machine policy — NOT the shared repo contract, NOT trust state (pins live elsewhere).");
 }
 
-/// First 12 chars of a SHA (ASCII hex → byte-slicing is safe).
+/// The first 12 chars of a SHA — CHAR-BOUNDARY-SAFE. `root`/`tip` come straight out of
+/// `known_hubs.json` with no hex validation, so a tampered/corrupt multibyte value must NOT panic a
+/// byte-slice (`&s[..12]`); `get(..12)` returns `None` off a boundary → fall back to the whole string.
 fn short12(sha: &str) -> &str {
-    &sha[..sha.len().min(12)]
+    sha.get(..12).unwrap_or(sha)
 }
 
-/// The stable hub name used as the `known_hubs` / config key: the normalized `owner/repo` shorthand
-/// from the origin remote (falls back to the full URL for a non-GitHub remote).
+/// The stable hub name used as the `known_hubs` / config key. Derived through `canonical_hub_id` so
+/// cosmetic origin-URL variants (scheme, `user@`, `:port`, `.git`, trailing slash, host case, ssh-vs-
+/// https, bare `owner/repo`) all collapse to ONE key — otherwise a re-clone with a different URL form
+/// silently re-keys to a "new" hub and skips the pin comparison entirely (red-team). An unrecognizable
+/// remote yields an error (fail-safe: no unstable pin) rather than a raw-URL key.
 fn current_hub_name(root: &std::path::Path) -> Result<String> {
     let o = gitcmd::output(root, &["config", "--get", "remote.origin.url"])?;
     if !o.status.success() {
         return Err(anyhow!("this hub has no 'origin' remote — can't derive its name"));
     }
     let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-    let name = parse_remote(&url).shorthand.unwrap_or(url);
-    Ok(machineconfig::hub_name_normalized(&name))
+    canonical_hub_id(&url)
+        .map(|c| machineconfig::hub_name_normalized(&c))
+        .ok_or_else(|| anyhow!("could not derive a canonical hub name from origin '{url}'"))
 }
 
 /// `confer hub` — inspect/manage the hub-identity pin store (`known_hubs`, design/35). `repin` is the
@@ -5723,11 +5743,11 @@ fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
         if findings.is_empty() {
             println!("✓ machine config: OK ({} hub block(s)).", cfg.hubs.len());
         } else {
-            for (f, m) in &findings {
-                if machineconfig::is_advisory(m) {
-                    println!("· config {f}: {m}");
+            for f in &findings {
+                if f.hard {
+                    println!("⚠ config {}: {}", f.field, f.message);
                 } else {
-                    println!("⚠ config {f}: {m}");
+                    println!("· config {}: {}", f.field, f.message);
                 }
             }
         }
@@ -6666,6 +6686,15 @@ fn cmd_reconnect(
         let sk = match config::signing_key(&root).map(|p| p.to_string_lossy().into_owned()) {
             Some(existing) => Some(existing),
             None => {
+                // Fail fast on a bad role id BEFORE it reaches keys.join(r) — an absolute/`..` role
+                // would turn that into an arbitrary-path existence probe (the exact guard `init --role`
+                // has; the parity the commit claimed was missing here). Also gives a role-specific
+                // error instead of the misleading "install ssh-keygen" one.
+                if !valid_slug(r) {
+                    return Err(anyhow!(
+                        "invalid role '{r}': must match [a-z0-9][a-z0-9-]* (≤64 chars)"
+                    ));
+                }
                 let kp = config::home()?.join(".confer").join("keys").join(r);
                 if !kp.exists() {
                     cmd_keygen(Some(r.clone()), false).map_err(|e| {
@@ -7103,6 +7132,16 @@ mod tests {
         assert_eq!(parse_semver_prefix("0.6"), Some((0, 6, 0)));
         // non-numeric headings (e.g. "Unreleased") don't parse — the filter treats them as newer
         assert_eq!(parse_semver_prefix("Unreleased"), None);
+    }
+
+    #[test]
+    fn short12_is_char_boundary_safe() {
+        // A tampered/corrupt known_hubs.json can carry a non-hex, multibyte root/tip; short12 must
+        // never panic on a byte-slice off a char boundary (the release-blocker the red-team found).
+        assert_eq!(short12("0123456789abcdef"), "0123456789ab"); // 12 ascii hex
+        assert_eq!(short12("abc"), "abc"); // shorter than 12
+        let multibyte = "aaaaaaaaaaaé"; // 11 ascii + a 2-byte char → byte index 12 is mid-character
+        assert_eq!(short12(multibyte), multibyte); // falls back to the whole string, no panic
     }
 
     #[test]

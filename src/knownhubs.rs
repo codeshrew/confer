@@ -117,8 +117,13 @@ pub fn verify(name: &str, root_dir: &Path) -> Verdict {
                 return Verdict::RootMismatch { pinned: rec.root.clone(), got: root };
             }
             if rec.tip.is_empty() {
-                // A pin with no recorded tip (legacy/partial) — root matches, adopt HEAD as the tip.
-                return Verdict::Match { new_tip: head };
+                // A pin with NO recorded tip (a partial/hand-written store) must NOT verify as `Match`
+                // — that would skip the reachability check entirely and silently trust ANY same-root
+                // history, defeating the whole root+tip design (a same-root fork is free to produce).
+                // Fail closed: re-confirm to establish a real tip. (red-team: root-only bypass.)
+                return Verdict::NotVerifiable(
+                    "pin has no confirmed-good tip — re-confirm with `confer hub repin`".into(),
+                );
             }
             if gitcmd::is_ancestor(root_dir, &rec.tip, "HEAD") {
                 Verdict::Match { new_tip: head }
