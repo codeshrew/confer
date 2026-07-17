@@ -54,6 +54,26 @@ Watch the **doc-comment boundary**: a fn's `///` block (and any `#[cfg]`/derive)
 lines above the `fn` — capture the whole run, or you drop a line from `--help` and orphan it onto the
 neighbor.
 
+## CLI conventions (exit codes, streams, JSON)
+
+The full contract is in DESIGN.md ("CLI contract"). The rules that govern every new command/flag:
+
+- **Classify the command:** Report / Predicate / Action / Adapter. The exit code answers "did the
+  command do its job?" — never "is the world in a good state?" — unless a predicate name or a
+  `--check` flag opts in. A `status`/`show`/`get`/`list`-shaped verb ALWAYS exits 0 on a produced
+  report; put the scriptable gate on `--check` or a predicate-named sibling.
+- **Exit codes:** 0 success/predicate-YES; 1 predicate-NO (predicates + `--check` only); 2 usage
+  (clap) or the `poll --hook` Stop-hook block; 3 execution/environment error. Errors are 3, distinct
+  from a predicate's 1. Return codes up through `main() -> ExitCode` via the `PredicateFalse` /
+  `StopHookBlock` markers — never `process::exit` mid-stack (locks/cursors must `Drop`).
+- **Streams:** stdout = payload only; stderr = `warn_safety`/`hint`/`warn_trust` + all narration.
+  Empty result → empty stdout in `--json` (`[]`/nothing), prose empty-states in text mode only.
+- **`--json` is a versioned API** (additive-only). Stream lines are NDJSON with an `"event"`
+  discriminator; message objects carry `trust`/`tier`/`screen` (via `to_json`), not just `from`.
+  Add a JSON parse-test for any new machine-output path (it must round-trip through `serde_json`).
+- **Adapters** (`poll --hook`, `session-heal`) are fail-open: their own error maps to the host's
+  "do nothing" code, never "act".
+
 ## Build / test conventions
 
 - Build/test out of tree to avoid clobbering the dev target: `CARGO_TARGET_DIR=/tmp/confer-build cargo build`.

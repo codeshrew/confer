@@ -95,3 +95,45 @@ trust is established. It does **not** claim to defend against:
 
 The consistent principle: **the identity is the key, trust is pinned locally, and human authority
 never arrives over the wire.**
+
+## CLI contract
+
+confer is consumed by both humans and AI agents, and its primary automation surface is git hooks and
+agent loops — so exit codes and stream discipline are load-bearing. Every command is exactly one of
+four kinds, and the kind determines its exit contract. **The exit code answers "did the command do its
+job?" — never "is the world in a good state?" — unless a predicate name or a `--check` flag opts in.**
+
+- **Reports** (`status`, `watch-status`, `who`, `read`, `show`, `fleet`, `doctor`, …): always exit 0
+  once the report is produced, however bad the news. A `--check` flag adds a scriptable gate.
+- **Predicates** (`verify`; a report + `--check`): the exit code *is* the answer.
+- **Actions** (`append`, `join`, lifecycle, `ack`, `init`, `reconnect`, setters): 0 = done (incl.
+  idempotent no-op), non-zero = failed.
+- **Adapters** (`poll --hook`, `session-heal`): follow the host protocol, documented as such, and are
+  **fail-open** — their own malfunction maps to the host's "do nothing" code, never "act".
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success: action done, report produced, or predicate YES |
+| 1 | Predicate NO — a valid negative (ONLY from predicate commands / `--check`) |
+| 2 | Usage error (clap). Exception: `poll --hook` (Stop-hook protocol: 2 = new mail, block + read stderr) |
+| 3 | Execution/environment failure (hub unreachable, git failure, bad state, I/O) |
+
+Errors are 3, distinct from a predicate's 1, so a hook can tell "act on this state" from "confer
+broke". Codes return up through `main() -> ExitCode` — never `process::exit` mid-stack (locks/cursors
+must `Drop`).
+
+### Streams & machine output
+
+- **stdout = the payload only** (messages, reports, JSON/NDJSON events). **stderr = everything else**
+  (`confer: ‼/⚠/·` diagnostics, banners, progress, empty-state prose). Adapters may invert per host
+  protocol.
+- `--json` is a **versioned contract** (additive-only). Streams are **NDJSON**, one object per line,
+  each with an `"event"` discriminator (`message`, `update-available`, …). A message object always
+  carries VERIFIED provenance — `trust` (status/fpr/detail), `tier`, `screen` — never only the
+  self-declared `from`; a consumer gates on `trust.status == "mismatch"` to catch impersonation. The
+  `⟦untrusted:nonce⟧` frame is the *text-mode* rendering of that same provenance (JSON string encoding
+  is the delimiter — no frame markers inside JSON).
+- No ANSI in confer's own output; untrusted input is control-sanitized. Confirmation is always
+  re-run-with-`--yes`; no interactive prompts on any path.
