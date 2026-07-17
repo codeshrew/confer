@@ -186,27 +186,27 @@ Drive on an interval: /loop 45s /confer-poll
 /// never drift in which skills or templates they write.
 const BOARD_SKILL: &str = r#"---
 name: confer-board
-description: See the coordination board at a glance — active threads, the open task board (who's waiting on what), and stale threads worth cleaning up. Use when the human asks "what's going on?", "what's open?", "what needs attention?", or "anything to clean up?", or to orient yourself before acting. Read-only — publishes nothing, changes nothing.
+description: See the coordination board — active threads, the open task board (who's waiting on what), and stale threads worth cleaning up — across ALL your hubs, or a single one the human names. Use when the human asks "what's going on?", "what's open?", "what needs attention on <hub>?", or "anything to clean up?", or to orient yourself before acting. Read-only — publishes nothing, changes nothing.
 allowed-tools: Bash
 disallowed-tools: AskUserQuestion
 ---
 
-A read-only overview of the hub's board. `confer --help` is the source of truth for flags — don't assume them.
+A read-only overview of the board. Covers EVERY hub on this machine by default; if the human names one
+("the jarvis board"), focus just that hub — add `| grep -i <name>` after `{CONFER} hubs` below, or run
+`CONFER_HUB=<that clone> {CONFER} threads`. `confer --help` is the source of truth for flags.
 
-## The board at a glance
+## The board, per hub
 Threads (topics) by recent activity, then the open task board:
 
-!`{CONFER} threads; echo; {CONFER} requests --open`
-
-## Stale — cleanup candidates
-Open threads gone quiet (default 14 days). To close one that's truly dead, `{CONFER} done --of <id> --as obsolete` records a conscious drop (not a completion):
-
-!`{CONFER} threads --stale`
+!`{CONFER} hubs | while read -r h; do [ -n "$h" ] || continue; label=$(basename "$(git -C "$h" config --get remote.origin.url 2>/dev/null || echo "$h")" .git); printf '\n══ %s ══\n' "$label"; CONFER_HUB="$h" {CONFER} threads; echo; CONFER_HUB="$h" {CONFER} requests --open; done`
 
 ## Read it for the human
-- `threads` — per topic: message count, active agents, last activity, open/total requests, open|closed. Newest-active first; `⚠ stale` flags an open thread gone quiet.
+- `threads` — per topic: message count, active agents, last activity, open/total requests, open|closed.
+  `⚠ stale` flags an OPEN thread gone quiet — a cleanup candidate. `{CONFER} threads --stale` on a hub
+  focuses just those; `{CONFER} done --of <id> --as obsolete` closes a dead one (a conscious drop).
 - `requests --open` — the live task board: who's waiting on what.
-Summarize the SHAPE and what needs attention (how many threads, how many open, anything stale to review) — don't dump the raw tables at the human unless they ask.
+Summarize the SHAPE across hubs (how many threads, how many open, anything stale to review) — don't dump
+the raw tables unless they ask. If the human named one hub, show just that one.
 "#;
 
 const FLEET_SKILL: &str = r#"---
@@ -222,7 +222,7 @@ assume flags.
 
 ## Show the fleet — every hub you're on
 You may be on several hubs at once. Never hardcode a hub path — discover them and show `fleet`
-for each via `CONFER_HUB=`:
+for each via `CONFER_HUB=`. (To focus ONE hub the human names, add `| grep -i <name>` after `hubs`.)
 
 !`{CONFER} hubs | while read -r h; do [ -n "$h" ] || continue; label=$(basename "$(git -C "$h" config --get remote.origin.url 2>/dev/null || echo "$h")" .git); printf '\n══ hub: %s ══\n' "$label"; CONFER_HUB="$h" {CONFER} fleet; done`
 
