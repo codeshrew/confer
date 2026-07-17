@@ -87,6 +87,16 @@ pub fn hub_dirs() -> Vec<PathBuf> {
         if !seen_dir.insert(dir.clone()) {
             continue;
         }
+        // Skip a registered dir that ISN'T actually a confer hub — a dev/source dir that leaked into
+        // the watch registry, or a clone since replaced by something else. Without this, `serve
+        // --all-hubs` renders a broken "not a confer hub" tab and `--hub <name>` can match a non-hub.
+        // A real hub carries the `.confer-version` scaffold marker (threads/roles are the fallback).
+        if !(dir.join(".confer-version").exists()
+            || dir.join("threads").is_dir()
+            || dir.join("roles").is_dir())
+        {
+            continue;
+        }
         // Collapse sibling clones of the SAME hub to one tab (root SHA = F3 anchor).
         let hub_key = root_sha(&dir).unwrap_or_else(|| m.dir.clone());
         if !seen_hub.insert(hub_key) {
