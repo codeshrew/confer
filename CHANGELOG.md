@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3
+
+- **Fix: `serve --all-hubs` no longer shows a broken "not a confer hub" tab.** A dev/source directory
+  that had been registered in the machine's watch registry (with no `.confer-version`/`threads/`/
+  `roles/`) leaked through hub discovery, so `serve`/`dashboard --all-hubs` rendered a broken tab for
+  it and the `--hub <name>` selector could match it. Hub discovery now filters to actual confer hubs.
+
 ## 0.7.2
 
 Fleet awareness — new ways for a human (or agent) to see what's going on (design/38).
