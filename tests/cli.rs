@@ -4873,3 +4873,72 @@ fn top_level_hub_selector_overrides_the_env_hub() {
         "`confer --hub <A> threads` targets hub A even though CONFER_HUB points at B: {out}"
     );
 }
+
+// ── bugfix regression: `requests --mine` must include what I've claimed ─────
+#[test]
+fn requests_mine_includes_a_broadcast_i_claimed() {
+    // A broadcasts to `all`; beta claims it. Before the fix, `--mine` only looked at
+    // `from`/`to`, so beta's own claimed (in-progress) work never showed under
+    // `requests --mine` even though beta is the one working it.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "all", "--summary", "broadcast work", "--text", "body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claims the broadcast");
+    let mine = out(&b.confer(&["requests", "--mine"]));
+    assert!(
+        mine.contains("broadcast work"),
+        "a claimed broadcast request must show under the claimant's `requests --mine`: {mine}"
+    );
+}
+
+// ── bugfix regression: notes-only topics are "discussion", not "closed" ─────
+#[test]
+fn threads_notes_only_topic_is_discussion_not_closed() {
+    let hub = new_hub();
+    let c = hub.clone("a");
+    // A pure-notes topic: never held a request.
+    assert!(ok(&c.append(&[
+        "--type", "note", "--to", "b", "--topic", "watercooler", "--summary", "hi", "--text", "y"
+    ])));
+    // A topic with an open request, for contrast — must still show "open"/status:"open".
+    assert!(ok(&c.append(&[
+        "--type", "request", "--to", "b", "--topic", "work", "--summary", "do it", "--text", "y"
+    ])));
+
+    let text = out(&c.confer(&["threads"]));
+    assert!(
+        text.lines().any(|l| l.starts_with("watercooler") && l.contains("discussion")),
+        "a notes-only topic must render as `discussion`, not `closed`: {text}"
+    );
+    assert!(
+        text.lines().any(|l| l.starts_with("work") && l.contains("open") && !l.contains("discussion")),
+        "a topic with an open request stays `open`, not `discussion`: {text}"
+    );
+
+    let js = out(&c.confer(&["threads", "--json"]));
+    let watercooler = js
+        .split("},")
+        .find(|o| o.contains("\"topic\":\"watercooler\""))
+        .expect("watercooler row present in --json");
+    assert!(
+        watercooler.contains("\"discussion\":true"),
+        "notes-only topic must carry \"discussion\":true in JSON: {watercooler}"
+    );
+    let work = js
+        .split("},")
+        .find(|o| o.contains("\"topic\":\"work\""))
+        .expect("work row present in --json");
+    assert!(
+        work.contains("\"discussion\":false"),
+        "a topic with a request must carry \"discussion\":false in JSON: {work}"
+    );
+    // Back-compat: JSON `status` values are unchanged by this fix.
+    assert!(
+        watercooler.contains("\"status\":\"closed\""),
+        "JSON status for a zero-request topic stays \"closed\" (back-compat), only text + the additive \"discussion\" field change: {watercooler}"
+    );
+}
