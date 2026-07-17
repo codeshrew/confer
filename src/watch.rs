@@ -226,8 +226,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                     let _ = writeln!(
                         o,
                         "⟳ UPDATE — a newer confer ({}) is running on this hub; you're on {}. Update \
-                         (`confer update`), then re-arm your watch + `confer install-skill`. \
-                         (silence: add --no-version-notice)",
+                         (`confer update`, or `brew update && brew upgrade confer` if brew is your \
+                         install path — the tap may need `brew update` first), then re-arm your watch \
+                         + `confer install-skill`. (silence: add --no-version-notice)",
                         pin.pin_string(),
                         crate::my_build().pin_string()
                     );

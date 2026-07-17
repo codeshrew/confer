@@ -1866,6 +1866,11 @@ struct LifecycleArgs {
     /// reply within a thread — with no `--to`, addresses the replied-to author
     #[arg(long = "reply-to")]
     reply_to: Option<String>,
+    /// point at a durable doc/artifact that resolves this: `repo:path[@sha][#Lstart-Lend]`;
+    /// repeatable. A good `done` often points at what actually resolved the request (field report:
+    /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
+    #[arg(long = "ref")]
+    refs: Vec<String>,
 }
 
 struct AppendArgs {
@@ -2043,7 +2048,7 @@ fn cmd_lifecycle(msg_type: &str, a: LifecycleArgs, resolution: Option<String>) -
         supersedes: None,
         from: a.from,
         src: None,
-        refs: vec![],
+        refs: a.refs, // the sugar verbs now carry --ref through to append (field report)
         allow_empty_body: true, // lifecycle markers are summary-only
         resolution,
         defer: false,
@@ -2051,7 +2056,20 @@ fn cmd_lifecycle(msg_type: &str, a: LifecycleArgs, resolution: Option<String>) -
     })
 }
 
-fn cmd_append(a: AppendArgs) -> Result<()> {
+/// Split comma-lists inside repeated `--to`/`--cc` values (`--to a,b` == `--to a --to b`), trimming
+/// and dropping empties — so a fleet can address a subset of peers in one flag instead of hitting the
+/// slug regex on `a,b,c` (field report). Groups/`all` still work; this just pre-flattens.
+fn split_comma_targets(v: Vec<String>) -> Vec<String> {
+    v.into_iter()
+        .flat_map(|s| s.split(',').map(str::trim).map(str::to_string).collect::<Vec<_>>())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn cmd_append(mut a: AppendArgs) -> Result<()> {
+    // Accept `--to a,b,c` (and `--cc`) as a convenience for addressing several peers at once.
+    a.to = split_comma_targets(a.to);
+    a.cc = split_comma_targets(a.cc);
     let root = config::repo_root()?;
     let role = config::resolve_role(a.from, &root)?;
     // Surface a silently-dead watch on the next active command: if you armed a watch but it isn't
@@ -7132,6 +7150,17 @@ mod tests {
         assert_eq!(parse_semver_prefix("0.6"), Some((0, 6, 0)));
         // non-numeric headings (e.g. "Unreleased") don't parse — the filter treats them as newer
         assert_eq!(parse_semver_prefix("Unreleased"), None);
+    }
+
+    #[test]
+    fn comma_targets_split_trim_and_drop_empties() {
+        // `--to a,b,c` == `--to a --to b --to c`; trims whitespace and drops empties (field report).
+        assert_eq!(split_comma_targets(vec!["a,b,c".into()]), vec!["a", "b", "c"]);
+        assert_eq!(split_comma_targets(vec!["a".into(), "b, c".into()]), vec!["a", "b", "c"]);
+        assert_eq!(split_comma_targets(vec!["a,,".into(), "".into()]), vec!["a"]);
+        assert!(split_comma_targets(vec![]).is_empty());
+        // a plain single target is unchanged
+        assert_eq!(split_comma_targets(vec!["all".into()]), vec!["all"]);
     }
 
     #[test]

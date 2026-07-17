@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.10
+
+Paved-path polish, mostly from a field report — the Heliosphere fleet's multi-agent onboarding notes:
+
+- **`--to`/`--cc` accept comma-lists.** `confer append --to arch,graph,infra` now addresses all three
+  instead of failing the role-slug regex — one flag to message a subset of peers. Groups and `all`
+  still work.
+- **The lifecycle sugar verbs carry `--ref`.** `done`/`error`/`blocked`/`defer`/`claim` used to drop
+  `--ref`, forcing a fall back to `append --type done`; a good close often points at the artifact that
+  resolved the request, so they now thread it through.
+- **The watch's version-notice mentions `brew update` first.** Homebrew's tap can lag, so `brew upgrade`
+  may report "already installed" right after the notice fires — the notice now points at
+  `brew update && brew upgrade confer` for the brew install path.
+
 ## 0.6.9
 
 Self-maintaining-fleet release: make it cheaper for an agent to adopt a new build and stay correct
