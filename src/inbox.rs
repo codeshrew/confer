@@ -289,8 +289,11 @@ mod tests {
 
 // ---- command handlers (show / inbox / ack / requests / thread / read) ----
 
-/// Print one full message by id (or id-prefix) — the triage → open step.
-pub(crate) fn cmd_show(id: String) -> Result<()> {
+/// Print one full message by id (or id-prefix) — the triage → open step. `--json` prints one
+/// `to_json` object (carries verified `trust`/`tier`/`screen`, design/37 F4) and skips the
+/// supersession/edit-notice decoration — a machine consumer doesn't need the prose, just the
+/// message + its provenance. Side effects (marking the message read) still happen either way.
+pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let msgs = store::all_messages(&root)?;
     let hits: Vec<&Message> = msgs
@@ -303,42 +306,47 @@ pub(crate) fn cmd_show(id: String) -> Result<()> {
             let roster = roster::load(&root);
             let hub_key = config::hub_key(&root);
             let t = verify::status(&root, &hub_key, &roster, &mut verify::Cache::default(), m);
-            let who = roster::display(&roster, &m.front.from);
-            let body = schema::sanitize_term(&m.to_markdown()?, true);
-            println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
-            // Supersession chain (the append-based "edit" model).
-            if let Some(newer) = msgs.iter().find(|x| {
-                x.front
-                    .supersedes
-                    .as_deref()
-                    .is_some_and(|s| id_matches(&m.front.id, s))
-            }) {
-                println!(
-                    "> ⚠ superseded by {} — see the newer message",
-                    short_id(&newer.front.id)
-                );
-            }
-            if let Some(old) = &m.front.supersedes {
-                println!("> (this supersedes {})", short_id(old));
-            }
-            // In-place edit detection via git history of the message file.
-            let topic = m.front.topic.as_deref().unwrap_or("general");
-            let path = store::message_path(&root, topic, &m.front.id, &m.front.from, &m.front.ts);
-            let rel = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            if let Ok(o) = gitcmd::output(&root, &["log", "--format=%cI", "--", &rel]) {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let times: Vec<&str> = stdout.lines().collect();
-                if times.len() > 1 {
+            if json {
+                let tier = tiers::get(&hub_key);
+                println!("{}", to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?);
+            } else {
+                let who = roster::display(&roster, &m.front.from);
+                let body = schema::sanitize_term(&m.to_markdown()?, true);
+                println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+                // Supersession chain (the append-based "edit" model).
+                if let Some(newer) = msgs.iter().find(|x| {
+                    x.front
+                        .supersedes
+                        .as_deref()
+                        .is_some_and(|s| id_matches(&m.front.id, s))
+                }) {
                     println!(
-                        "> ✎ edited in place: created {}, last edited {} ({} commits)",
-                        times.last().copied().unwrap_or("?"),
-                        times.first().copied().unwrap_or("?"),
-                        times.len()
+                        "> ⚠ superseded by {} — see the newer message",
+                        short_id(&newer.front.id)
                     );
+                }
+                if let Some(old) = &m.front.supersedes {
+                    println!("> (this supersedes {})", short_id(old));
+                }
+                // In-place edit detection via git history of the message file.
+                let topic = m.front.topic.as_deref().unwrap_or("general");
+                let path = store::message_path(&root, topic, &m.front.id, &m.front.from, &m.front.ts);
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                if let Ok(o) = gitcmd::output(&root, &["log", "--format=%cI", "--", &rel]) {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let times: Vec<&str> = stdout.lines().collect();
+                    if times.len() > 1 {
+                        println!(
+                            "> ✎ edited in place: created {}, last edited {} ({} commits)",
+                            times.last().copied().unwrap_or("?"),
+                            times.first().copied().unwrap_or("?"),
+                            times.len()
+                        );
+                    }
                 }
             }
             // Opening a message's body reads THAT message — mark only this id (not a high-water
@@ -360,8 +368,10 @@ pub(crate) fn cmd_show(id: String) -> Result<()> {
 
 /// The unread inbox: directly-addressed mail past the read frontier. Prints the full
 /// messages and (unless `--peek`) marks them read. The "did I actually see it"
-/// backstop, distinct from the delivery cursor.
-pub(crate) fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
+/// backstop, distinct from the delivery cursor. `--json` prints one `to_json` object per unread
+/// message (NDJSON) — `--peek` doesn't change the JSON shape (a machine consumer reads the
+/// fields itself); an empty inbox emits nothing on stdout (design/37 item 6/11).
+pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
     if me.is_empty() {
@@ -385,14 +395,23 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
     let unread = unread_for_me(&msgs, &me, &grps, &st);
 
     if unread.is_empty() {
-        println!("inbox clear — no unread mail addressed to {me}.");
+        if !json {
+            // Empty result: text-mode prose moves to stderr (item 11) — inbox is a command an
+            // agent pipes, and stdout must stay a clean (even if empty) payload stream.
+            eprintln!("inbox clear — no unread mail addressed to {me}.");
+        }
         return Ok(());
     }
-    println!("── {} unread for {me} ──\n", unread.len());
+    if !json {
+        println!("── {} unread for {me} ──\n", unread.len());
+    }
     let mut vc = verify::Cache::default();
     for m in &unread {
         let t = verify::status(&root, &hub, &roster, &mut vc, m);
-        if peek {
+        if json {
+            let tier = tiers::get(&hub);
+            println!("{}", to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?);
+        } else if peek {
             // Compact triage line — scan the list, then open the ones you want.
             println!(
                 "  {} · from {} — {}",
@@ -400,7 +419,6 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
                 schema::sanitize_term(roster::display(&roster, &m.front.from), false),
                 truncate(&m.summary_line(), 72)
             );
-            let _ = t;
         } else {
             let who = roster::display(&roster, &m.front.from);
             let body = schema::sanitize_term(&m.to_markdown()?, true);
@@ -410,9 +428,11 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool) -> Result<()> {
     }
     // The inbox LISTS — it never marks mail read (that was the single-high-water-mark bug: opening
     // one message read all the older deferred mail). You mark mail read explicitly, one at a time.
-    println!(
-        "(nothing marked read — `confer show <id>` opens one, `confer ack <id>` dismisses one, `confer ack` clears all)"
-    );
+    if !json {
+        println!(
+            "(nothing marked read — `confer show <id>` opens one, `confer ack <id>` dismisses one, `confer ack` clears all)"
+        );
+    }
     Ok(())
 }
 
@@ -567,7 +587,10 @@ pub(crate) fn fmt_age(secs: i64) -> String {
     }
 }
 
-pub(crate) fn cmd_thread(id: String, full: bool) -> Result<()> {
+/// `--json` prints one `to_json` object per thread message (NDJSON, oldest first) — the same
+/// message shape as `show --json`, so a thread is just an ordered stream of those objects. No
+/// supersession/edit decoration in JSON mode; `--full` is ignored (JSON always carries the body).
+pub(crate) fn cmd_thread(id: String, full: bool, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let roster = roster::load(&root);
     let msgs = store::all_messages(&root)?;
@@ -610,7 +633,10 @@ pub(crate) fn cmd_thread(id: String, full: bool) -> Result<()> {
     let mut vc = verify::Cache::default();
     for m in &thread {
         let t = verify::status(&root, &hub_key, &roster, &mut vc, m);
-        if full {
+        if json {
+            let tier = tiers::get(&hub_key);
+            println!("{}", to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?);
+        } else if full {
             let who = roster::display(&roster, &m.front.from);
             let body = schema::sanitize_term(&m.to_markdown()?, true);
             println!("{}\n", framed_body(&body, m, who, &t, tiers::get(&hub_key)));

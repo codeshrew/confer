@@ -511,7 +511,7 @@ fn run() -> Result<()> {
                 r
             }
         }
-        Cmd::Show { id } => cmd_show(id),
+        Cmd::Show { id, json } => cmd_show(id, json),
         Cmd::Requests {
             open,
             mine,
@@ -520,7 +520,7 @@ fn run() -> Result<()> {
             backlog,
             blocked,
         } => cmd_requests(open, mine, role, json, backlog, blocked),
-        Cmd::Thread { id, full } => cmd_thread(id, full),
+        Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
         Cmd::Init {
             url,
             dir,
@@ -586,7 +586,7 @@ fn run() -> Result<()> {
         Cmd::Trust { tier } => cmd_trust(tier),
         Cmd::Screen { corpus, text } => cmd_screen(corpus, text),
         Cmd::Seen { id } => cmd_seen(id),
-        Cmd::Inbox { role, peek } => cmd_inbox(role, peek),
+        Cmd::Inbox { role, peek, json } => cmd_inbox(role, peek, json),
         Cmd::Ack { id, role } => cmd_ack(id, role),
         Cmd::Credential { op } => ghapp::credential(&op),
         Cmd::AppToken => {

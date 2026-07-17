@@ -4474,3 +4474,85 @@ fn hubs_lists_one_path_per_distinct_hub() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// design/37 item 6/11 — `--json` on show/inbox/thread: NDJSON of the canonical
+// `to_json` message shape (carries verified trust/tier/screen), decoration-free,
+// with an empty result emitting nothing on stdout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn show_json_emits_one_to_json_object_and_marks_read() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let id = a.send(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "body"]);
+    b.pull();
+    let o = b.confer(&["show", &id, "--json"]);
+    assert!(ok(&o), "show --json: {}", err(&o));
+    let stdout = out(&o);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "show --json prints exactly one object: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|e| panic!("show --json must be valid JSON ({e}): {stdout}"));
+    assert_eq!(v["event"], "message");
+    assert_eq!(v["id"], id);
+    assert_eq!(v["body"], "body");
+    assert!(v["trust"]["status"].is_string(), "carries trust status: {v}");
+    // No text-mode decoration (supersession/edit notices) leaked into the JSON stream.
+    assert_eq!(lines.len(), 1);
+    // Side effect preserved: opening via `show` still marks the message read.
+    assert_eq!(b.unread_count(), 0, "show --json must still mark the message read");
+}
+
+#[test]
+fn inbox_json_is_ndjson_and_empty_inbox_prints_nothing() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    // Empty inbox: --json must print NOTHING on stdout (item 11), exit 0 regardless.
+    let empty = b.confer(&["inbox", "--role", "beta", "--json"]);
+    assert!(ok(&empty), "empty inbox --json should still exit 0: {}", err(&empty));
+    assert!(out(&empty).trim().is_empty(), "empty inbox --json must emit nothing on stdout: {}", out(&empty));
+
+    a.send(&["--type", "note", "--to", "beta", "--summary", "one", "--text", "b1"]);
+    a.send(&["--type", "note", "--to", "beta", "--summary", "two", "--text", "b2"]);
+    let o = b.confer(&["inbox", "--role", "beta", "--json"]);
+    assert!(ok(&o), "inbox --json: {}", err(&o));
+    let stdout = out(&o);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "one NDJSON line per unread message: {stdout}");
+    for l in &lines {
+        let v: serde_json::Value = serde_json::from_str(l)
+            .unwrap_or_else(|e| panic!("inbox --json line must parse ({e}): {l}"));
+        assert_eq!(v["event"], "message");
+        assert!(v["trust"].is_object());
+    }
+    // inbox never marks read, --json included.
+    assert_eq!(b.unread_count(), 2, "inbox --json must not mark mail read");
+}
+
+#[test]
+fn thread_json_is_ndjson_of_to_json_objects_oldest_first() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let req = a.send(&["--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body"]);
+    b.pull();
+    let claim = b.confer(&["claim", "--of", &req]);
+    assert!(ok(&claim), "claim: {}", err(&claim));
+    a.pull();
+    let o = a.confer(&["thread", &req, "--json"]);
+    assert!(ok(&o), "thread --json: {}", err(&o));
+    let stdout = out(&o);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "request + its claim: {stdout}");
+    let mut ids = Vec::new();
+    for l in &lines {
+        let v: serde_json::Value = serde_json::from_str(l)
+            .unwrap_or_else(|e| panic!("thread --json line must parse ({e}): {l}"));
+        assert_eq!(v["event"], "message");
+        ids.push(v["id"].as_str().unwrap().to_string());
+    }
+    assert!(ids.is_sorted(), "thread --json must be oldest-first: {ids:?}");
+}

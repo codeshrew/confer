@@ -196,7 +196,14 @@ pub(crate) enum Cmd {
         to_me: bool,
     },
     /// Print one full message (by id or id-prefix) — triage a summary, then open it.
-    Show { id: String },
+    /// A REPORT: exits 0 once the message is printed.
+    Show {
+        id: String,
+        /// machine output: the message as one `to_json` object (carries `trust`/`tier`/
+        /// `screen`), no supersession/edit-notice decoration. Still marks the message read.
+        #[arg(long)]
+        json: bool,
+    },
     /// List requests with their derived status (open/claimed/done/error).
     Requests {
         /// only requests not yet done/errored (open or claimed) — the active board
@@ -217,11 +224,15 @@ pub(crate) enum Cmd {
         blocked: bool,
     },
     /// Assemble a request's lifecycle: the message + everything referencing it
-    /// (claims/dones/errors/replies/supersedes), transitively.
+    /// (claims/dones/errors/replies/supersedes), transitively. A REPORT: exits 0
+    /// once the thread is printed (even a single-message thread).
     Thread {
         id: String,
         #[arg(long)]
         full: bool,
+        /// machine output: one `to_json` object per line (NDJSON), oldest first.
+        #[arg(long)]
+        json: bool,
     },
     /// Browse/catch-up (does not touch the cursor).
     Read {
@@ -682,6 +693,10 @@ pub(crate) enum Cmd {
         /// view without marking as read
         #[arg(long)]
         peek: bool,
+        /// machine output: one `to_json` object per unread message (NDJSON); empty inbox
+        /// emits nothing. A REPORT: exits 0 whether or not there's unread mail.
+        #[arg(long)]
+        json: bool,
     },
     /// Acknowledge mail as read without re-opening it: advances your read frontier to
     /// <id> (or to the latest message if omitted), clearing the unread nag.
