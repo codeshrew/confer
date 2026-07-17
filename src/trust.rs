@@ -259,8 +259,16 @@ pub(crate) fn cmd_verify(id: String, strict: bool) -> Result<()> {
     }
 }
 
-/// Audit a clone's git identity/signing config for agent/human scope conflicts.
-pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
+/// Audit a clone's git identity/signing config for agent/human scope conflicts. `--json` emits
+/// `{"findings":[{"severity","title","fix"}],"ok":bool}` from `doctor::audit`'s Finding vec
+/// (severity: ok | warn | info; `ok` = no `warn`-severity finding) — design/37 item 6/10. `--check`
+/// turns the bare-report default into a scriptable gate: exit 1 if any finding is `warn`, via the
+/// `PredicateFalse` marker (same pattern as `cmd_verify`); 0 if clean. NOTE (flagged for review):
+/// both `--json` and `--check` cover only the `doctor::audit` Finding vec — the additional ad hoc
+/// diagnostics below (transport self-containment, reactive-watch liveness, clone shallow/nested,
+/// machine-config validation, role↔key) remain TEXT-ONLY and are not part of the findings array or
+/// the --check gate; folding them in would need converting them to `Finding`s too, out of scope here.
+pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool) -> Result<()> {
     let root = match dir {
         Some(d) => std::path::PathBuf::from(d),
         None => config::repo_root()?,
@@ -268,7 +276,7 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
     if !root.join(".git").exists() {
         return Err(anyhow!("{} is not a git repo", root.display()));
     }
-    if fix {
+    if fix && !json {
         match doctor::fix(&root, &ssh_keygen_path()) {
             Ok(applied) if applied.is_empty() => {
                 println!("confer doctor --fix: nothing to auto-repair.\n")
@@ -281,8 +289,29 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
             }
             Err(e) => eprintln!("confer doctor --fix: {e}\n"),
         }
+    } else if fix {
+        // --json --fix: still apply the fixes (a real side effect), but keep stdout a clean
+        // JSON stream — the applied-fixes narration goes to stderr instead of interleaving
+        // with the findings array.
+        match doctor::fix(&root, &ssh_keygen_path()) {
+            Ok(applied) if !applied.is_empty() => {
+                eprintln!("confer doctor --fix: {} repair(s) applied.", applied.len());
+            }
+            Err(e) => eprintln!("confer doctor --fix: {e}"),
+            _ => {}
+        }
     }
-    print!("{}", doctor::render(&doctor::audit(&root)));
+    let findings = doctor::audit(&root);
+    let any_hard = findings.iter().any(|f| f.level == doctor::Level::Warn);
+    if json {
+        let arr: Vec<serde_json::Value> = findings
+            .iter()
+            .map(|f| serde_json::json!({ "severity": f.level.severity(), "title": f.title, "fix": f.fix }))
+            .collect();
+        println!("{}", serde_json::json!({ "findings": arr, "ok": !any_hard }));
+        return if check && any_hard { Err(crate::PredicateFalse.into()) } else { Ok(()) };
+    }
+    print!("{}", doctor::render(&findings));
 
     // Transport self-containment (#1 field feedback): a headless watch — or this clone on another
     // machine — must REACH the hub without the ambient ~/.ssh identity. Flag an SSH origin that has
@@ -405,6 +434,12 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool) -> Result<()> {
     println!(
         "\nlegend:  ✓ ok   ⚠ safety — action recommended   ‼ trust violation — do NOT proceed   · advisory — no action needed"
     );
+    // `doctor` is a REPORT (always exits 0) unless `--check` opts into the scriptable gate: exit
+    // 1 if any `doctor::audit` finding is `warn`-severity (design/37 item 10), via the same
+    // `PredicateFalse` marker `verify`/`watch-status` use — never a bare `process::exit`.
+    if check && any_hard {
+        return Err(crate::PredicateFalse.into());
+    }
     Ok(())
 }
 

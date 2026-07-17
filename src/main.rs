@@ -582,7 +582,7 @@ fn run() -> Result<()> {
         Cmd::Repos { json } => cmd_repos(json),
         Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
-        Cmd::Doctor { dir, fix } => cmd_doctor(dir, fix),
+        Cmd::Doctor { dir, fix, json, check } => cmd_doctor(dir, fix, json, check),
         Cmd::Trust { tier } => cmd_trust(tier),
         Cmd::Screen { corpus, text } => cmd_screen(corpus, text),
         Cmd::Seen { id, json } => cmd_seen(id, json),

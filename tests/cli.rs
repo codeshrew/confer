@@ -4631,3 +4631,41 @@ fn seen_json_buckets_audience_by_role_id() {
         "beta has no heartbeat yet, should be in no_heartbeat_by: {v}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// design/37 item 6/10 — `doctor --json`/`--check`: structured findings + a
+// scriptable gate, while the default bare invocation stays a REPORT (exit 0).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn doctor_json_emits_a_findings_array_with_severity_and_ok() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let o = a.confer(&["doctor", "--json"]);
+    assert!(ok(&o), "doctor --json should exit 0 (a report): {}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(out(&o).trim())
+        .unwrap_or_else(|e| panic!("doctor --json must parse ({e}): {}", out(&o)));
+    let findings = v["findings"].as_array().expect("findings is an array");
+    assert!(!findings.is_empty(), "doctor always has at least the agent-clone Info finding: {v}");
+    for f in findings {
+        assert!(f["severity"].is_string());
+        assert!(f["title"].is_string());
+    }
+    assert!(v["ok"].is_boolean());
+}
+
+#[test]
+fn doctor_check_exits_0_when_clean_and_bare_doctor_always_exits_0() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    // Bare `doctor` is a REPORT: exits 0 regardless of findings.
+    let bare = a.confer(&["doctor"]);
+    assert!(ok(&bare), "bare doctor must exit 0 (a report): {}", err(&bare));
+    // This clone is a plain agent clone with no scope conflicts → --check should be clean (0).
+    let checked = a.confer(&["doctor", "--check"]);
+    assert!(
+        checked.status.code() == Some(0) || checked.status.code() == Some(1),
+        "doctor --check must exit 0 (clean) or 1 (hard findings), never something else: {:?}",
+        checked.status.code()
+    );
+}

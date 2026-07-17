@@ -659,7 +659,8 @@ pub(crate) enum Cmd {
     },
     /// Audit this clone's git identity/signing config so an agent and its human don't
     /// clobber each other's settings (scope conflicts, masquerade, headless signer).
-    /// Read-only. See DESIGN.md.
+    /// Read-only. A REPORT by default: exits 0 once the audit is printed, however bad the
+    /// news; add `--check` for a scriptable gate. See DESIGN.md.
     Doctor {
         /// Repo to audit (default: the current hub/repo).
         dir: Option<String>,
@@ -667,6 +668,18 @@ pub(crate) enum Cmd {
         /// commit.gpgsign is off) — LOCAL config only, agent clones only.
         #[arg(long)]
         fix: bool,
+        /// machine output: `{"findings":[{"severity","title","fix"}],"ok":bool}` — the git
+        /// identity/signing `audit` findings (severity: ok | warn | info). SCOPE: covers the audit
+        /// only; the advisory text diagnostics (transport, watch liveness, clone shape, machine
+        /// config, role↔key) are report-only and not in this array.
+        #[arg(long)]
+        json: bool,
+        /// scriptable gate on the git identity/signing audit: exit 1 if any audit finding is
+        /// `warn`-severity, 0 if the audit is clean, 3 on error. NOTE: gates the audit only — the
+        /// advisory diagnostics (incl. the peer role↔key check) are report-only; run plain `doctor`
+        /// for the full picture. Without `--check`, `doctor` always exits 0 (it's a report).
+        #[arg(long)]
+        check: bool,
     },
     /// Show or set this hub's TRUST TIER — how much to trust its peers.
     /// Local-only; a peer can't set its own. `own` (your fleet) | `shared` (co-owned

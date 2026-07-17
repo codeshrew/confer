@@ -27,6 +27,14 @@ impl Level {
             Level::Info => "ℹ",
         }
     }
+    /// The machine-readable severity string for `doctor --json` (design/37 item 10).
+    pub fn severity(&self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Warn => "warn",
+            Level::Info => "info",
+        }
+    }
 }
 
 pub struct Finding {
@@ -376,5 +384,35 @@ mod tests {
     fn interactive_signer_detection() {
         assert!(is_interactive_signer("/Applications/1Password.app/Contents/MacOS/op-ssh-sign"));
         assert!(!is_interactive_signer("/usr/bin/ssh-keygen"));
+    }
+
+    #[test]
+    fn severity_strings_are_the_json_contract_for_doctor_json() {
+        // `confer doctor --json` maps each Finding through `Level::severity()` (design/37 item 10);
+        // pin the exact strings so the JSON contract can't silently drift.
+        assert_eq!(Level::Ok.severity(), "ok");
+        assert_eq!(Level::Warn.severity(), "warn");
+        assert_eq!(Level::Info.severity(), "info");
+    }
+
+    #[test]
+    fn doctor_json_shape_round_trips_through_serde_json() {
+        let findings = vec![
+            Finding { level: Level::Ok, title: "fine".into(), fix: None },
+            Finding { level: Level::Warn, title: "uh oh".into(), fix: Some("do X".into()) },
+        ];
+        let any_hard = findings.iter().any(|f| f.level == Level::Warn);
+        let arr: Vec<serde_json::Value> = findings
+            .iter()
+            .map(|f| serde_json::json!({ "severity": f.level.severity(), "title": f.title, "fix": f.fix }))
+            .collect();
+        let v = serde_json::json!({ "findings": arr, "ok": !any_hard });
+        let s = serde_json::to_string(&v).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s)
+            .unwrap_or_else(|e| panic!("doctor --json shape must parse ({e}): {s}"));
+        assert_eq!(parsed["ok"], false);
+        assert_eq!(parsed["findings"][1]["severity"], "warn");
+        assert_eq!(parsed["findings"][1]["fix"], "do X");
+        assert_eq!(parsed["findings"][0]["fix"], serde_json::Value::Null);
     }
 }
