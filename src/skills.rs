@@ -86,10 +86,12 @@ pub(crate) fn cmd_install_skill(
     // Stamp the build these skills were baked from so the SessionStart tier-1 auto-heal can tell,
     // cheaply, when a later binary update has left them stale and silently re-derive them.
     let _ = std::fs::write(dir.join("confer-watch").join(".confer-build"), BUILD_SHA);
-    println!(
-        "wrote {}/{{confer-watch,confer-poll}}/SKILL.md",
-        dir.display()
-    );
+    let names = CONFER_SKILLS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join(",");
+    println!("wrote {}/{{{names}}}/SKILL.md", dir.display());
     // Migrate: remove OUR pre-namespacing skill dirs so an agent doesn't keep both /watch and
     // /confer-watch. Only remove ones clearly OURS (mention confer) — never an unrelated skill.
     for legacy in ["watch", "check-blackboard"] {

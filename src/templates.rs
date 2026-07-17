@@ -184,5 +184,33 @@ Drive on an interval: /loop 45s /confer-poll
 /// The confer skills, as `(dir-name, template)` — role-agnostic, so only `{CONFER}` (the machine's
 /// binary path) is baked. Shared by the explicit installer and the tier-1 auto-resync so the two can
 /// never drift in which skills or templates they write.
-pub(crate) const CONFER_SKILLS: [(&str, &str); 2] =
-    [("confer-watch", WATCH_SKILL), ("confer-poll", CHECK_BLACKBOARD_SKILL)];
+const BOARD_SKILL: &str = r#"---
+name: confer-board
+description: See the coordination board at a glance — active threads, the open task board (who's waiting on what), and stale threads worth cleaning up. Use when the human asks "what's going on?", "what's open?", "what needs attention?", or "anything to clean up?", or to orient yourself before acting. Read-only — publishes nothing, changes nothing.
+allowed-tools: Bash
+disallowed-tools: AskUserQuestion
+---
+
+A read-only overview of the hub's board. `confer --help` is the source of truth for flags — don't assume them.
+
+## The board at a glance
+Threads (topics) by recent activity, then the open task board:
+
+!`{CONFER} threads; echo; {CONFER} requests --open`
+
+## Stale — cleanup candidates
+Open threads gone quiet (default 14 days). To close one that's truly dead, `{CONFER} done --of <id> --as obsolete` records a conscious drop (not a completion):
+
+!`{CONFER} threads --stale`
+
+## Read it for the human
+- `threads` — per topic: message count, active agents, last activity, open/total requests, open|closed. Newest-active first; `⚠ stale` flags an open thread gone quiet.
+- `requests --open` — the live task board: who's waiting on what.
+Summarize the SHAPE and what needs attention (how many threads, how many open, anything stale to review) — don't dump the raw tables at the human unless they ask.
+"#;
+
+pub(crate) const CONFER_SKILLS: [(&str, &str); 3] = [
+    ("confer-watch", WATCH_SKILL),
+    ("confer-poll", CHECK_BLACKBOARD_SKILL),
+    ("confer-board", BOARD_SKILL),
+];
