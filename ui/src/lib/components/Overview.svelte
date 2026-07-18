@@ -1,36 +1,47 @@
 <script lang="ts">
-  // design/47 — the cross-hub Overview/Health triage view, and (per §3) the
-  // dashboard's new default landing. Answers exactly one question: "what
-  // does the human need to do to intervene?" — masthead health headline,
-  // then three ranked lanes (Needs-you / Coordination / Fleet-health), then
-  // an ambient context strip. Every attention item names a target agent +
-  // verb (the "who do I talk to" rule, §2.3) and carries a copy-agent-name
-  // chip (CopyIdButton) so the human can paste the name straight into that
-  // agent's own chat — this view is read-only by design; it never writes
-  // back into confer (§0's interaction model).
+  // design/47 — the cross-hub Overview/Health triage view, and the
+  // dashboard's default landing. Redesigned 2026-07-18 (ui/REDESIGN.md piece
+  // 1) around the fleet map: "the fleet is a place, not a list" — hubs are
+  // domain cards you navigate by memory (position=identity), agents inside
+  // them carry their live/down/trust/WIP state in the appearance channel
+  // (appearance=state), and the ranked "needs you" overlay rides on top,
+  // anchored back to the map instead of replacing it. Reference:
+  // ui/redesign-mockups/01-overview.html.
   //
-  // Phase 1 (design/47 §5): fans out client-side (getAttention() in api.ts
-  // does getHubs() + getOverview() per hub, folded by attention.ts's
+  // Still Phase 1 (design/47 §5): fans out client-side (getAttention() in
+  // api.ts does getHubs() + getOverview() per hub, folded by attention.ts's
   // aggregateAttention) — no new backend endpoint yet. Phase 2 repoints
   // getAttention() at a real `/api/attention`; this component only depends
-  // on the Attention shape, so that swap needs no changes here.
+  // on the Attention shape (now including the `domains` projection the map
+  // renders from), so that swap needs no changes here.
+  //
+  // What this view does NOT render, and why (ui/REDESIGN.md law #3 — never
+  // fabricate state): the mockup's home/foreign trust-tier framing and
+  // per-hub "synced Ns ago" freshness both need signals the web API doesn't
+  // project yet (`confer trust` is LOCAL-only, see src/tiers.rs; there's no
+  // per-hub sync timestamp at all). Domain cards render with one neutral
+  // frame, and the masthead's age line is honestly labeled as the
+  // DASHBOARD's own poll age, not a hub sync fact. See "Backend gaps" in
+  // ui/REDESIGN.md.
   import { onDestroy, onMount } from 'svelte';
   import { getAttention } from '../api';
-  import type { Attention, AttentionItem, FleetCard, Severity } from '../attention';
-  import type { Liveness, Trust } from '../types';
+  import { bySeverityThenAge } from '../attention';
+  import type { Attention, AttentionItem, DomainWorkItem, Severity } from '../attention';
   import { formatAgeFromSecs } from '../format';
+  import AgentNode from './AgentNode.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
 
   interface Props {
-    /** A Lane-2 card's "open thread ›" — drills into that hub's Board,
-     * focused on the request (design/47 §2.6). */
+    /** A domain card's "work in flight" chip or an overlay row's "open
+     * thread ›" — drills into that hub's Board, focused on the request
+     * (design/47 §2.6). */
     onDrillRequest?: (hub: string, reqId: string) => void;
-    /** A Lane-3 fleet card's fix-hint / avatar click — switches to that
-     * hub's Fleet view (per-agent anchor is a later phase, design/41 Ph.3). */
+    /** An agent node's click — switches to that hub's Fleet view (per-agent
+     * anchor is a later phase, design/41 Ph.3). */
     onDrillFleet?: (hub: string, agentId: string) => void;
-    /** The context strip's per-hub rollup — drills into that hub's Board. */
+    /** A domain card's name — drills into that hub's Board. */
     onDrillHub?: (hub: string) => void;
   }
 
@@ -75,22 +86,25 @@
   });
 
   const SEVERITY_GLYPH: Record<Severity, string> = { critical: '‼', attention: '▲', info: '◇', nominal: '✓' };
-  const LIVENESS_LABEL: Record<Liveness, string> = { live: '⬤ live', stale: '◐ stale', down: '○ down' };
-  const TRUST_LABEL: Record<Trust, string> = {
-    signed: '✓ signed',
-    mismatch: '‼ mismatch',
-    'first-sight': '⚠ first-sight',
-    unsigned: '⚠ unsigned',
-  };
 
-  const needsYouCount = $derived(attention?.needsYou.length ?? 0);
-  const coordinationCount = $derived(attention?.coordination.length ?? 0);
-  const criticalCount = $derived(
-    (attention?.needsYou.filter((i) => i.severity === 'critical').length ?? 0) +
-      (attention?.fleet.filter((c) => c.severity === 'critical').length ?? 0)
-  );
-  const attentionOnlyCount = $derived(attention?.coordination.filter((i) => i.severity === 'attention').length ?? 0);
-  const allClear = $derived(attention !== null && needsYouCount === 0 && coordinationCount === 0);
+  // The mockup's single anchored "needs you" overlay — Lane 1 (agent
+  // integrity + liveness) and Lane 2 (request lifecycle) merged into one
+  // ranked list, each item still carrying its own hub/verb/target so the
+  // "who do I talk to" rule (design/47 §2.3) survives the merge.
+  const overlay = $derived([...(attention?.needsYou ?? []), ...(attention?.coordination ?? [])].sort(bySeverityThenAge));
+  const criticalCount = $derived(overlay.filter((i) => i.severity === 'critical').length);
+  const allClear = $derived(attention !== null && overlay.length === 0);
+
+  // Real per-hub-occurrence down count, straight off the domain map — an
+  // agent appearing on two hubs and down on one still counts once per
+  // occurrence here (matches HubRollup's own per-occurrence counting).
+  const agentsDownCount = $derived(attention?.domains.flatMap((d) => d.agents).filter((a) => a.liveness === 'down').length ?? 0);
+  // Deduped identity count (Lane 3's existing fold) — "N agents" in the
+  // masthead means N distinct signing identities, not N hub-occurrences.
+  const totalAgents = $derived(attention?.fleet.length ?? 0);
+  const totalHubs = $derived(attention?.domains.length ?? 0);
+  const openCount = $derived(attention?.domains.flatMap((d) => d.workInFlight).filter((w) => w.status === 'OPEN').length ?? 0);
+  const claimedCount = $derived(attention?.domains.flatMap((d) => d.workInFlight).filter((w) => w.status === 'CLAIMED').length ?? 0);
 
   const updatedAgo = $derived.by(() => {
     if (!lastUpdatedMs) return null;
@@ -100,37 +114,54 @@
   function ageLabel(item: AttentionItem): string {
     return item.ageSecs === null ? '' : formatAgeFromSecs(item.ageSecs);
   }
+
+  /** A work-in-flight chip's visual state: claimed reads as in-flight (cyan),
+   * stale/blocked reads as stuck (amber), otherwise plain open. */
+  function workClass(w: DomainWorkItem): string {
+    if (w.stale || w.status === 'BLOCKED') return 'stuck';
+    if (w.status === 'CLAIMED') return 'wip';
+    return 'plain';
+  }
+
+  function claimantLabel(w: DomainWorkItem): string {
+    if (w.claimants.length > 0) return w.claimants.join(', ');
+    return `unclaimed ${formatAgeFromSecs(w.ageSecs)}`;
+  }
 </script>
 
 <div class="ov-wrap" data-testid="overview-view">
-  <div class="ov-mast">
-    <div class="ov-mast-top">
-      <h2>confer · fleet overview</h2>
-      {#if attention}
-        <span class="ov-sub">{attention.metrics.perHub.length} hub{attention.metrics.perHub.length === 1 ? '' : 's'} · {attention.fleet.length} agent{attention.fleet.length === 1 ? '' : 's'}</span>
-      {/if}
-      <span class="ov-spacer"></span>
-      <span class="ov-updated" data-testid="ov-updated">
+  <div class="ov-band">
+    <div class="ov-band-left">
+      <div class="ov-brand">
+        <span class="ov-mark">c</span>
+        <h2>confer · fleet</h2>
+      </div>
+      <!-- Honest label: this is the DASHBOARD's own poll age, not a
+           per-hub git-sync fact (that signal doesn't exist yet — see the
+           file-top comment / ui/REDESIGN.md Backend gaps). -->
+      <span class="ov-refresh" data-testid="ov-updated">
         {#if loading && !attention}
           loading…
         {:else if updatedAgo}
-          updated {updatedAgo} ago
+          dashboard refreshed {updatedAgo} ago
         {/if}
       </span>
     </div>
-    <div class="ov-headline">
-      {#if attention}
-        {#if criticalCount > 0}
-          <span class="hl crit">‼ {criticalCount} needs you</span>
-        {/if}
-        {#if attentionOnlyCount > 0}
-          <span class="hl att">▲ {attentionOnlyCount} stuck</span>
-        {/if}
+    {#if attention}
+      <div class="ov-verdict" data-testid="ov-verdict">
         {#if allClear}
-          <span class="hl ok">✓ all clear</span>
+          <div class="ov-vhead ov-ok">✓ Steady</div>
+        {:else}
+          <div class="ov-vhead ov-warn">{criticalCount > 0 ? '‼' : '▲'} {overlay.length} thing{overlay.length === 1 ? '' : 's'} need{overlay.length === 1 ? 's' : ''} you</div>
         {/if}
-      {/if}
-    </div>
+        {#if agentsDownCount > 0}
+          <div class="ov-vsub"><b class="ov-vcrit">{agentsDownCount} agent{agentsDownCount === 1 ? '' : 's'} down</b></div>
+        {/if}
+        <div class="ov-vmeta mono">
+          {totalAgents} agent{totalAgents === 1 ? '' : 's'} · {totalHubs} hub{totalHubs === 1 ? '' : 's'} · {openCount} open · {claimedCount} in progress
+        </div>
+      </div>
+    {/if}
   </div>
 
   {#if loading && !attention}
@@ -138,56 +169,59 @@
   {:else if error && !attention}
     <EmptyState glyph="⚠" title="Overview unavailable" body={error} actionLabel="Retry" onAction={() => void load()} />
   {:else if attention}
-    <section class="ov-lane" data-testid="lane-needs-you">
-      <div class="ov-lane-head sev-critical">
-        <span class="ov-lane-title">‼ NEEDS YOU</span>
-        <span class="ov-lane-count">{attention.needsYou.length}</span>
-      </div>
-      {#if attention.needsYou.length === 0}
-        <div class="ov-clear" data-testid="needs-you-clear">✓ nothing needs you</div>
-      {:else}
-        <div class="ov-cards">
-          {#each attention.needsYou as item (item.id)}
-            {@render attentionCard(item)}
-          {/each}
-        </div>
-      {/if}
-    </section>
+    <div class="ov-map" data-testid="ov-map">
+      {#each attention.domains as domain (domain.hub)}
+        <section class="ov-domain" aria-label={`hub ${domain.label}`} data-testid="ov-domain">
+          <div class="ov-dhead">
+            <button type="button" class="ov-dname" onclick={() => onDrillHub?.(domain.hub)}>{domain.label}</button>
+            <span class="ov-dmeta">{domain.agents.length} agent{domain.agents.length === 1 ? '' : 's'}</span>
+          </div>
+          {#if domain.agents.length === 0}
+            <div class="ov-dclear">no agents seen yet</div>
+          {:else}
+            <div class="ov-agents">
+              {#each domain.agents as agent (agent.id)}
+                <AgentNode {agent} onOpen={(id) => onDrillFleet?.(domain.hub, id)} />
+              {/each}
+            </div>
+          {/if}
+          <div class="ov-flight">
+            <span class="ov-flab">work in flight</span>
+            {#if domain.workInFlight.length === 0}
+              <span class="ov-quiet">quiet — no open requests</span>
+            {:else}
+              {#each domain.workInFlight as w (w.id)}
+                <button type="button" class="ov-work ov-work-{workClass(w)}" onclick={() => onDrillRequest?.(domain.hub, w.id)}>
+                  <span class="ov-wid">{w.id.replace(/^req_/, '').slice(0, 6)}</span>
+                  <span class="ov-wsummary">{w.summary}</span>
+                  <span class="ov-wclaim">· {claimantLabel(w)}</span>
+                </button>
+              {/each}
+            {/if}
+          </div>
+        </section>
+      {/each}
+    </div>
 
-    <section class="ov-lane" data-testid="lane-coordination">
-      <div class="ov-lane-head sev-attention">
-        <span class="ov-lane-title">▲ COORDINATION</span>
-        <span class="ov-lane-count">{attention.coordination.length}</span>
+    <section class="ov-attn" data-testid="ov-attention">
+      <div class="ov-ahead">
+        <span class="ov-alab">needs you</span>
+        <span class="ov-an">{overlay.length}</span>
+        <span class="ov-ahint">↑ each item points back to where it lives on the map</span>
       </div>
-      {#if attention.coordination.length === 0}
-        <div class="ov-clear" data-testid="coordination-clear">✓ nothing stuck or unowned</div>
+      {#if overlay.length === 0}
+        <div class="ov-clear" data-testid="attention-clear">✓ nothing needs you</div>
       {:else}
-        <div class="ov-cards">
-          {#each attention.coordination as item (item.id)}
-            {@render attentionCard(item)}
-          {/each}
-        </div>
-      {/if}
-    </section>
-
-    <section class="ov-lane" data-testid="lane-fleet-health">
-      <div class="ov-lane-head">
-        <span class="ov-lane-title">◔ FLEET HEALTH</span>
-        <span class="ov-lane-count">{attention.fleet.length} agent{attention.fleet.length === 1 ? '' : 's'}</span>
-      </div>
-      {#if attention.fleet.length === 0}
-        <div class="ov-clear">no agents seen yet</div>
-      {:else}
-        <div class="ov-fleetgrid">
-          {#each attention.fleet as card (card.id)}
-            {@render fleetCardSnippet(card)}
+        <div class="ov-arows">
+          {#each overlay as item (item.id)}
+            {@render attentionRow(item)}
           {/each}
         </div>
       {/if}
     </section>
 
     <section class="ov-strip" data-testid="ov-context-strip">
-      <span class="ov-strip-item"><b>{attention.metrics.openRequests}</b> open request{attention.metrics.openRequests === 1 ? '' : 's'}</span>
+      <span class="ov-strip-item"><b>{openCount + claimedCount}</b> open request{openCount + claimedCount === 1 ? '' : 's'}</span>
       {#each attention.metrics.perHub as row (row.hub)}
         <button type="button" class="ov-strip-hub" onclick={() => onDrillHub?.(row.hub)}>
           <span class="ov-strip-hubname">{row.label}</span>
@@ -201,46 +235,24 @@
   {/if}
 </div>
 
-{#snippet attentionCard(item: AttentionItem)}
-  <div class="ov-card sev-{item.severity}">
-    <div class="ov-card-top">
-      <span class="ov-glyph">{SEVERITY_GLYPH[item.severity]}</span>
-      <span class="ov-card-summary">{item.summary}</span>
-      {#if item.ageSecs !== null}
-        <span class="ov-card-age">{ageLabel(item)}</span>
-      {/if}
+{#snippet attentionRow(item: AttentionItem)}
+  <div class="ov-arow ov-sev-{item.severity}" data-testid="ov-attention-row">
+    <span class="ov-asev">{SEVERITY_GLYPH[item.severity]}</span>
+    <div class="ov-abody">
+      <div class="ov-averb">{item.verb}</div>
+      <div class="ov-actx">{item.summary}</div>
     </div>
-    {#if item.detail}
-      <div class="ov-card-detail">{item.detail}</div>
+    {#if item.ageSecs !== null}
+      <span class="ov-aage">{ageLabel(item)}</span>
     {/if}
-    <div class="ov-card-foot">
-      <span class="ov-verb">→ {item.verb}</span>
+    <div class="ov-aact">
       {#if item.target}
-        <CopyIdButton id={item.target} class="ov-copy" />
+        <CopyIdButton id={item.target} class="ov-acopy" />
       {/if}
       {#if item.reqId}
-        <button type="button" class="ov-open" onclick={() => onDrillRequest?.(item.hub, item.reqId!)}>open thread ›</button>
+        <button type="button" class="ov-aopen" onclick={() => onDrillRequest?.(item.hub, item.reqId!)}>open thread ›</button>
       {/if}
     </div>
-  </div>
-{/snippet}
-
-{#snippet fleetCardSnippet(card: FleetCard)}
-  <div class="ov-agentcard sev-{card.severity}" class:nominal={card.severity === 'nominal'}>
-    <div class="ov-ac-top">
-      <span class="ov-ac-av" style="color:{card.color};background:color-mix(in srgb, {card.color} 18%, transparent)">{card.abbr}</span>
-      <div class="ov-ac-id">
-        <div class="ov-ac-nm">{card.display}</div>
-        <div class="ov-ac-host">{card.host ?? '—'} · {card.hubs.join(', ')}</div>
-      </div>
-      <CopyIdButton id={card.id} class="ov-ac-copy" />
-    </div>
-    <div class="ov-ac-line">{LIVENESS_LABEL[card.liveness]}{card.hbAgeSecs !== null ? ` · ${formatAgeFromSecs(card.hbAgeSecs)}` : ''}</div>
-    <div class="ov-ac-line">{TRUST_LABEL[card.trust]}</div>
-    <div class="ov-ac-line ov-ac-wip">{card.wip} WIP</div>
-    {#if card.fixVerb}
-      <button type="button" class="ov-ac-fix" onclick={() => onDrillFleet?.(card.hubs[0]!, card.id)}>→ {card.fixVerb}</button>
-    {/if}
   </div>
 {/snippet}
 
@@ -248,177 +260,293 @@
   .ov-wrap {
     overflow: auto;
     flex: 1;
-    padding: 16px 20px 28px;
-  }
-  .ov-mast {
-    margin-bottom: 14px;
-  }
-  .ov-mast-top {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-  }
-  .ov-mast-top h2 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 700;
-  }
-  .ov-sub {
-    font: 600 11px/1 var(--mono);
-    color: var(--faint);
-  }
-  .ov-spacer {
-    flex: 1;
-  }
-  .ov-updated {
-    font: 500 11px/1 var(--mono);
-    color: var(--faint);
-  }
-  .ov-headline {
-    display: flex;
-    gap: 10px;
-    margin-top: 8px;
-    flex-wrap: wrap;
-  }
-  .hl {
-    font: 700 12px/1 var(--sans);
-    padding: 5px 10px;
-    border-radius: 7px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .hl.crit {
-    color: var(--error);
-    background: color-mix(in srgb, var(--error) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
-  }
-  .hl.att {
-    color: var(--blocked);
-    background: color-mix(in srgb, var(--blocked) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--blocked) 35%, transparent);
-  }
-  .hl.ok {
-    color: var(--done);
-    background: color-mix(in srgb, var(--done) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--done) 30%, transparent);
+    padding: var(--phi2) var(--phi2) var(--phi4);
   }
 
-  .ov-lane {
-    margin-top: 18px;
+  /* ── honesty band — verdict + (honestly-labeled) poll age ── */
+  .ov-band {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--phi2);
+    padding-bottom: var(--phi1);
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: var(--phi2);
+    flex-wrap: wrap;
   }
-  .ov-lane-head {
+  .ov-brand {
     display: flex;
     align-items: center;
     gap: 9px;
-    margin-bottom: 8px;
-    padding-bottom: 7px;
-    border-bottom: 1px solid var(--border);
   }
-  .ov-lane-title {
-    font: 700 11px/1 var(--mono);
-    letter-spacing: 0.06em;
-    color: var(--muted);
+  .ov-mark {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(150deg, var(--accent), var(--claimed));
+    color: #0b0e17;
+    font-weight: 800;
+    font-family: var(--mono);
+    font-size: 14px;
   }
-  .ov-lane-head.sev-critical .ov-lane-title {
-    color: var(--error);
+  .ov-brand h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
   }
-  .ov-lane-head.sev-attention .ov-lane-title {
-    color: var(--blocked);
-  }
-  .ov-lane-count {
-    font: 600 10.5px/1 var(--mono);
+  .ov-refresh {
+    display: block;
+    margin-top: 6px;
+    font: 500 11px/1 var(--mono);
     color: var(--faint);
   }
-  /* The calm state must LOOK calm — an empty lane collapses to one quiet
-     line, never a big empty card taking up vertical rhythm (design/47 §2.1). */
+  .ov-verdict {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    text-align: right;
+  }
+  .ov-vhead {
+    font-size: 13.5px;
+    font-weight: 650;
+  }
+  .ov-vhead.ov-ok {
+    color: var(--done);
+  }
+  .ov-vhead.ov-warn {
+    color: var(--blocked);
+  }
+  .ov-vsub {
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .ov-vcrit {
+    color: var(--error);
+    font-weight: 650;
+  }
+  .ov-vmeta {
+    font-size: 10.5px;
+    color: var(--faint);
+  }
+
+  /* ── the fleet map ── */
+  .ov-map {
+    display: flex;
+    flex-direction: column;
+    gap: var(--phi2);
+  }
+  .ov-domain {
+    border-radius: var(--radius);
+    padding: var(--phi1) var(--phi1) 14px;
+    background: var(--panel);
+    border: 1.5px solid var(--border-2);
+  }
+  .ov-dhead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .ov-dname {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 650;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .ov-dname:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .ov-dname:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .ov-dmeta {
+    font-size: 11px;
+    color: var(--faint);
+  }
+  .ov-dclear {
+    font-size: 12px;
+    color: var(--faint);
+    font-style: italic;
+  }
+  .ov-agents {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--phi1);
+  }
+  .ov-flight {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    align-items: center;
+  }
+  .ov-flab {
+    font: 700 10px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-right: 3px;
+  }
+  .ov-work {
+    font: 500 11.5px/1 var(--mono);
+    padding: 5px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    max-width: 100%;
+  }
+  .ov-work:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .ov-wid {
+    color: var(--faint);
+  }
+  .ov-wsummary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ov-work-wip {
+    border-color: color-mix(in srgb, var(--claimed) 45%, transparent);
+    color: var(--claimed);
+  }
+  .ov-work-stuck {
+    border-color: color-mix(in srgb, var(--blocked) 50%, transparent);
+    color: var(--blocked);
+    background: color-mix(in srgb, var(--blocked) 9%, transparent);
+  }
+  .ov-work-stuck::before {
+    content: '▲';
+  }
+  .ov-quiet {
+    font-size: 11.5px;
+    color: var(--faint);
+    font-style: italic;
+  }
+
+  /* ── attention overlay — anchored to the map above ── */
+  .ov-attn {
+    margin-top: var(--phi2);
+    border-top: 1px dashed var(--border);
+    padding-top: var(--phi2);
+  }
+  .ov-ahead {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .ov-alab {
+    font: 700 11px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .ov-an {
+    font: 700 11px/1 var(--mono);
+    color: var(--error);
+  }
+  .ov-ahint {
+    font-size: 11px;
+    color: var(--faint);
+    margin-left: auto;
+  }
   .ov-clear {
     font-size: 12.5px;
     color: var(--faint);
     font-style: italic;
     padding: 4px 2px;
   }
-
-  .ov-cards {
+  .ov-arows {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
-  .ov-card {
+  .ov-arow {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
     background: var(--panel);
     border: 1px solid var(--border);
     border-left: 3px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
   }
-  .ov-card.sev-critical {
+  .ov-sev-critical {
     border-left-color: var(--error);
   }
-  .ov-card.sev-attention {
-    border-left-color: var(--blocked);
-  }
-  .ov-card.sev-info {
-    border-left-color: var(--deferred);
-  }
-  .ov-card-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .ov-glyph {
-    flex: 0 0 auto;
-    font-size: 13px;
-  }
-  .sev-critical .ov-glyph {
+  .ov-sev-critical .ov-asev {
     color: var(--error);
   }
-  .sev-attention .ov-glyph {
+  .ov-sev-attention {
+    border-left-color: var(--blocked);
+  }
+  .ov-sev-attention .ov-asev {
     color: var(--blocked);
   }
-  .sev-info .ov-glyph {
+  .ov-sev-info {
+    border-left-color: var(--deferred);
+  }
+  .ov-sev-info .ov-asev {
     color: var(--deferred);
   }
-  .ov-card-summary {
-    font-weight: 650;
-    font-size: 12.5px;
-    color: var(--text);
+  .ov-asev {
+    font-family: var(--mono);
+    font-weight: 700;
+    flex: 0 0 auto;
+    width: 16px;
+    text-align: center;
+  }
+  .ov-abody {
     min-width: 0;
+    flex: 1;
+  }
+  .ov-averb {
+    font-size: 12.5px;
+    font-weight: 650;
+    color: var(--text);
+  }
+  .ov-actx {
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .ov-card-age {
-    margin-left: auto;
+  .ov-aage {
     flex: 0 0 auto;
     font: 600 10.5px/1 var(--mono);
     color: var(--faint);
   }
-  .ov-card-detail {
-    font-size: 11.5px;
-    color: var(--muted);
-  }
-  .ov-card-foot {
+  .ov-aact {
     display: flex;
+    gap: 6px;
+    flex: 0 0 auto;
     align-items: center;
-    gap: 8px;
   }
-  .ov-verb {
-    font: 600 11.5px/1 var(--sans);
-    color: var(--accent);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ov-card-foot :global(.ov-copy) {
+  .ov-aact :global(.ov-acopy) {
     opacity: 1;
   }
-  .ov-open {
-    margin-left: auto;
-    flex: 0 0 auto;
+  .ov-aopen {
     border: 1px solid var(--border-2);
     background: var(--panel-2);
     color: var(--muted);
@@ -426,91 +554,16 @@
     padding: 5px 9px;
     border-radius: 6px;
   }
-  .ov-open:hover {
+  .ov-aopen:hover {
     color: var(--text);
     border-color: var(--accent);
   }
-
-  .ov-fleetgrid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px;
-  }
-  .ov-agentcard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 12px 13px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  /* Nominal cards are the COMMON case — dim them so the eye lands on what's
-     wrong (design/47 §2.4: "only Critical and Attention items get chrome"). */
-  .ov-agentcard.nominal {
-    opacity: 0.72;
-  }
-  .ov-agentcard.sev-critical {
-    border-color: color-mix(in srgb, var(--error) 45%, var(--border));
-  }
-  .ov-agentcard.sev-attention {
-    border-color: color-mix(in srgb, var(--blocked) 40%, var(--border));
-  }
-  .ov-ac-top {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-  }
-  .ov-ac-av {
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    display: grid;
-    place-items: center;
-    font: 700 12px/1 var(--mono);
-    flex: 0 0 auto;
-  }
-  .ov-ac-id {
-    min-width: 0;
-    flex: 1;
-  }
-  .ov-ac-nm {
-    font-weight: 650;
-    font-size: 12.5px;
-  }
-  .ov-ac-host {
-    font: 500 10px/1 var(--mono);
-    color: var(--faint);
-    margin-top: 2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ov-ac-line {
-    font: 500 10.5px/1 var(--mono);
-    color: var(--muted);
-  }
-  .sev-critical .ov-ac-line:first-of-type {
-    color: var(--error);
-  }
-  .ov-ac-wip {
-    color: var(--faint);
-  }
-  .ov-ac-fix {
-    margin-top: 2px;
-    border: 1px solid var(--border-2);
-    background: var(--panel-2);
-    color: var(--muted);
-    font: 600 10.5px/1 var(--sans);
-    padding: 5px 8px;
-    border-radius: 6px;
-    text-align: left;
-  }
-  .ov-ac-fix:hover {
-    color: var(--text);
-    border-color: var(--accent);
+  .ov-aopen:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
+  /* ── ambient per-hub strip ── */
   .ov-strip {
     margin-top: 22px;
     padding-top: 12px;
@@ -542,6 +595,10 @@
     color: var(--text);
     border-color: var(--border-2);
   }
+  .ov-strip-hub:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   .ov-strip-live {
     color: var(--done);
   }
@@ -550,8 +607,15 @@
   }
 
   @media (max-width: 767.98px) {
-    .ov-fleetgrid {
-      grid-template-columns: 1fr;
+    .ov-band {
+      flex-direction: column;
+    }
+    .ov-verdict {
+      align-items: flex-start;
+      text-align: left;
+    }
+    .ov-arow {
+      flex-wrap: wrap;
     }
   }
 </style>

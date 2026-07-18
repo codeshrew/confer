@@ -49,6 +49,29 @@
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 
+  /* PHI-scaled spacing (dashboard redesign, ui/REDESIGN.md) — the same
+     golden-ratio spacing convention used across the workstation's other
+     surfaces (Astrolabos), applied here to the fleet map's macro rhythm
+     (band/domain/section gaps). Not a replacement for ad-hoc px spacing
+     inside a component — just the shared scale for "how far apart do these
+     BIG things sit". */
+  --phi1: 1rem;
+  --phi2: 1.618rem;
+  --phi3: 2.618rem;
+  --phi4: 4.236rem;
+
+  /* Trust-domain framing (ui/redesign-mockups/01-overview.html) — derived
+     from the existing accent/deferred tokens rather than new hex values, so
+     both themes stay in sync automatically. NOT used for a home/foreign
+     visual split yet: the web API doesn't project a hub's trust tier
+     (`confer trust own|shared|foreign` is local-only, see src/tiers.rs), so
+     Overview renders one neutral domain frame today and these wait for
+     piece 2+ / the backend gap noted in ui/REDESIGN.md. */
+  --home-frame: var(--accent);
+  --home-glow: color-mix(in srgb, var(--accent) 13%, transparent);
+  --foreign-frame: var(--deferred);
+  --foreign-glow: color-mix(in srgb, var(--deferred) 10%, transparent);
+
   color-scheme: dark;
 }
 

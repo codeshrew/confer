@@ -50,7 +50,7 @@ Named by the operator (2026-07-18), in priority order:
 
 | # | Piece | What it establishes / fixes | Status |
 |---|-------|------------------------------|--------|
-| 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ▶ in progress |
+| 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ✅ done |
 | 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a model that scales to N hubs and keeps trust-domain orientation. Design the switcher (grouped by tier? command-palette? persistent rail?). | ○ queued |
 | 3 | **Thread / meta-thread nav (P2)** | Redesign the affordance so you never lose your place — side-peek / pop-over / inline expand + breadcrumb + back. The meta-thread (reference-graph) becomes legible. | ○ queued |
 | 4 | **Chat** | Real read-state: client-side "since you last looked" watermark (localStorage) + real seen-by projected from agents' `ack` read-frontiers (kill the synthesized filler). Inline refs anchored to prose. | ○ queued |
@@ -60,6 +60,33 @@ Named by the operator (2026-07-18), in priority order:
 
 Later phases (backend, out of this branch's frontend scope but noted): real `/api/attention`,
 per-hub sync-health projection, seen-by projection, shadow-repo surfacing.
+
+---
+
+## Backend gaps (found while building piece 1)
+
+The mockup (`redesign-mockups/01-overview.html`) shows two things the web API doesn't project
+today. Piece 1 degrades both honestly rather than fabricating them — see the "what this view does
+NOT render, and why" comment at the top of `Overview.svelte`:
+
+- **Per-hub trust tier (home vs. foreign).** `confer trust own|shared|foreign` exists
+  (`src/tiers.rs`) but is stored LOCAL-only (`~/.confer/tiers.json`, by design — a peer can't
+  declare itself trusted) and never serialized by `/api/hubs` (`src/api.rs`'s `hubs()`/`hub_json`).
+  Overview currently renders every domain card with one neutral frame instead of the mockup's
+  solid-teal-home / dashed-magenta-foreign split. `app.css` already carries the token pair
+  (`--home-frame`/`--foreign-frame`, derived from `--accent`/`--deferred`) for whenever this lands —
+  the fix is projecting the *server's own* configured tier for the hub it's serving (not the
+  client's, which doesn't have `~/.confer` and shouldn't infer trust from anything scriptable by a
+  peer) onto `Hub`/`/api/hubs`.
+- **Per-hub sync-freshness.** The mockup's "confer-lab synced 12s ago" line needs a timestamp for
+  when the hub's git clone last actually fetched/updated — no such field exists anywhere in
+  `types.ts`'s `Hub`/`Overview`. What Overview shows instead is the DASHBOARD's own poll age
+  ("dashboard refreshed Ns ago") — a different, less useful fact (poll age, not sync age), labeled
+  honestly so it can't read as a false "all clear". Fixing this for real needs the server to expose
+  its last successful `git fetch`/pull time per hub.
+
+Piece 2 (hub navigation/scale) will likely want the trust-tier signal too — worth landing the
+`/api/hubs` field before or alongside that piece rather than re-discovering this gap.
 
 ---
 

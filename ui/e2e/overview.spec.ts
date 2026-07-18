@@ -3,6 +3,11 @@ import { test, expect } from '@playwright/test';
 // design/47 — the cross-hub Overview/Health view. Mock fixtures
 // (src/lib/mock.ts) back every hub in dev mode, so a fresh load exercises
 // the real fan-out (getHubs + getOverview per hub) with no backend.
+//
+// Redesigned 2026-07-18 (ui/REDESIGN.md piece 1) around the fleet map: hub
+// domain cards with agent nodes (position=identity, appearance=state) plus
+// a merged "needs you" overlay anchored to the map, replacing the old
+// three-flat-lanes layout.
 
 test('Overview is the default landing — a fresh load shows it, not a hub Chat', async ({ page }) => {
   await page.goto('/');
@@ -10,37 +15,35 @@ test('Overview is the default landing — a fresh load shows it, not a hub Chat'
   await expect(page.getByTestId('overview-view')).toBeVisible();
 });
 
-test('shows the three lanes with a real key-mismatch and a stale request, each naming who to talk to', async ({ page }) => {
+test('shows the fleet map with a real key-mismatch agent and a stale request, each naming who to talk to', async ({ page }) => {
   await page.goto('/');
 
-  const needsYou = page.getByTestId('lane-needs-you');
-  await expect(needsYou.getByText(/KEY MISMATCH/)).toBeVisible();
-  await expect(needsYou.getByText(/verify Sentinel locally/)).toBeVisible();
+  const attn = page.getByTestId('ov-attention');
+  await expect(attn.getByText(/KEY MISMATCH/)).toBeVisible();
+  await expect(attn.getByText(/verify Sentinel locally/)).toBeVisible();
+  await expect(attn.getByText(/STALE/).first()).toBeVisible();
+  await expect(attn.getByText(/nudge herald/)).toBeVisible();
 
-  const coordination = page.getByTestId('lane-coordination');
-  await expect(coordination.getByText(/STALE/).first()).toBeVisible();
-  await expect(coordination.getByText(/nudge herald/)).toBeVisible();
-
-  const fleetHealth = page.getByTestId('lane-fleet-health');
-  await expect(fleetHealth.getByText('Reader', { exact: true })).toBeVisible();
+  // The domain map shows the same agents the overlay points back at.
+  const map = page.getByTestId('ov-map');
+  await expect(map.getByTestId('agent-node').filter({ hasText: 'Reader' })).toBeVisible();
 
   // The context strip's per-hub rollup.
   await expect(page.getByTestId('ov-context-strip')).toContainText('agent-coord');
 });
 
-test('opening a coordination card\'s thread drills into that hub\'s Board', async ({ page }) => {
+test('opening an overlay row\'s thread drills into that hub\'s Board', async ({ page }) => {
   await page.goto('/');
-  await page.getByTestId('lane-coordination').getByRole('button', { name: /open thread/i }).first().click();
+  await page.getByTestId('ov-attention').getByRole('button', { name: /open thread/i }).first().click();
 
   await expect(page.getByRole('tab', { name: 'Board', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('the all-clear scenario collapses every lane to a single calm line', async ({ page }) => {
+test('the all-clear scenario collapses the overlay to a single calm line', async ({ page }) => {
   await page.goto('/?clear');
 
-  await expect(page.getByTestId('needs-you-clear')).toHaveText('✓ nothing needs you');
-  await expect(page.getByTestId('coordination-clear')).toHaveText('✓ nothing stuck or unowned');
-  await expect(page.getByText('✓ all clear')).toBeVisible();
+  await expect(page.getByTestId('attention-clear')).toHaveText('✓ nothing needs you');
+  await expect(page.getByText('✓ Steady')).toBeVisible();
 });
 
 test('renders correctly in both themes', async ({ page }) => {

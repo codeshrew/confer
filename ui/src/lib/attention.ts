@@ -19,7 +19,16 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
   nominal: 3,
 };
 
-export type AttentionKind = 'mismatch' | 'unsigned' | 'first-sight' | 'stale-claimed' | 'stale-open' | 'unowned' | 'blocked';
+export type AttentionKind =
+  | 'mismatch'
+  | 'unsigned'
+  | 'first-sight'
+  | 'down'
+  | 'stale-heartbeat'
+  | 'stale-claimed'
+  | 'stale-open'
+  | 'unowned'
+  | 'blocked';
 
 /** One row in Lane 1 (Needs-you) or Lane 2 (Coordination). Every item names
  * an explicit target + verb — design/47 §2.3, the load-bearing "who do I
@@ -81,10 +90,52 @@ export interface AmbientMetrics {
   perHub: HubRollup[];
 }
 
+/** One agent's occurrence on ONE hub's domain card — the fleet-map redesign
+ * (2026-07-18) groups agents by WHERE they live (law #1: position=identity),
+ * so this is deliberately NOT deduped across hubs the way `FleetCard` is: an
+ * agent on two hubs shows as two nodes, one per domain, each with that
+ * hub-occurrence's own liveness/trust/WIP — a real alarm on one hub must
+ * stay visible even if the same identity looks fine on another. */
+export interface DomainAgent {
+  id: string;
+  display: string;
+  color: string;
+  abbr: string;
+  host: string | null;
+  liveness: Liveness;
+  hbAgeSecs: number | null;
+  trust: Trust;
+  /** CLAIMED-request count on THIS hub occurrence only. */
+  wip: number;
+}
+
+/** One board row folded for the domain map's "work in flight" rail — a
+ * trimmed `RequestRow`, DONE/ERROR/SUPERSEDED/deferred already excluded
+ * (same rule `coordinationForRow` uses). */
+export interface DomainWorkItem {
+  id: string;
+  summary: string;
+  status: RequestRow['status'];
+  stale: boolean;
+  claimants: string[];
+  ageSecs: number;
+}
+
+/** One hub, as a place on the map — real per-hub agents + work, no
+ * synthesized trust-tier or sync-freshness (the backend doesn't project
+ * either yet over the web API; see `ui/REDESIGN.md`'s Backend gaps). */
+export interface HubDomain {
+  hub: string;
+  label: string;
+  agents: DomainAgent[];
+  workInFlight: DomainWorkItem[];
+}
+
 export interface Attention {
   needsYou: AttentionItem[];
   coordination: AttentionItem[];
   fleet: FleetCard[];
+  domains: HubDomain[];
   metrics: AmbientMetrics;
 }
 
@@ -170,6 +221,46 @@ function needsYouForAgent(agent: Agent, hub: Hub): AttentionItem[] {
     default:
       return [];
   }
+}
+
+/** Lane 1 (cont.) — the liveness alarm a single agent's card can raise. Kept
+ * separate from `needsYouForAgent` (trust) since the two signals are
+ * independent, but folded into the same `needsYou` list — a down/stale agent
+ * belongs in "what do I need to do" exactly as much as a trust violation
+ * does (the redesign's overlay, design 2026-07-18, anchors back to the same
+ * node the domain map already renders hollow/dim for the liveness state). */
+function needsYouForLiveness(agent: Agent, hub: Hub): AttentionItem[] {
+  const liveness = deriveLiveness(agent);
+  const base = { hub: hub.id, topic: null, reqId: null, ageSecs: agent.hbAgeSecs ?? null } as const;
+  if (liveness === 'down') {
+    return [
+      {
+        ...base,
+        id: itemId('down', hub.id, agent.id),
+        kind: 'down',
+        severity: 'critical',
+        summary: `DOWN — ${agent.display} @ ${hub.label}`,
+        detail: agent.lastHost ? `last seen on ${agent.lastHost}` : 'no host on record',
+        target: agent.id,
+        verb: `${agent.display} is down — check the host / restart the session`,
+      },
+    ];
+  }
+  if (liveness === 'stale') {
+    return [
+      {
+        ...base,
+        id: itemId('stale-heartbeat', hub.id, agent.id),
+        kind: 'stale-heartbeat',
+        severity: 'attention',
+        summary: `STALE HEARTBEAT — ${agent.display} @ ${hub.label}`,
+        detail: 'no heartbeat recently',
+        target: agent.id,
+        verb: `nudge ${agent.display} — heartbeat stale`,
+      },
+    ];
+  }
+  return [];
 }
 
 /** Lane 2 — the request-lifecycle attention set for one board row (design/47
@@ -358,7 +449,11 @@ function buildFleetCards(hubOverviews: { hub: Hub; overview: Overview }[]): Flee
   return cards;
 }
 
-function bySeverityThenAge(a: AttentionItem, b: AttentionItem): number {
+/** Shared ranking for anything shaped like an `AttentionItem` — exported so
+ * a caller merging `needsYou`+`coordination` into one anchored list (the
+ * fleet-map overlay) sorts it identically to how each lane already sorts
+ * itself. */
+export function bySeverityThenAge(a: AttentionItem, b: AttentionItem): number {
   const w = SEVERITY_WEIGHT[a.severity] - SEVERITY_WEIGHT[b.severity];
   if (w !== 0) return w;
   return (b.ageSecs ?? 0) - (a.ageSecs ?? 0);
@@ -376,7 +471,10 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
   const coordination: AttentionItem[] = [];
 
   for (const { hub, overview } of hubOverviews) {
-    for (const agent of overview.fleet) needsYou.push(...needsYouForAgent(agent, hub));
+    for (const agent of overview.fleet) {
+      needsYou.push(...needsYouForAgent(agent, hub));
+      needsYou.push(...needsYouForLiveness(agent, hub));
+    }
     for (const row of overview.board.requests) coordination.push(...coordinationForRow(row, hub));
   }
 
@@ -384,6 +482,25 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
   coordination.sort(bySeverityThenAge);
 
   const fleet = buildFleetCards(hubOverviews);
+
+  const domains: HubDomain[] = hubOverviews.map(({ hub, overview }) => ({
+    hub: hub.id,
+    label: hub.label,
+    agents: overview.fleet.map((a) => ({
+      id: a.id,
+      display: a.display,
+      color: a.color,
+      abbr: a.abbr,
+      host: a.lastHost ?? a.expectedHost ?? null,
+      liveness: deriveLiveness(a),
+      hbAgeSecs: a.hbAgeSecs ?? null,
+      trust: deriveTrust(a),
+      wip: a.wip.filter((w) => w.status === 'CLAIMED').length,
+    })),
+    workInFlight: overview.board.requests
+      .filter((r) => r.status !== 'DONE' && r.status !== 'ERROR' && r.status !== 'SUPERSEDED' && !r.deferred)
+      .map((r) => ({ id: r.id, summary: r.summary, status: r.status, stale: r.stale, claimants: r.claimants, ageSecs: r.ageSecs })),
+  }));
 
   const perHub: HubRollup[] = hubOverviews.map(({ hub, overview }) => ({
     hub: hub.id,
@@ -397,5 +514,5 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
     0
   );
 
-  return { needsYou, coordination, fleet, metrics: { openRequests, perHub } };
+  return { needsYou, coordination, fleet, domains, metrics: { openRequests, perHub } };
 }
