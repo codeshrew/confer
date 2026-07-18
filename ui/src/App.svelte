@@ -1,35 +1,57 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import TopBar from './lib/components/TopBar.svelte';
+  import type { ConnStatus } from './lib/components/TopBar.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
   import FilterBar, { type StatusFilter } from './lib/components/FilterBar.svelte';
   import ChatStream from './lib/components/ChatStream.svelte';
   import Board from './lib/components/Board.svelte';
+  import Fleet from './lib/components/Fleet.svelte';
+  import CodeLens from './lib/components/CodeLens.svelte';
   import MetaThread from './lib/components/MetaThread.svelte';
+  import RequestDetail from './lib/components/RequestDetail.svelte';
+  import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import { api } from './lib/api';
   import { appState } from './lib/stores.svelte';
-  import type { Hub, Message, Overview, ThreadNode } from './lib/types';
+  import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
 
   let hubs = $state<Hub[]>([]);
   let overview = $state<Overview | null>(null);
   let messages = $state<Message[]>([]);
   let thread = $state<ThreadNode[]>([]);
-  let live = $state(true);
+  let connStatus = $state<ConnStatus>('loading');
 
   let statusFilter = $state<StatusFilter>('all');
   let notesOn = $state(true);
   let reqsOn = $state(true);
   let selectedRequestId = $state<string | null>(null);
 
+  // The right rail is a single context panel that switches between the
+  // reference graph (default), a request's lifecycle detail (ticket/board
+  // row clicked), and the reverse index (a --ref's "N conversations
+  // reference these lines" hook, from a chat ref, request detail, or the
+  // Code lens's density gutter).
+  type ContextMode = 'meta' | 'request' | 'refs';
+  let contextMode = $state<ContextMode>('meta');
+  let refHits = $state<RefHit[]>([]);
+  let refContext = $state<{ repo: string; path: string; range: [number, number] | null } | null>(null);
+
   async function loadHub(hubId: string) {
-    const [ov, msgs, th] = await Promise.all([
-      api.getOverview(hubId),
-      api.getMessages(hubId),
-      api.getThread(hubId, ''),
-    ]);
-    overview = ov;
-    messages = msgs;
-    thread = th;
+    connStatus = 'loading';
+    try {
+      const [ov, msgs, th] = await Promise.all([
+        api.getOverview(hubId),
+        api.getMessages(hubId),
+        api.getThread(hubId, ''),
+      ]);
+      overview = ov;
+      messages = msgs;
+      thread = th;
+      connStatus = 'live';
+    } catch (err) {
+      console.error('confer serve: failed to load hub', hubId, err);
+      connStatus = 'reconnecting';
+    }
   }
 
   onMount(() => {
@@ -41,7 +63,7 @@
     void loadHub(appState.hub);
 
     const unsubscribe = api.subscribeEvents(() => {
-      live = true;
+      connStatus = 'live';
     });
     return unsubscribe;
   });
@@ -61,6 +83,7 @@
 
   function selectTicket(id: string) {
     selectedRequestId = id;
+    contextMode = 'request';
     // A ticket's originating message shares the `msg_`/`req_` id suffix
     // convention used across the mock fixtures (see ChatStream.findRequest).
     const asMsgId = id.replace(/^req_/, 'msg_');
@@ -70,7 +93,22 @@
 
   function selectBoardRow(id: string) {
     selectedRequestId = id;
+    contextMode = 'request';
   }
+
+  function openRefs(ref: CodeRef, hits: RefHit[]) {
+    refContext = { repo: ref.repo, path: ref.path, range: ref.range };
+    refHits = hits;
+    contextMode = 'refs';
+  }
+
+  function openRefsFromCode(ctx: { repo: string; path: string; range: [number, number] | null }, hits: RefHit[]) {
+    refContext = ctx;
+    refHits = hits;
+    contextMode = 'refs';
+  }
+
+  const selectedRequest = $derived(overview?.board.requests.find((r) => r.id === selectedRequestId) ?? null);
 </script>
 
 <div class="app">
@@ -78,7 +116,7 @@
     {hubs}
     currentHub={appState.hub}
     currentView={appState.view}
-    {live}
+    {connStatus}
     theme={appState.theme}
     onHubChange={(hubId) => (appState.hub = hubId)}
     onViewChange={(view) => (appState.view = view)}
@@ -117,8 +155,10 @@
           {/if}
         {:else if appState.view === 'board'}
           <span class="c strong">Board</span>
+        {:else if appState.view === 'fleet'}
+          <span class="c strong">Fleet</span>
         {:else}
-          <span class="c strong">{appState.view}</span>
+          <span class="c strong">Code</span>
         {/if}
       </div>
 
@@ -128,11 +168,13 @@
           requests={overview?.board.requests ?? []}
           agents={overview?.fleet ?? []}
           topic={appState.topic}
+          hub={appState.hub}
           {notesOn}
           {reqsOn}
           selectedMessageId={appState.selectedMessage?.id ?? null}
           onSelectMessage={selectMessage}
           onSelectTicket={selectTicket}
+          onOpenRefs={openRefs}
         />
       {:else if appState.view === 'board'}
         <Board
@@ -143,19 +185,33 @@
           onSelectRequest={selectBoardRow}
         />
       {:else if appState.view === 'fleet'}
-        <!-- Fleet view: a later agent's slot (agent-identity cards). -->
+        <Fleet agents={overview?.fleet ?? []} hubName={appState.hub} />
       {:else if appState.view === 'code'}
-        <!-- Code view: a later agent's slot (conversation-density file browser). -->
+        <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} />
       {/if}
     </div>
 
     <div class="rail-r">
       <div class="ctx-head">
-        <div class="k">Reference graph</div>
-        <h2>Meta-thread</h2>
+        {#if contextMode === 'request'}
+          <div class="k">Request detail</div>
+          <h2>{selectedRequest?.summary ?? selectedRequestId ?? 'Request'}</h2>
+        {:else if contextMode === 'refs'}
+          <div class="k">Reverse index</div>
+          <h2>Conversations about this code</h2>
+        {:else}
+          <div class="k">Reference graph</div>
+          <h2>Meta-thread</h2>
+        {/if}
       </div>
       <div class="ctx-body">
-        <MetaThread {thread} agents={overview?.fleet ?? []} {messages} />
+        {#if contextMode === 'request' && selectedRequest}
+          <RequestDetail request={selectedRequest} {messages} agents={overview?.fleet ?? []} hub={appState.hub} onOpenRefs={openRefs} />
+        {:else if contextMode === 'refs'}
+          <ReverseIndexPanel hits={refHits} repo={refContext?.repo ?? null} path={refContext?.path ?? null} range={refContext?.range ?? null} />
+        {:else}
+          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} />
+        {/if}
       </div>
       <div class="foothint">↩ discovered via reply-hashes — no extra state, pure projection</div>
     </div>

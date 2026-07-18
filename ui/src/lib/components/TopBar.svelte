@@ -2,11 +2,13 @@
   import type { Hub } from '../types';
   import type { View } from '../stores.svelte';
 
+  export type ConnStatus = 'live' | 'reconnecting' | 'loading';
+
   interface Props {
     hubs: Hub[];
     currentHub: string;
     currentView: View;
-    live?: boolean;
+    connStatus?: ConnStatus;
     theme?: 'dark' | 'light';
     onHubChange?: (hubId: string) => void;
     onViewChange?: (view: View) => void;
@@ -17,12 +19,18 @@
     hubs,
     currentHub,
     currentView,
-    live = true,
+    connStatus = 'live',
     theme = 'dark',
     onHubChange,
     onViewChange,
     onThemeToggle,
   }: Props = $props();
+
+  const CONN_LABEL: Record<ConnStatus, string> = {
+    live: 'live · SSE',
+    reconnecting: 'reconnecting…',
+    loading: 'loading…',
+  };
 
   const views: View[] = ['chat', 'board', 'fleet', 'code'];
   const viewLabel: Record<View, string> = {
@@ -58,9 +66,14 @@
 
   <div class="spacer"></div>
 
-  <div class="live" class:reconnect={!live} data-testid="live-indicator">
+  <div
+    class="live"
+    class:reconnect={connStatus === 'reconnecting'}
+    class:loading={connStatus === 'loading'}
+    data-testid="live-indicator"
+  >
     <span class="pip"></span>
-    <span>{live ? 'live · SSE' : 'reconnecting…'}</span>
+    <span>{CONN_LABEL[connStatus]}</span>
   </div>
 
   <div class="seg" role="tablist" aria-label="View">
@@ -217,6 +230,12 @@
 
   .live.reconnect {
     color: var(--blocked);
+  }
+
+  .live.loading .pip {
+    background: var(--claimed);
+    animation: none;
+    box-shadow: none;
   }
 
   .seg {

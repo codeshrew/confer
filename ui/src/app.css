@@ -149,3 +149,17 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--faint);
 }
+
+/* ── Shiki dual light/dark theming ──────────────────────────────────────
+   `highlight.ts` calls Shiki's `codeToTokens` with both themes and
+   `defaultColor: false`, so every token carries BOTH `--shiki-light` and
+   `--shiki-dark` as inline CSS custom properties. Which one actually paints
+   the glyph is decided here, keyed off the same `data-theme` attribute the
+   app's own theme toggle already flips — so code re-themes instantly with
+   no re-highlight. Dark is the default to match the rest of the app. */
+.shiki-tok {
+  color: var(--shiki-dark);
+}
+:root[data-theme='light'] .shiki-tok {
+  color: var(--shiki-light);
+}

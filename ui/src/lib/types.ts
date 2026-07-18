@@ -91,6 +91,10 @@ export interface RefHit {
   summary: string;
   threadRoot: string;
   requestStatus: RequestStatus | null;
+  /** Which hub this hit was found in (getRefs can span hubs via allHubs). */
+  hub: string;
+  /** Whether that hub is a private (non-anonymous-read) hub — surfaced as a badge in the reverse index. */
+  hubPrivate: boolean;
 }
 
 export interface ThreadNode {

@@ -1,29 +1,34 @@
 <script lang="ts">
-  import type { Agent, Message as MessageT, RequestRow } from '../types';
+  import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import { formatClock } from '../format';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
+  import CodeRefCard from './CodeRefCard.svelte';
 
   interface Props {
     message: MessageT;
     fromAgent?: Agent;
     request?: RequestRow | null;
+    hub?: string;
     selected?: boolean;
     unseen?: boolean;
     seenEntries: SeenEntry[];
     onSelect?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
+    onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
   }
 
   let {
     message,
     fromAgent,
     request = null,
+    hub = '',
     selected = false,
     unseen = false,
     seenEntries,
     onSelect,
     onSelectTicket,
+    onOpenRefs,
   }: Props = $props();
 
   const SYSLINE_TYPES = new Set(['claim', 'done', 'error', 'defer', 'supersede']);
@@ -97,15 +102,7 @@
         </div>
         {#if message.refs.length}
           {#each message.refs as ref (ref.path + ref.sha)}
-            <div class="refcard">
-              <div class="ref-head">
-                <span class="repo">◆ {ref.repo}</span>
-                <span class="path">{ref.path}</span>
-                <span class="sha">@{ref.sha}</span>
-                {#if ref.range}<span class="lines">L{ref.range[0]}–{ref.range[1]}</span>{/if}
-              </div>
-              <div class="ref-foot"><span>pinned to <b>{ref.sha}</b> · immutable</span></div>
-            </div>
+            <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
           {/each}
         {/if}
       {/if}
@@ -222,61 +219,5 @@
   }
   .text :global(code.mono) {
     font-family: var(--mono);
-  }
-
-  .refcard {
-    margin-top: 10px;
-    border: 1px solid var(--border-2);
-    border-radius: 10px;
-    overflow: hidden;
-    background: var(--panel-2);
-  }
-  .ref-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 9px 12px;
-    background: var(--panel-3);
-    border-bottom: 1px solid var(--border);
-  }
-  .ref-head .repo {
-    font: 700 11px/1 var(--mono);
-    color: var(--accent);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .ref-head .path {
-    font: 600 11.5px/1 var(--mono);
-    color: var(--text);
-  }
-  .ref-head .sha {
-    font: 600 10.5px/1 var(--mono);
-    color: var(--muted);
-    background: var(--panel);
-    border: 1px solid var(--border-2);
-    border-radius: 5px;
-    padding: 3px 6px;
-  }
-  .ref-head .lines {
-    margin-left: auto;
-    font: 700 10.5px/1 var(--mono);
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
-    border-radius: 5px;
-    padding: 3px 7px;
-  }
-  .ref-foot {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    font: 500 10.5px/1 var(--mono);
-    color: var(--faint);
-  }
-  .ref-foot b {
-    color: var(--muted);
   }
 </style>

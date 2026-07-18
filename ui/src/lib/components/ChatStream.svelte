@@ -9,7 +9,7 @@
   // deterministically (see buildSeenEntries/NEW_CUTOFF) rather than sourced
   // from real state. If confer serve's backend grows a real seen-by
   // projection, this is the seam to wire it in.
-  import type { Agent, Message as MessageT, RequestRow } from '../types';
+  import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import MessageComponent from './Message.svelte';
   import type { SeenEntry } from './SeenIndicator.svelte';
   import { formatClock } from '../format';
@@ -19,11 +19,13 @@
     requests: RequestRow[];
     agents: Agent[];
     topic: string | null;
+    hub: string;
     notesOn: boolean;
     reqsOn: boolean;
     selectedMessageId?: string | null;
     onSelectMessage?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
+    onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
   }
 
   let {
@@ -31,11 +33,13 @@
     requests,
     agents,
     topic,
+    hub,
     notesOn,
     reqsOn,
     selectedMessageId = null,
     onSelectMessage,
     onSelectTicket,
+    onOpenRefs,
   }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
@@ -110,6 +114,7 @@
       {/if}
       <MessageComponent
         {message}
+        {hub}
         fromAgent={agentsById.get(message.from)}
         request={message.type === 'request' ? findRequest(message) : null}
         selected={selectedMessageId === message.id}
@@ -117,6 +122,7 @@
         seenEntries={buildSeenEntries(message)}
         onSelect={onSelectMessage}
         onSelectTicket={onSelectTicket}
+        {onOpenRefs}
       />
     {/each}
   {/if}
