@@ -398,24 +398,33 @@ pub(crate) enum Cmd {
     },
     /// Read-only web view of the fleet (same data as `dashboard`) — a pure-Rust
     /// server rendering the board/agents/health/activity as HTML, auto-refreshing.
-    /// Binds to LOCALHOST by default (the board is unauthenticated); to open it on
-    /// your phone, deliberately expose it with `--bind 0.0.0.0:<port>`. Current hub by
-    /// default; `--all-hubs` for the whole fleet, or top-level `--hub <name>` to focus one.
-    /// Read-only: never posts, never locks.
+    /// Binds to LOCALHOST (127.0.0.1, this machine only) by default — the board is
+    /// unauthenticated, so nothing else on your network can reach it unless you ask.
+    /// Pass `--lan` to deliberately expose it on your network (e.g. for phone access).
+    /// Current hub by default; `--all-hubs` for the whole fleet, or top-level
+    /// `--hub <name>` to focus one. Read-only: never posts, never locks.
     #[cfg(feature = "serve")]
     Serve {
         /// Serve EVERY hub on this machine (the full fleet view). Without it, serves just the current
         /// hub — narrow to a specific one with the top-level selector: `confer --hub jarvis serve`.
         #[arg(long = "all-hubs")]
         all_hubs: bool,
-        /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`).
-        /// Also settable via the `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with
-        /// RStudio Server and some studio apps).
+        /// Expose the server to your WHOLE NETWORK (binds 0.0.0.0), for phone/LAN access.
+        /// UNAUTHENTICATED: anyone who can reach this machine on the network can then read
+        /// all hub content and code. Ignored if `--bind` is also given (explicit `--bind`
+        /// always wins). Without this flag, serve binds loopback (127.0.0.1) only.
+        #[arg(long)]
+        lan: bool,
+        /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`,
+        /// or `--bind 0.0.0.0:PORT` if combined with `--lan`). Also settable via the
+        /// `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with RStudio Server and
+        /// some studio apps).
         #[arg(long)]
         port: Option<u16>,
-        /// Full bind address — only needed for NON-localhost exposure; overrides `--port`. LOCALHOST
-        /// is the default; pass e.g. `0.0.0.0:8422` on purpose to expose it on your LAN (anyone who
-        /// can reach that address can read your board — it's served WITHOUT auth).
+        /// Full bind address override — for power users. ALWAYS wins over `--lan`/`--port` when
+        /// given. Loopback (127.0.0.1 / ::1 / localhost) is treated as private; anything else
+        /// (e.g. `0.0.0.0:8422`) is UNAUTHENTICATED network exposure — confer will warn loudly
+        /// at startup, but won't refuse it.
         #[arg(long)]
         bind: Option<String>,
     },

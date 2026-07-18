@@ -529,6 +529,7 @@ mod tests {
             }],
             health: projection::Health { role: "alice".into(), reachable: Some(true), pending: None, behind: None, watch: None, disk_gb: Some(120.0) },
             error: None,
+            messages: Vec::new(),
         }
     }
 

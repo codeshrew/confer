@@ -250,6 +250,17 @@ pub struct RefIndex {
     pub by_file: BTreeMap<(String, String), Vec<RefHit>>,
 }
 
+/// One distinct referenced file, as `RefIndex::files()` summarizes it — the shape
+/// `/api/codefiles` hydrates the web Code view's file tree from.
+#[derive(Debug, Clone)]
+pub struct FileSummary {
+    pub repo: String,
+    pub path: String,
+    pub ref_count: usize,
+    /// Most recent referencing message's ts (RFC3339).
+    pub last_ts: String,
+}
+
 impl RefIndex {
     pub fn fold(msgs: &[Message]) -> RefIndex {
         let mut idx = RefIndex::default();
@@ -279,6 +290,19 @@ impl RefIndex {
             }
         }
         idx
+    }
+
+    /// One distinct `(repo, path)` this index has hits for — the "list all referenced
+    /// files" projection (`/api/codefiles`'s source), as opposed to `query`'s "who
+    /// references THIS file" lookup.
+    pub fn files(&self) -> Vec<FileSummary> {
+        self.by_file
+            .iter()
+            .map(|((repo, path), hits)| {
+                let last_ts = hits.iter().map(|h| h.ts.as_str()).max().unwrap_or("").to_string();
+                FileSummary { repo: repo.clone(), path: path.clone(), ref_count: hits.len(), last_ts }
+            })
+            .collect()
     }
 
     /// Hits matching `repo` (+ optional `path`), overlapping `range` when given. A hit
@@ -420,6 +444,11 @@ pub struct Snapshot {
     pub tail: Vec<TailItem>,
     pub health: Health,
     pub error: Option<String>,
+    /// The raw folded messages (chronological order not guaranteed here — callers that
+    /// need it sort by `front.id`). Retained so the API layer (`serve`'s `/api/*`) can
+    /// serve topics/messages/threads straight from this cached snapshot instead of a
+    /// fresh `store::all_messages` + re-fold per request.
+    pub messages: Vec<Message>,
 }
 
 impl Snapshot {
@@ -463,7 +492,7 @@ impl Snapshot {
             .collect();
 
         let health = probe_health(&dir);
-        Snapshot { dir, label, roster, board, agents, tail, health, error: None }
+        Snapshot { dir, label, roster, board, agents, tail, health, error: None, messages: msgs }
     }
 
     pub fn errored(dir: PathBuf, label: String, msg: &str) -> Snapshot {
@@ -476,6 +505,7 @@ impl Snapshot {
             tail: Vec::new(),
             health: Health { role: String::new(), reachable: Some(false), pending: None, behind: None, watch: None, disk_gb: None },
             error: Some(msg.to_string()),
+            messages: Vec::new(),
         }
     }
 }
@@ -703,6 +733,32 @@ mod tests {
         // Newest-first ordering (by msg_id descending).
         let all_sorted = idx.query("lib", Some("f.rs"), None);
         assert_eq!(all_sorted[0].msg_id, "01B");
+    }
+
+    #[test]
+    fn ref_index_files_summarizes_distinct_targets() {
+        let mut a1 = m("01A", "alice", "note", None, None, None);
+        a1.front.ts = "2026-07-16T10:00:00Z".into();
+        a1.front.refs = vec![code_ref("lib", "f.rs", None)];
+        let mut a2 = m("01B", "bob", "note", None, None, None);
+        a2.front.ts = "2026-07-16T11:00:00Z".into();
+        a2.front.refs = vec![code_ref("lib", "f.rs", Some([10, 20]))];
+        let mut b1 = m("01C", "carol", "note", None, None, None);
+        b1.front.ts = "2026-07-16T09:00:00Z".into();
+        b1.front.refs = vec![code_ref("lib", "g.rs", None)];
+        let msgs = vec![a1, a2, b1];
+        let idx = RefIndex::fold(&msgs);
+
+        let mut files = idx.files();
+        files.sort_by(|x, y| y.ref_count.cmp(&x.ref_count).then(x.path.cmp(&y.path)));
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].repo, "lib");
+        assert_eq!(files[0].path, "f.rs");
+        assert_eq!(files[0].ref_count, 2);
+        assert_eq!(files[0].last_ts, "2026-07-16T11:00:00Z");
+        assert_eq!(files[1].path, "g.rs");
+        assert_eq!(files[1].ref_count, 1);
+        assert_eq!(files[1].last_ts, "2026-07-16T09:00:00Z");
     }
 
     #[test]

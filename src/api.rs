@@ -11,6 +11,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// A dispatched API result: an HTTP status + a JSON body (error shape `{"error":".."}`
 /// on non-200, always valid JSON otherwise).
@@ -93,21 +94,59 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
-/// Resolve `?hub=<id>` against the server's followed hubs. Omitted → the current hub
-/// (`config::repo_root()`) if it's one of the followed dirs, else the first. `Some(id)`
-/// that matches nothing → `None` (the caller 404s).
-fn resolve_hub<'a>(dirs: &'a [PathBuf], q: &HashMap<String, String>) -> Option<&'a PathBuf> {
+/// Resolve `?hub=<id>` against the server's followed hubs, as an INDEX into `dirs` (and,
+/// by construction, the same index into the parallel `cache: Vec<Snapshot>` that `serve`
+/// keeps warm). Omitted → the current hub (`config::repo_root()`) if it's one of the
+/// followed dirs, else the first. `Some(id)` that matches nothing → `None` (404).
+fn resolve_hub_idx(dirs: &[PathBuf], q: &HashMap<String, String>) -> Option<usize> {
     match q.get("hub").filter(|s| !s.is_empty()) {
-        Some(id) => dirs.iter().find(|d| &hub_id(d) == id),
+        Some(id) => dirs.iter().position(|d| &hub_id(d) == id),
         None => {
             if let Ok(cwd) = config::repo_root() {
-                if let Some(d) = dirs.iter().find(|d| same_dir(d, &cwd)) {
-                    return Some(d);
+                if let Some(i) = dirs.iter().position(|d| same_dir(d, &cwd)) {
+                    return Some(i);
                 }
             }
-            dirs.first()
+            if dirs.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
         }
     }
+}
+
+/// Resolve `?hub=<id>` to the dir itself — for endpoints (`refs`, `code`, `repos`) that
+/// only need the path, not a cached Snapshot.
+fn resolve_hub<'a>(dirs: &'a [PathBuf], q: &HashMap<String, String>) -> Option<&'a PathBuf> {
+    resolve_hub_idx(dirs, q).map(|i| &dirs[i])
+}
+
+/// A borrowed-or-owned Snapshot: the common case holds the server's warm-cache lock
+/// (populated every ~2s by `serve`'s background fold); the fallback (cache miss / a
+/// poisoned lock) does one fresh, uncached `Snapshot::load` so a request is still
+/// correct — just not as fast — rather than erroring.
+enum SnapHolder<'a> {
+    Cached(std::sync::MutexGuard<'a, Vec<projection::Snapshot>>, usize),
+    Owned(Box<projection::Snapshot>),
+}
+
+impl SnapHolder<'_> {
+    fn get(&self) -> &projection::Snapshot {
+        match self {
+            SnapHolder::Cached(g, i) => &g[*i],
+            SnapHolder::Owned(s) => s,
+        }
+    }
+}
+
+fn load_snapshot<'a>(cache: &'a Mutex<Vec<projection::Snapshot>>, dir: &Path, idx: usize) -> SnapHolder<'a> {
+    if let Ok(g) = cache.lock() {
+        if idx < g.len() {
+            return SnapHolder::Cached(g, idx);
+        }
+    }
+    SnapHolder::Owned(Box::new(projection::Snapshot::load(dir.to_path_buf(), false)))
 }
 
 fn presence_map(dir: &Path) -> HashMap<String, presence::Presence> {
@@ -124,14 +163,15 @@ fn hub_json(dirs: &[PathBuf], dir: &Path, agent_count: usize) -> Value {
 
 /// Route `path` (already stripped of query) to a handler. Anything unrecognized under
 /// `/api/` is a 404 with the same `{"error":".."}` shape as an unknown hub.
-pub fn dispatch(dirs: &[PathBuf], path: &str, url: &str) -> ApiResponse {
+pub fn dispatch(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, path: &str, url: &str) -> ApiResponse {
     let q = parse_qs(url);
     match path {
-        "/api/hubs" => hubs(dirs),
-        "/api/overview" => overview(dirs, &q),
-        "/api/messages" => messages(dirs, &q),
-        "/api/thread" => thread(dirs, &q),
+        "/api/hubs" => hubs(dirs, cache),
+        "/api/overview" => overview(dirs, cache, &q),
+        "/api/messages" => messages(dirs, cache, &q),
+        "/api/thread" => thread(dirs, cache, &q),
         "/api/refs" => refs(dirs, &q),
+        "/api/codefiles" => codefiles(dirs, cache, &q),
         "/api/code" => code(dirs, &q),
         "/api/repos" => repos_inventory(dirs, &q),
         _ => ApiResponse::err(404, "no such API endpoint"),
@@ -167,18 +207,25 @@ fn repos_inventory(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse
     ApiResponse::ok(json!(list))
 }
 
-fn hubs(dirs: &[PathBuf]) -> ApiResponse {
+/// `/api/hubs`'s per-hub agent count, straight from the warm cache's already-folded
+/// `agents` (no per-request read of every hub's whole log). Falls back to a fresh fold
+/// only if the cache doesn't (yet) have that index.
+fn hubs(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>) -> ApiResponse {
+    let guard = cache.lock().ok();
     let list: Vec<Value> = dirs
         .iter()
-        .map(|d| {
-            let n = store::all_messages(d)
-                .map(|msgs| {
-                    let ros = roster::load(d);
-                    let pres = presence_map(d);
-                    let xh = crosshub::appearances(d);
-                    projection::agents(&msgs, &ros, &pres, &xh).len()
-                })
-                .unwrap_or(0);
+        .enumerate()
+        .map(|(i, d)| {
+            let n = guard.as_ref().and_then(|g| g.get(i)).map(|s| s.agents.len()).unwrap_or_else(|| {
+                store::all_messages(d)
+                    .map(|msgs| {
+                        let ros = roster::load(d);
+                        let pres = presence_map(d);
+                        let xh = crosshub::appearances(d);
+                        projection::agents(&msgs, &ros, &pres, &xh).len()
+                    })
+                    .unwrap_or(0)
+            });
             hub_json(dirs, d, n)
         })
         .collect();
@@ -275,22 +322,20 @@ struct TopicAgg {
     last_ts: String,
 }
 
-fn overview(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
-    let Some(dir) = resolve_hub(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
-    let msgs = match store::all_messages(dir) {
-        Ok(m) => m,
-        Err(e) => return ApiResponse::err(500, format!("cannot read hub: {e}")),
-    };
+fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMap<String, String>) -> ApiResponse {
+    let Some(idx) = resolve_hub_idx(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+    let dir = &dirs[idx];
+    let holder = load_snapshot(cache, dir, idx);
+    let snap = holder.get();
     let now = Utc::now();
-    let ros = roster::load(dir);
-    let pres = presence_map(dir);
-    let xhub = crosshub::appearances(dir);
-    let board = projection::Board::fold(&msgs, now);
-    let agent_rows = projection::agents(&msgs, &ros, &pres, &xhub);
+    let ros = &snap.roster;
+    let msgs = &snap.messages;
+    let board = &snap.board;
+    let agent_rows = &snap.agents;
 
     let mut topic_of: HashMap<&str, Option<&str>> = HashMap::new();
     let mut topics: std::collections::BTreeMap<String, TopicAgg> = Default::default();
-    for m in &msgs {
+    for m in msgs {
         topic_of.insert(&m.front.id, m.front.topic.as_deref());
         if let Some(t) = &m.front.topic {
             let e = topics.entry(t.clone()).or_default();
@@ -339,8 +384,8 @@ fn overview(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
     let fleet_json: Vec<Value> = agent_rows
         .iter()
         .map(|a| {
-            let trust = verify::card_trust(dir, &hub_key, &ros, &mut vcache, &a.id);
-            agent_row_json(&board, a, verified_of(trust.status_str()), now)
+            let trust = verify::card_trust(dir, &hub_key, ros, &mut vcache, &a.id);
+            agent_row_json(board, a, verified_of(trust.status_str()), now)
         })
         .collect();
 
@@ -384,34 +429,47 @@ fn message_json(m: &Message) -> Value {
     })
 }
 
-fn messages(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
-    let Some(dir) = resolve_hub(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
-    let mut msgs = match store::all_messages(dir) {
-        Ok(m) => m,
-        Err(e) => return ApiResponse::err(500, format!("cannot read hub: {e}")),
-    };
+/// `GET /api/messages?hub=&topic=&limit=&before=` — served from the warm cache's
+/// retained `Snapshot::messages` (no per-request `store::all_messages` read). Without
+/// `limit`, returns everything (back-compat, unbounded). With `limit=N`, returns the
+/// most-recent N (of the topic filter, if any), in chronological order; `before=<id>`
+/// (a ULID, so lexicographic order == chronological) restricts to messages strictly
+/// older than it, so a client pages backward by repeating with `before=<oldest-id-seen>`.
+fn messages(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMap<String, String>) -> ApiResponse {
+    let Some(idx) = resolve_hub_idx(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+    let dir = &dirs[idx];
+    let holder = load_snapshot(cache, dir, idx);
+    let mut msgs: Vec<&Message> = holder.get().messages.iter().collect();
     msgs.sort_by(|a, b| a.front.id.cmp(&b.front.id));
     if let Some(topic) = q.get("topic").filter(|s| !s.is_empty()) {
         msgs.retain(|m| m.front.topic.as_deref() == Some(topic.as_str()));
     }
-    ApiResponse::ok(json!(msgs.iter().map(message_json).collect::<Vec<_>>()))
+    if let Some(before) = q.get("before").filter(|s| !s.is_empty()) {
+        msgs.retain(|m| m.front.id.as_str() < before.as_str());
+    }
+    if let Some(limit) = q.get("limit").filter(|s| !s.is_empty()).and_then(|s| s.parse::<usize>().ok()) {
+        if msgs.len() > limit {
+            let cut = msgs.len() - limit;
+            msgs.drain(0..cut);
+        }
+    }
+    ApiResponse::ok(json!(msgs.iter().map(|m| message_json(m)).collect::<Vec<_>>()))
 }
 
-fn thread(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
-    let Some(dir) = resolve_hub(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMap<String, String>) -> ApiResponse {
+    let Some(idx) = resolve_hub_idx(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+    let dir = &dirs[idx];
     let Some(id) = q.get("id").filter(|s| !s.is_empty()) else {
         return ApiResponse::err(400, "missing ?id=");
     };
-    let msgs = match store::all_messages(dir) {
-        Ok(m) => m,
-        Err(e) => return ApiResponse::err(500, format!("cannot read hub: {e}")),
-    };
+    let holder = load_snapshot(cache, dir, idx);
+    let msgs = &holder.get().messages;
     let Some(target) = msgs.iter().find(|m| projection::id_ref_matches(&m.front.id, id)) else {
         return ApiResponse::err(404, "message not found");
     };
-    let root_id = projection::thread_root(&msgs, target).front.id.clone();
+    let root_id = projection::thread_root(msgs, target).front.id.clone();
     let mut thread: Vec<&Message> =
-        msgs.iter().filter(|m| projection::thread_root(&msgs, m).front.id == root_id).collect();
+        msgs.iter().filter(|m| projection::thread_root(msgs, m).front.id == root_id).collect();
     thread.sort_by(|a, b| a.front.id.cmp(&b.front.id));
     let out: Vec<Value> = thread
         .iter()
@@ -427,6 +485,28 @@ fn thread(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         })
         .collect();
     ApiResponse::ok(json!(out))
+}
+
+/// Compute `staleness` for `key` (a `(repo, sha, path)` triple) at most once per distinct
+/// key, tracked in `cache`, and refuse to compute more than `cap` distinct keys — beyond
+/// that it returns `Unknown` (with `capped = true`) rather than calling `compute` (which,
+/// in `refs()`, shells out to `git`). Returns `(staleness, capped)`; `capped` is only ever
+/// true on the computations that got refused, so callers OR it across the whole loop.
+fn memoized_staleness(
+    cache: &mut HashMap<(String, String, String), refcode::Staleness>,
+    cap: usize,
+    key: (String, String, String),
+    compute: impl FnOnce() -> refcode::Staleness,
+) -> (refcode::Staleness, bool) {
+    if let Some(v) = cache.get(&key) {
+        return (*v, false);
+    }
+    if cache.len() >= cap {
+        return (refcode::Staleness::Unknown, true);
+    }
+    let v = compute();
+    cache.insert(key, v);
+    (v, false)
 }
 
 fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
@@ -447,15 +527,30 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         }
     };
 
+    // A single target (esp. a bare repo/path with no range) can match hundreds/thousands
+    // of hits sharing the same pinned (repo, sha, path) — `staleness` shells out to `git`
+    // per call, so without memoizing this a busy target turns one HTTP request into a
+    // synchronous git-spawn storm. Memoize within THIS request (hits recur far more than
+    // they're distinct) and cap the number of DISTINCT computations so a request can
+    // never spawn unbounded git processes; anything beyond the cap reports "unknown"
+    // rather than silently doing more work.
+    const MAX_STALENESS_COMPUTATIONS: usize = 100;
     let mut out = Vec::new();
+    let mut truncated = false;
     for hub in &hubs {
         let Ok(msgs) = store::all_messages(hub) else { continue };
         let idx = projection::RefIndex::fold(&msgs);
         let repo_inv = repos::load(hub);
         let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
+        let mut staleness_cache: HashMap<(String, String, String), refcode::Staleness> = HashMap::new();
         for h in idx.query(&repo, path.as_deref(), range) {
             let clone = clone_cache.entry(h.repo.clone()).or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo)).clone();
-            let st = refcode::staleness(clone.as_deref(), &h.sha, &h.path, h.content_hash.as_deref()).label();
+            let key = (h.repo.clone(), h.sha.clone(), h.path.clone());
+            let (st, capped) = memoized_staleness(&mut staleness_cache, MAX_STALENESS_COMPUTATIONS, key, || {
+                refcode::staleness(clone.as_deref(), &h.sha, &h.path, h.content_hash.as_deref())
+            });
+            truncated |= capped;
+            let st = st.label();
             out.push(json!({
                 "repo": h.repo,
                 "path": h.path,
@@ -474,6 +569,45 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
             }));
         }
     }
+    if truncated {
+        eprintln!(
+            "confer serve: /api/refs truncated staleness computation for target {target:?} at {MAX_STALENESS_COMPUTATIONS} distinct (repo,sha,path) — remaining hits report \"unknown\""
+        );
+    }
+    ApiResponse::ok(json!(out))
+}
+
+/// `GET /api/codefiles?hub=<id>` — the distinct code files this hub's messages
+/// reference via `--ref`, for the web Code view to hydrate its file tree from (instead
+/// of a hardcoded fixture). Sourced from the same `RefIndex::fold` reverse projection
+/// `/api/refs` queries, just summarized to distinct targets (`RefIndex::files`) rather
+/// than queried by one target. `mapped` reuses `/api/code`'s own clone-resolution
+/// (`refcode::clone_for` over the hub's registered repo inventory) so the frontend can
+/// show the mapped/unmapped dot without a failed `getCode` round-trip.
+fn codefiles(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMap<String, String>) -> ApiResponse {
+    let Some(idx) = resolve_hub_idx(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+    let dir = &dirs[idx];
+    let holder = load_snapshot(cache, dir, idx);
+    let ref_idx = projection::RefIndex::fold(&holder.get().messages);
+    let repo_inv = repos::load(dir);
+    let mut mapped_cache: HashMap<String, bool> = HashMap::new();
+    let mut files = ref_idx.files();
+    files.sort_by(|a, b| b.ref_count.cmp(&a.ref_count).then_with(|| a.path.cmp(&b.path)));
+    let out: Vec<Value> = files
+        .into_iter()
+        .map(|f| {
+            let mapped = *mapped_cache
+                .entry(f.repo.clone())
+                .or_insert_with(|| refcode::clone_for(&repo_inv, &f.repo).is_some());
+            json!({
+                "repo": f.repo,
+                "path": f.path,
+                "refCount": f.ref_count,
+                "mapped": mapped,
+                "lastTs": f.last_ts,
+            })
+        })
+        .collect();
     ApiResponse::ok(json!(out))
 }
 
@@ -629,5 +763,60 @@ mod tests {
         assert_eq!(lang_of("src/main.rs"), "rust");
         assert_eq!(lang_of("a/b.tsx"), "tsx");
         assert_eq!(lang_of("README"), "text");
+    }
+
+    fn key(n: usize) -> (String, String, String) {
+        ("repo".to_string(), format!("sha{n}"), "path.rs".to_string())
+    }
+
+    #[test]
+    fn memoized_staleness_computes_a_repeated_key_only_once() {
+        let mut cache = HashMap::new();
+        let mut calls = 0;
+        let (st1, capped1) = memoized_staleness(&mut cache, 100, key(1), || {
+            calls += 1;
+            refcode::Staleness::Current
+        });
+        let (st2, capped2) = memoized_staleness(&mut cache, 100, key(1), || {
+            calls += 1;
+            refcode::Staleness::Current
+        });
+        assert_eq!(calls, 1, "the second lookup of the same key must hit the cache, not recompute");
+        assert_eq!(st1, refcode::Staleness::Current);
+        assert_eq!(st2, refcode::Staleness::Current);
+        assert!(!capped1 && !capped2);
+    }
+
+    #[test]
+    fn memoized_staleness_refuses_past_the_cap() {
+        let mut cache = HashMap::new();
+        for i in 0..5 {
+            let (_, capped) = memoized_staleness(&mut cache, 5, key(i), || refcode::Staleness::Current);
+            assert!(!capped, "under the cap must compute normally");
+        }
+        assert_eq!(cache.len(), 5);
+        let mut called = false;
+        let (st, capped) = memoized_staleness(&mut cache, 5, key(99), || {
+            called = true;
+            refcode::Staleness::Current
+        });
+        assert!(!called, "over the cap must not invoke compute (no git spawn)");
+        assert!(capped);
+        assert_eq!(st, refcode::Staleness::Unknown);
+    }
+
+    #[test]
+    fn memoized_staleness_cached_hit_bypasses_the_cap() {
+        // A key already cached before the cap was reached must keep returning its
+        // cached value even once the cache is otherwise full — the cap only refuses
+        // NEW distinct keys, never invalidates ones already computed.
+        let mut cache = HashMap::new();
+        let (_, capped) = memoized_staleness(&mut cache, 1, key(1), || refcode::Staleness::Changed);
+        assert!(!capped);
+        let (_, capped) = memoized_staleness(&mut cache, 1, key(2), || refcode::Staleness::Current);
+        assert!(capped, "cache already at cap=1, a second distinct key must be refused");
+        let (st, capped) = memoized_staleness(&mut cache, 1, key(1), || refcode::Staleness::Current);
+        assert!(!capped);
+        assert_eq!(st, refcode::Staleness::Changed, "repeated key must still return its originally cached value");
     }
 }

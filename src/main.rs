@@ -915,15 +915,12 @@ fn run() -> Result<()> {
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { all_hubs } => cmd_dashboard(all_hubs),
         #[cfg(feature = "serve")]
-        Cmd::Serve { all_hubs, port, bind } => {
-            // Precedence: explicit --bind (full addr, for non-localhost) > --port (localhost
-            // shorthand) > CONFER_SERVE_PORT env > default 8422 (8787 collides with RStudio et al.).
-            let bind = bind.unwrap_or_else(|| {
-                let p = port
-                    .or_else(|| std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok()))
-                    .unwrap_or(8422);
-                format!("127.0.0.1:{p}")
-            });
+        Cmd::Serve { all_hubs, lan, port, bind } => {
+            // Precedence (see serve::resolve_bind): explicit --bind always wins; else --lan
+            // binds 0.0.0.0; else loopback-only (127.0.0.1) is the private default. Port comes
+            // from --port, else CONFER_SERVE_PORT, else 8422.
+            let env_port = std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok());
+            let bind = serve::resolve_bind(&serve::BindFlags { bind, lan, port, env_port });
             serve::run(resolve_hubs(all_hubs)?, &bind)
         }
         Cmd::InstallHook { project } => cmd_install_hook(project),

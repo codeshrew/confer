@@ -131,11 +131,16 @@ fn start_server(c: &Clone) -> Server {
         if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
             panic!("confer serve exited before printing its address");
         }
-        if let Some(rest) = line.split("http://localhost:").nth(1) {
-            let port: String = rest.trim().chars().take_while(|ch| ch.is_ascii_digit()).collect();
-            if !port.is_empty() {
-                addr = format!("127.0.0.1:{port}");
-                break;
+        // serve binds 127.0.0.1 by default (loopback-private) and prints the actual bound
+        // port in a `http://<host>:<port>` line. Parse the port off the first `:` after
+        // `http://`, host-agnostically, so a banner-wording change can't wedge this loop.
+        if let Some(after) = line.split("http://").nth(1) {
+            if let Some(port_part) = after.split(':').nth(1) {
+                let port: String = port_part.trim().chars().take_while(|ch| ch.is_ascii_digit()).collect();
+                if !port.is_empty() {
+                    addr = format!("127.0.0.1:{port}");
+                    break;
+                }
             }
         }
     }
@@ -299,6 +304,51 @@ fn messages_filters_by_topic_and_sanitizes_body() {
     let (_, all_body) = http_get(&server.addr, "/api/messages");
     let all: serde_json::Value = serde_json::from_str(&all_body).unwrap();
     assert!(all.as_array().unwrap().len() >= 2, "no topic filter returns everything");
+}
+
+#[test]
+fn messages_pagination_limit_and_before() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha); // already posts a note + a request (2 messages) in different topics
+
+    // Add several more messages on the "search" topic so there's a real page to walk.
+    for i in 0..4 {
+        assert!(ok(&alpha.append(&[
+            "--type", "note", "--to", "beta", "--summary", &format!("update {i}"), "--text", "body", "--topic", "search",
+        ])));
+    }
+
+    let server = start_server(&alpha);
+
+    // No `limit` at all → back-compat: every message on the hub.
+    let (status_all, body_all) = http_get(&server.addr, "/api/messages");
+    assert_eq!(status_all, 200);
+    let all: serde_json::Value = serde_json::from_str(&body_all).unwrap();
+    let all_arr = all.as_array().expect("array");
+    assert_eq!(all_arr.len(), 7, "1 note + 1 request + 1 claim + 4 more notes: {all_arr:?}");
+
+    // `?topic=search&limit=2` → the 2 newest search-topic messages, chronological order.
+    let (status, body) = http_get(&server.addr, "/api/messages?topic=search&limit=2");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let page1 = v.as_array().expect("array");
+    assert_eq!(page1.len(), 2, "limit=2: {page1:?}");
+    let ids: Vec<&str> = page1.iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert!(ids[0] < ids[1], "chronological order (oldest first) within the page: {ids:?}");
+    assert_eq!(page1[1]["summary"], "update 3", "the newest of the search topic");
+
+    // `before=<newest-id-in-page1>` → the next-older page, excluding that id.
+    let newest_id = ids[1];
+    let (status2, body2) = http_get(&server.addr, &format!("/api/messages?topic=search&limit=2&before={newest_id}"));
+    assert_eq!(status2, 200, "body: {body2}");
+    let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+    let page2 = v2.as_array().expect("array");
+    assert_eq!(page2.len(), 2, "page2: {page2:?}");
+    let ids2: Vec<&str> = page2.iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert!(ids2.iter().all(|id| *id < newest_id), "every id in page2 is strictly older: {ids2:?}");
+    assert!(!ids2.contains(&newest_id), "before is exclusive");
+    assert_eq!(page2[1]["summary"], "update 2", "the next-newest after excluding update 3");
 }
 
 #[test]
@@ -477,6 +527,55 @@ fn code_endpoint_returns_snippet_and_degrades_gracefully() {
     // unknown hub still 404s the same way as the other endpoints.
     let (s4, b4) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&hub=nope-such-hub");
     assert_eq!(s4, 404, "body: {b4}");
+}
+
+#[test]
+fn codefiles_lists_distinct_referenced_files_ordered_by_ref_count() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha); // one ref: mylib:lib.rs#L1-2 (mapped, since seed() maps mylib)
+
+    // "wealdlore" is registered nowhere and never mapped on this machine — a second,
+    // distinct file referenced TWICE, so it should outrank mylib:lib.rs (1 ref) once
+    // sorted, and its `mapped` should come back false.
+    let fake_sha = "b".repeat(40);
+    assert!(ok(&alpha.append(&[
+        "--type", "note", "--to", "beta", "--summary", "first look", "--text", "poking around",
+        "--ref", &format!("wealdlore:pipeline/plates.py@{fake_sha}#L1-2"),
+    ])));
+    assert!(ok(&alpha.append(&[
+        "--type", "note", "--to", "beta", "--summary", "second look", "--text", "still poking",
+        "--ref", &format!("wealdlore:pipeline/plates.py@{fake_sha}#L3-4"),
+    ])));
+
+    let server = start_server(&alpha);
+
+    // missing/empty ?hub= falls back to the current hub (same as the other handlers).
+    let (status, body) = http_get(&server.addr, "/api/codefiles");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 2, "two distinct referenced files: {arr:?}");
+
+    // twice-referenced file sorts first.
+    let first = &arr[0];
+    assert_eq!(first["repo"], "wealdlore");
+    assert_eq!(first["path"], "pipeline/plates.py");
+    assert_eq!(first["refCount"], 2);
+    assert_eq!(first["mapped"], false, "wealdlore was never mapped in this test's isolated HOME");
+    assert!(first["lastTs"].as_str().is_some(), "lastTs should be present: {first}");
+
+    let second = &arr[1];
+    assert_eq!(second["repo"], "mylib");
+    assert_eq!(second["path"], "lib.rs");
+    assert_eq!(second["refCount"], 1);
+    assert_eq!(second["mapped"], true, "mylib was mapped by seed()");
+
+    // unknown hub still 404s the same way as the other endpoints.
+    let (s2, b2) = http_get(&server.addr, "/api/codefiles?hub=nope-such-hub");
+    assert_eq!(s2, 404, "body: {b2}");
+    let v2: serde_json::Value = serde_json::from_str(&b2).unwrap();
+    assert!(v2.get("error").is_some());
 }
 
 #[test]
