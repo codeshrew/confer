@@ -16,6 +16,19 @@ export default defineConfig({
     cssCodeSplit: false,
     assetsInlineLimit: Number.MAX_SAFE_INTEGER,
   },
+  server: {
+    // Lets `npm run dev` talk to a real, locally-running `confer serve`
+    // (default port 8422) instead of only mock.ts's fixtures. Combine with
+    // `?live` (or `VITE_LIVE=1`) — see api.ts's useMock() — to actually
+    // route fetches/SSE through this proxy instead of the mock API; the
+    // proxy target being configured doesn't by itself change what api.ts
+    // fetches. `/api/events` is a long-lived SSE connection, which the
+    // proxy passes through transparently (no special config needed for
+    // that in Vite's http-proxy-based server.proxy).
+    proxy: {
+      '/api': 'http://127.0.0.1:8422',
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: false,

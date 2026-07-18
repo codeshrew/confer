@@ -12,9 +12,14 @@ export type Theme = 'dark' | 'light';
 export type Drawer = 'none' | 'left' | 'right';
 
 function createAppState() {
-  let hub = $state('agent-coord');
+  // No hub/topic default here: these were mock fixtures (agent-coord/reader)
+  // that only exist in mock.ts. Against the real API they're hydrated in
+  // App.svelte's onMount from /api/hubs + /api/overview (see selectDefaultHub
+  // / selectDefaultTopic below) — starting empty avoids a mismatched initial
+  // fetch against a hub id that doesn't exist on the real backend.
+  let hub = $state('');
   let view = $state<View>('chat');
-  let topic = $state<string | null>('reader');
+  let topic = $state<string | null>(null);
   let selectedMessage = $state<Message | null>(null);
   let theme = $state<Theme>('dark');
   let drawer = $state<Drawer>('none');

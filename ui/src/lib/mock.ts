@@ -482,7 +482,14 @@ export const mockApi = {
   async getCode(_hub: string, _repo: string, _path: string, _sha: string, _range?: string): Promise<Snippet> {
     return delay(mockSnippet);
   },
-  subscribeEvents(onEvent: (event: ServerEvent) => void): () => void {
+  subscribeEvents(
+    _hub: string,
+    onEvent: (event: ServerEvent) => void,
+    onStatus: (status: 'live' | 'reconnecting') => void
+  ): () => void {
+    // Mock mode has no real transport to lose — it's "live" the instant
+    // something subscribes, same as a freshly-opened EventSource.
+    onStatus('live');
     const timer = setInterval(() => {
       onEvent({ event: 'ping' });
     }, 15000);

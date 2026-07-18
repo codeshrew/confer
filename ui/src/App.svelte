@@ -13,6 +13,7 @@
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import { api } from './lib/api';
   import { appState } from './lib/stores.svelte';
+  import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
   import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
 
   let hubs = $state<Hub[]>([]);
@@ -39,15 +40,25 @@
   async function loadHub(hubId: string) {
     connStatus = 'loading';
     try {
-      const [ov, msgs, th] = await Promise.all([
-        api.getOverview(hubId),
-        api.getMessages(hubId),
-        api.getThread(hubId, ''),
-      ]);
+      const [ov, msgs] = await Promise.all([api.getOverview(hubId), api.getMessages(hubId)]);
       overview = ov;
       messages = msgs;
-      thread = th;
+      // The meta-thread panel is per-message (it's a reply-hash walk rooted
+      // at a specific msgId — the real backend 400s on a blank id, there is
+      // no "the hub's thread"), so it resets to empty on a hub switch and is
+      // populated lazily by selectMessage/selectTicket below, not fetched
+      // here.
+      thread = [];
       connStatus = 'live';
+      // Keep the current topic selection if it's still valid for this hub
+      // (e.g. a same-named topic exists in both); otherwise — including the
+      // very first load, where appState.topic starts null — pick a sensible
+      // default from what this hub's overview actually has. Never falls
+      // back to a hardcoded mock slug.
+      const validSlugs = new Set(ov.topics.map((t) => t.slug));
+      if (!appState.topic || !validSlugs.has(appState.topic)) {
+        appState.topic = selectDefaultTopic(ov);
+      }
     } catch (err) {
       console.error('confer serve: failed to load hub', hubId, err);
       connStatus = 'reconnecting';
@@ -59,26 +70,61 @@
 
     api.getHubs().then((result) => {
       hubs = result;
+      // No hardcoded hub id: pick the one the backend marked `current`,
+      // else the first hub it returned. This also kicks off the first
+      // loadHub, via the $effect below reacting to appState.hub changing
+      // from '' to a real id.
+      const defaultHub = selectDefaultHub(result);
+      if (defaultHub) appState.hub = defaultHub.id;
     });
-    void loadHub(appState.hub);
-
-    const unsubscribe = api.subscribeEvents(() => {
-      connStatus = 'live';
-    });
-    return unsubscribe;
   });
 
   $effect(() => {
     // Reload the hub's overview/messages/thread whenever the current hub
-    // changes (TopBar hub-pill click).
-    void loadHub(appState.hub);
+    // changes (initial hydration, or a TopBar hub-pill click). Guarded on
+    // a non-empty id since appState.hub starts '' until /api/hubs resolves.
+    const hubId = appState.hub;
+    if (hubId) void loadHub(hubId);
+  });
+
+  $effect(() => {
+    // (Re)connect the SSE channel whenever the selected hub changes. The
+    // indicator starts 'loading' (see connStatus's initial state) and only
+    // becomes 'reconnecting' on a genuine transport error from the source
+    // itself — never as a default guess.
+    const hubId = appState.hub;
+    if (!hubId) return;
+    const unsubscribe = api.subscribeEvents(
+      hubId,
+      (event) => {
+        if (event.event === 'ping') return;
+        if (event.hub !== appState.hub) return;
+        void loadHub(appState.hub);
+      },
+      (status) => {
+        connStatus = status;
+      }
+    );
+    return unsubscribe;
   });
 
   const currentTopic = $derived(overview?.topics.find((t) => t.slug === appState.topic) ?? null);
 
+  function loadThread(msgId: string) {
+    api.getThread(appState.hub, msgId).then(
+      (th) => {
+        thread = th;
+      },
+      (err) => {
+        console.error('confer serve: failed to load thread', msgId, err);
+      }
+    );
+  }
+
   function selectMessage(id: string) {
     const found = messages.find((m) => m.id === id);
     appState.selectedMessage = found ?? null;
+    loadThread(id);
   }
 
   function selectTicket(id: string) {
@@ -89,6 +135,7 @@
     const asMsgId = id.replace(/^req_/, 'msg_');
     const found = messages.find((m) => m.id === asMsgId);
     appState.selectedMessage = found ?? null;
+    loadThread(asMsgId);
     // On tablet/phone the right rail is a drawer — a "thread" affordance
     // (this one) is exactly what should surface it. No-op at desktop widths,
     // where the right rail is always visible regardless of drawer state.
