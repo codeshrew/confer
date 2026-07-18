@@ -2,7 +2,10 @@ import { test, expect } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
+  // design/47: Overview is the default landing now, not Chat — most of this
+  // file's tests need Chat's content on screen, so switch there up front.
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
 });
 
 test('theme toggle flips data-theme and the rendered background', async ({ page }) => {
@@ -35,7 +38,9 @@ test('opening a ticket from Chat surfaces the RequestDetail lifecycle trail', as
 
 test('opening a board row surfaces the RequestDetail lifecycle trail', async ({ page }) => {
   await page.getByRole('tab', { name: 'Board', exact: true }).click();
-  await page.getByText('Freeze the CSL schema — needs a decision from Herald').click();
+  // Scoped to the Board pane — Overview stays mounted in the background and
+  // repeats this same request's summary in its own Coordination-lane card.
+  await page.getByTestId('board-view').getByText('Freeze the CSL schema — needs a decision from Herald').click();
 
   const drawer = page.getByTestId('right-drawer');
   await expect(drawer.getByText('Request detail')).toBeVisible();

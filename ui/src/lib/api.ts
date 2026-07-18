@@ -19,6 +19,7 @@
 
 import type { CodeFile, Hub, Message, Overview, RefHit, Repo, ServerEvent, Snippet, ThreadNode } from './types';
 import { mockApi } from './mock';
+import { aggregateAttention, type Attention } from './attention';
 
 const BASE_URL = '';
 
@@ -144,3 +145,23 @@ const httpApi: ConferApi = {
 };
 
 export const api: ConferApi = useMock() ? mockApi : httpApi;
+
+/**
+ * design/47 §5 Phase 1 — the Overview view's cross-hub data, fanned out
+ * client-side over the SAME `api` singleton every other view already uses
+ * (so it transparently follows mock/live routing, no separate wiring): one
+ * `getHubs()` call, then one `getOverview()` per hub, folded by
+ * `aggregateAttention` into the three ranked lanes + ambient metrics.
+ *
+ * Phase 2 repoints this at a real `GET /api/attention` aggregating endpoint
+ * (design/47 §4.2 item 1) — callers (Overview.svelte) only depend on this
+ * function's return shape, not on it being a fan-out, so that swap is
+ * internal to this function.
+ */
+export async function getAttention(): Promise<Attention> {
+  const hubs = await api.getHubs();
+  const hubOverviews = await Promise.all(
+    hubs.map(async (hub) => ({ hub, overview: await api.getOverview(hub.id) }))
+  );
+  return aggregateAttention(hubOverviews);
+}

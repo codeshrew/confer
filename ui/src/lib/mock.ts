@@ -446,6 +446,120 @@ export const mockOverview: Overview = {
   fleet: mockAgents,
 };
 
+// ── design/47 — per-hub Overview fixtures for the cross-hub Overview view ──
+// Every OTHER view only ever asks for the CURRENT hub's overview, so one
+// shared fixture (mockOverview above) was enough. Overview.svelte's
+// `getAttention()` fans out across ALL of mockHubs, so it needs each hub to
+// actually differ — otherwise every lane would just triple the same agent-
+// coord story. `confer-lab` exercises the loudest alarm (a key mismatch —
+// §2.2 Lane 1's "single loudest thing on the screen") plus a stale-claimed
+// request; `jarvis-orbit` is deliberately calm (all signed, all live, no
+// stuck requests) so the aggregate view — and that hub's own mini-rollup —
+// has a genuine "all clear" case to render, not just a synthetic one.
+
+function overviewOf(hubId: string, fleet: Overview['fleet'], requests: RequestRow[]): Overview {
+  const found = mockHubs.find((h) => h.id === hubId) ?? mockHubs[0]!;
+  return {
+    hub: found,
+    topics: [],
+    board: {
+      requests,
+      open: requests.filter((r) => r.status === 'OPEN').length,
+      claimed: requests.filter((r) => r.status === 'CLAIMED').length,
+      blocked: requests.filter((r) => r.status === 'BLOCKED').length,
+      backlog: requests.filter((r) => r.deferred).length,
+      closed: requests.filter((r) => r.status === 'DONE').length,
+    },
+    fleet,
+  };
+}
+
+const mockConferLabOverview: Overview = overviewOf(
+  'confer-lab',
+  [
+    {
+      id: 'sentinel',
+      display: 'Sentinel',
+      desc: 'confer-lab',
+      expectedHost: 'lab-01',
+      lastTs: '2026-07-18T09:40:00Z',
+      lastHost: 'lab-02',
+      live: true,
+      verified: 'unverified',
+      trust: 'mismatch',
+      color: 'var(--ag-jarvis)',
+      abbr: 'SE',
+      wip: [],
+    },
+    {
+      id: 'herald',
+      display: 'Herald',
+      desc: 'gitconv',
+      expectedHost: 'gitconv',
+      lastTs: '2026-07-18T09:58:00Z',
+      lastHost: 'gitconv',
+      live: true,
+      verified: 'signed',
+      color: 'var(--ag-herald)',
+      abbr: 'HE',
+      wip: [{ id: 'req_02LAB1', summary: 'review the patch', status: 'CLAIMED' }],
+    },
+  ],
+  [
+    {
+      id: 'req_02LAB1',
+      from: 'sentinel',
+      to: ['herald'],
+      summary: 'review the patch',
+      status: 'CLAIMED',
+      resolution: null,
+      deferred: false,
+      claimants: ['herald'],
+      ageSecs: 3 * 24 * 3600,
+      stale: true,
+      topic: 'code-review',
+    },
+  ]
+);
+
+const mockJarvisOrbitOverview: Overview = overviewOf(
+  'jarvis-orbit',
+  [
+    {
+      id: 'orbit',
+      display: 'Orbit',
+      desc: 'orbit',
+      expectedHost: 'orbit',
+      lastTs: '2026-07-18T09:59:30Z',
+      lastHost: 'orbit',
+      live: true,
+      verified: 'signed',
+      color: 'var(--ag-orbit)',
+      abbr: 'OR',
+      wip: [],
+    },
+  ],
+  []
+);
+
+const MOCK_OVERVIEW_BY_HUB: Record<string, Overview> = {
+  'agent-coord': mockOverview,
+  'confer-lab': mockConferLabOverview,
+  'jarvis-orbit': mockJarvisOrbitOverview,
+};
+
+// `?mock&clear` (or, since dev mode defaults to mock, just `?clear` while
+// developing) swaps in a single fully-nominal hub — the Overview view's
+// "everything's fine" state, exercised by e2e/overview.spec.ts without
+// needing a scenario the default fixture (which deliberately has plenty
+// wrong) can't produce.
+function isClearScenario(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).has('clear');
+}
+
+const mockClearHubs: Hub[] = [{ id: 'jarvis-orbit', label: 'jarvis-orbit', name: 'jarvis-orbit', current: true, agentCount: 1 }];
+
 const mockThread: ThreadNode[] = [
   { msgId: 'msg_01JQ8f2', from: 'pipeline', type: 'request', topic: 'reader', summary: 'Filed the plate-bundle ticket', refs: [] },
   { msgId: 'msg_01JQa10', from: 'reader', type: 'claim', topic: 'reader', summary: 'Claimed it — taking the endpoint', refs: [] },
@@ -675,11 +789,11 @@ function delay<T>(value: T, ms = 40): Promise<T> {
 
 export const mockApi = {
   async getHubs(): Promise<Hub[]> {
-    return delay(mockHubs);
+    return delay(isClearScenario() ? mockClearHubs : mockHubs);
   },
   async getOverview(hub: string): Promise<Overview> {
-    const found = mockHubs.find((h) => h.id === hub) ?? mockHubs[0]!;
-    return delay({ ...mockOverview, hub: found });
+    if (isClearScenario()) return delay(mockJarvisOrbitOverview);
+    return delay(MOCK_OVERVIEW_BY_HUB[hub] ?? { ...mockOverview, hub: mockHubs.find((h) => h.id === hub) ?? mockHubs[0]! });
   },
   async getMessages(_hub: string, topic?: string, opts?: MessagesOpts): Promise<Message[]> {
     // Mirrors the real backend's /api/messages semantics (src/api.rs's

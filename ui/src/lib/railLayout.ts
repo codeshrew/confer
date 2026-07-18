@@ -21,11 +21,12 @@ export function defaultContextMode(view: View): ContextMode {
   }
 }
 
-/** Left rail (navigator): visible on every view except Repos, whose center
- * IS the collection (a full-width card grid) — a duplicate topic list next
- * to it buys nothing. */
+/** Left rail (navigator): visible on every view except Repos and Overview,
+ * whose centers ARE the collection (a full-width card grid / triage lanes)
+ * — a duplicate topic list next to it buys nothing. Overview is also
+ * cross-hub, so a single-hub topic list would be actively wrong there. */
 export function leftRailVisible(view: View): boolean {
-  return view !== 'repos';
+  return view !== 'repos' && view !== 'overview';
 }
 
 /** Whether the left rail's fleet-roster section should render. False only
@@ -37,10 +38,12 @@ export function showFleetSection(view: View): boolean {
 }
 
 /** The ⓘ crumb toggle that opens the right rail as a mobile drawer — hidden
- * entirely only on views with no inspector concept at all (Fleet/Repos).
- * Board and Code keep the toggle even before anything is selected. */
+ * entirely only on views with no inspector concept at all (Fleet/Repos/
+ * Overview). Board and Code keep the toggle even before anything is
+ * selected. Overview drills OUT to a hub's own views instead of opening an
+ * inspector alongside itself. */
 export function rightRailToggleVisible(view: View): boolean {
-  return view !== 'fleet' && view !== 'repos';
+  return view !== 'fleet' && view !== 'repos' && view !== 'overview';
 }
 
 export interface RightRailParams {
@@ -64,6 +67,7 @@ export function rightRailVisible({ view, hasSelection }: RightRailParams): boole
       return hasSelection;
     case 'fleet':
     case 'repos':
+    case 'overview':
     default:
       return false;
   }

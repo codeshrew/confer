@@ -3,6 +3,9 @@
   import TopBar from './lib/components/TopBar.svelte';
   import type { ConnStatus } from './lib/components/TopBar.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
+  // Aliased — this file also imports the `Overview` TYPE (the /api/overview
+  // JSON shape) from ./lib/types, and the two names would collide.
+  import OverviewView from './lib/components/Overview.svelte';
   import CodeTree from './lib/components/CodeTree.svelte';
   import FilterBar from './lib/components/FilterBar.svelte';
   import ChatStream from './lib/components/ChatStream.svelte';
@@ -131,7 +134,8 @@
   // flip, not a re-mount. Panes never visited yet aren't mounted at all, so
   // first load doesn't pay for a Code fetch/tokenize the user hasn't asked
   // for.
-  let chatMounted = $state(true); // 'chat' is the initial view
+  let overviewMounted = $state(true); // 'overview' is the initial view (design/47 §3)
+  let chatMounted = $state(false);
   let boardMounted = $state(false);
   let fleetMounted = $state(false);
   let codeMounted = $state(false);
@@ -139,6 +143,9 @@
 
   $effect(() => {
     switch (appState.view) {
+      case 'overview':
+        overviewMounted = true;
+        break;
       case 'chat':
         chatMounted = true;
         break;
@@ -403,6 +410,47 @@
     appState.drawer = 'right';
   }
 
+  // design/47 §2.6 — Overview's drill-throughs. A request card lands on that
+  // hub's Board, focused on the row; since Overview is cross-hub, the target
+  // hub is very often not the one currently loaded, so (like openHitInChat's
+  // pendingHit above) the actual selection is deferred until that hub's
+  // overview has actually landed.
+  let pendingBoardSelect = $state<{ hub: string; reqId: string } | null>(null);
+
+  function drillToRequest(hub: string, reqId: string) {
+    appState.view = 'board';
+    if (appState.hub === hub) {
+      selectBoardRow(reqId);
+      return;
+    }
+    pendingBoardSelect = { hub, reqId };
+    appState.hub = hub;
+  }
+
+  $effect(() => {
+    const p = pendingBoardSelect;
+    if (!p) return;
+    if (appState.hub !== p.hub) return;
+    if (!overview || overview.hub.id !== p.hub) return;
+    selectBoardRow(p.reqId);
+    pendingBoardSelect = null;
+  });
+
+  /** A Fleet-health card's fix hint — jump to that hub's Fleet view. A
+   * per-agent anchor within Fleet is design/41 Phase 3's job; for now the
+   * hub switch alone is the useful part (design/47 §2.6). */
+  function drillToFleet(hub: string, _agentId: string) {
+    appState.view = 'fleet';
+    appState.hub = hub;
+  }
+
+  /** The context strip's per-hub rollup — drills into that hub's Board
+   * (design/47 §2.6: "a hub mini-rollup → that hub's Board"). */
+  function drillToHub(hub: string) {
+    appState.view = 'board';
+    appState.hub = hub;
+  }
+
   function openRefs(ref: CodeRef, hits: RefHit[]) {
     refContext = { repo: ref.repo, path: ref.path, range: ref.range };
     refHits = hits;
@@ -645,9 +693,19 @@
 
     <div class="center">
       <div class="crumb" title={appState.view === 'code' && codeCrumb.full ? codeCrumb.full : undefined}>
-        <span class="c">{appState.hub}</span>
-        <span class="sep">›</span>
-        {#if appState.view === 'chat'}
+        {#if appState.view === 'overview'}
+          <!-- Overview is cross-hub (design/47 §3) — no single hub name
+               belongs in front of it the way every other view's crumb leads
+               with `appState.hub`. -->
+          <span class="c strong">Overview</span>
+        {:else}
+          <span class="c">{appState.hub}</span>
+          <span class="sep">›</span>
+        {/if}
+        {#if appState.view === 'overview'}
+          <!-- The masthead inside Overview.svelte itself carries the health
+               headline — nothing else belongs in this shared crumb bar. -->
+        {:else if appState.view === 'chat'}
           <span class="c strong hash">#{appState.topic}</span>
           {#if currentTopic}
             <span class="meta">{currentTopic.messages} messages · {currentTopic.requests} requests</span>
@@ -692,6 +750,11 @@
         {/if}
       </div>
 
+      <div class="view-pane" class:active={appState.view === 'overview'}>
+        {#if overviewMounted}
+          <OverviewView onDrillRequest={drillToRequest} onDrillFleet={drillToFleet} onDrillHub={drillToHub} />
+        {/if}
+      </div>
       <div class="view-pane" class:active={appState.view === 'chat'}>
         {#if chatMounted}
           <ChatStream

@@ -8,7 +8,7 @@ import {
 } from './railLayout';
 import type { View } from './stores.svelte';
 
-const ALL_VIEWS: View[] = ['chat', 'board', 'fleet', 'code', 'repos'];
+const ALL_VIEWS: View[] = ['overview', 'chat', 'board', 'fleet', 'code', 'repos'];
 
 describe('defaultContextMode', () => {
   it('defaults Board to request', () => {
@@ -25,9 +25,9 @@ describe('defaultContextMode', () => {
 });
 
 describe('leftRailVisible', () => {
-  it('hides only on Repos', () => {
+  it('hides only on Repos and Overview — both full-width, cross-hub-or-collection views', () => {
     for (const view of ALL_VIEWS) {
-      expect(leftRailVisible(view)).toBe(view !== 'repos');
+      expect(leftRailVisible(view)).toBe(view !== 'repos' && view !== 'overview');
     }
   });
 });
@@ -41,9 +41,9 @@ describe('showFleetSection', () => {
 });
 
 describe('rightRailToggleVisible', () => {
-  it('hides the ⓘ toggle on Fleet and Repos only', () => {
+  it('hides the ⓘ toggle on Fleet, Repos, and Overview only', () => {
     for (const view of ALL_VIEWS) {
-      expect(rightRailToggleVisible(view)).toBe(view !== 'fleet' && view !== 'repos');
+      expect(rightRailToggleVisible(view)).toBe(view !== 'fleet' && view !== 'repos' && view !== 'overview');
     }
   });
 });
@@ -64,8 +64,9 @@ describe('rightRailVisible', () => {
     expect(rightRailVisible({ view: 'code', hasSelection: true })).toBe(true);
   });
 
-  it('Fleet and Repos never show it, regardless of hasSelection', () => {
+  it('Fleet, Repos, and Overview never show it, regardless of hasSelection', () => {
     expect(rightRailVisible({ view: 'fleet', hasSelection: true })).toBe(false);
     expect(rightRailVisible({ view: 'repos', hasSelection: true })).toBe(false);
+    expect(rightRailVisible({ view: 'overview', hasSelection: true })).toBe(false);
   });
 });

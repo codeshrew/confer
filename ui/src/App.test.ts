@@ -10,7 +10,22 @@ import { appState } from './lib/stores.svelte';
 // the actual show/hide at each breakpoint is pure CSS (see App.svelte's
 // media queries), which jsdom can't evaluate.
 
+describe('App — default landing (design/47 §3)', () => {
+  it('a fresh load lands on Overview, not a hub Chat — no appState.view set beforehand', async () => {
+    // Deliberately NOT setting appState.view here — this is the one place
+    // that exercises the untouched module default (every other describe
+    // block in this file explicitly pins its own view first).
+    render(App);
+    await screen.findByTestId('overview-view');
+    expect(screen.queryByTestId('overview-view')).toBeInTheDocument();
+  });
+});
+
 describe('App — responsive drawer structure', () => {
+  // These tests exercise the drawer/scrim CHROME generically — not anything
+  // Overview-specific — so they pin appState.view to 'chat' (Overview, per
+  // design/47, has no left rail/right-rail-toggle at all, which would make
+  // "open menu"/"right-drawer-toggle" not exist to click).
   it('resets to a known drawer state between tests', () => {
     appState.drawer = 'none';
     expect(appState.drawer).toBe('none');
@@ -18,6 +33,7 @@ describe('App — responsive drawer structure', () => {
 
   it('renders the off-canvas scrim, left drawer, and right drawer, closed by default', () => {
     appState.drawer = 'none';
+    appState.view = 'chat';
     render(App);
 
     const scrim = screen.getByTestId('drawer-scrim');
@@ -31,6 +47,7 @@ describe('App — responsive drawer structure', () => {
 
   it('the TopBar hamburger opens the left drawer, and the scrim then closes it', async () => {
     appState.drawer = 'none';
+    appState.view = 'chat';
     const user = userEvent.setup();
     render(App);
 
@@ -45,6 +62,7 @@ describe('App — responsive drawer structure', () => {
 
   it('the right-drawer toggle in the crumb opens the right drawer, and its own close button closes it', async () => {
     appState.drawer = 'none';
+    appState.view = 'chat';
     const user = userEvent.setup();
     render(App);
 
@@ -57,6 +75,7 @@ describe('App — responsive drawer structure', () => {
 
   it('opening one drawer closes the other — only one overlay open at a time', async () => {
     appState.drawer = 'none';
+    appState.view = 'chat';
     const user = userEvent.setup();
     render(App);
 

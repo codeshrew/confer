@@ -5,8 +5,11 @@ import { test, expect } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
-  // Let the initial hub load settle before asserting.
+  // Let the initial hub load settle before asserting. design/47: the
+  // default landing is now Overview, not Chat — every test in this file
+  // exercises a specific per-hub view, so it switches there explicitly.
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
 });
 
 test('Chat shows the message stream and a ticket card', async ({ page }) => {
@@ -23,6 +26,11 @@ test('Chat shows the message stream and a ticket card', async ({ page }) => {
 
 test('Board shows swimlanes and the group-by toggle regroups', async ({ page }) => {
   await page.getByRole('tab', { name: 'Board', exact: true }).click();
+  // Scoped to the Board pane itself — with Overview kept alive (not
+  // destroyed) in the background for instant tab-switching, its own
+  // Coordination-lane card for this same request ("BLOCKED · ...") repeats
+  // the summary text, which would otherwise make this match ambiguous.
+  const boardView = page.getByTestId('board-view');
 
   // Default grouping is by status — the open/claimed/blocked/done lanes
   // (rendered visually uppercase via CSS text-transform; the underlying
@@ -34,7 +42,7 @@ test('Board shows swimlanes and the group-by toggle regroups', async ({ page }) 
   await expect(laneLabels.filter({ hasText: /^claimed$/ })).toBeVisible();
   await expect(laneLabels.filter({ hasText: /^blocked$/ })).toBeVisible();
   await expect(laneLabels.filter({ hasText: /^done$/ })).toBeVisible();
-  await expect(page.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
+  await expect(boardView.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
 
   // Regroup by topic — lanes are now keyed by topic slug.
   await page.getByRole('button', { name: 'Topic', exact: true }).click();

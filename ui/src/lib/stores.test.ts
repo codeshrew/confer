@@ -7,6 +7,12 @@ vi.mock('./api', () => ({
   api: { getCodeFiles: vi.fn() },
 }));
 
+describe('appState.view', () => {
+  it('defaults to overview — design/47 §3\'s new landing, not a hub Chat', () => {
+    expect(appState.view).toBe('overview');
+  });
+});
+
 describe('appState.drawer', () => {
   it('starts closed', () => {
     expect(appState.drawer).toBe('none');

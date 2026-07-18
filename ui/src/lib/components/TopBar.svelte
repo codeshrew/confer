@@ -43,8 +43,12 @@
     loading: 'loading…',
   };
 
-  const views: View[] = ['chat', 'board', 'fleet', 'code', 'repos'];
+  // Overview is first — design/47 §3: it's the only cross-hub view (the
+  // triage front door), everything else answers "what's happening in THIS
+  // hub."
+  const views: View[] = ['overview', 'chat', 'board', 'fleet', 'code', 'repos'];
   const viewLabel: Record<View, string> = {
+    overview: 'Overview',
     chat: 'Chat',
     board: 'Board',
     fleet: 'Fleet',

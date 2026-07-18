@@ -7,7 +7,11 @@ import { test, expect } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
+  // design/47: Overview (the new default landing) has no left rail at all,
+  // so the hamburger/drawer regression guards below need Chat on screen —
+  // switch there up front (a bare page load now lands on Overview instead).
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
 });
 
 async function expectNoHorizontalScroll(page: import('@playwright/test').Page) {
@@ -49,7 +53,9 @@ test('Chat has no horizontal overflow', async ({ page }) => {
 
 test('Board has no horizontal overflow', async ({ page }) => {
   await page.getByRole('tab', { name: 'Board', exact: true }).click();
-  await expect(page.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
+  // Scoped to the Board pane — Overview stays mounted in the background and
+  // repeats this same request's summary in its own Coordination-lane card.
+  await expect(page.getByTestId('board-view').getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
   await expectNoHorizontalScroll(page);
 });
 

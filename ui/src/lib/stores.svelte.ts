@@ -214,7 +214,7 @@ export type CodeStateStore = ReturnType<typeof createCodeStateStore>;
 
 export const codeState: CodeStateStore = createCodeStateStore();
 
-export type View = 'chat' | 'board' | 'fleet' | 'code' | 'repos';
+export type View = 'overview' | 'chat' | 'board' | 'fleet' | 'code' | 'repos';
 export type Theme = 'dark' | 'light';
 
 // Which off-canvas drawer is open on tablet/phone widths (≤1023px). Only one
@@ -236,7 +236,11 @@ function createAppState() {
   // / selectDefaultTopic below) — starting empty avoids a mismatched initial
   // fetch against a hub id that doesn't exist on the real backend.
   let hub = $state('');
-  let view = $state<View>('chat');
+  // design/47 §3 — Overview is the default landing: it's the only cross-hub
+  // view (the front door / triage surface), so a fresh load shows it before
+  // any single hub's Chat. A deep-loaded hub/thread still lands there
+  // (design/41 routing decides that, independent of this default).
+  let view = $state<View>('overview');
   let topic = $state<string | null>(null);
   let selectedMessage = $state<Message | null>(null);
   let theme = $state<Theme>('dark');

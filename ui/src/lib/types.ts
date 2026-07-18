@@ -89,6 +89,18 @@ export interface RequestRow {
   topic: string | null;
 }
 
+// design/47 §5 Phase 2 — the health/trust signals `confer fleet`/`doctor`
+// already compute but the web API doesn't serve yet. Optional on `Agent`
+// (and nullable where the backend may know "no beat yet") so the frontend
+// compiles and degrades gracefully whether or not a given `confer serve` has
+// landed them — see attention.ts's `deriveLiveness`/`deriveTrust`, which
+// fall back to `live`/`verified` when these are absent.
+export type Liveness = 'live' | 'stale' | 'down';
+/** Supersedes `verified` when present: adds `mismatch` (a card key that
+ * doesn't match the pinned key — possible spoof) and `unsigned` (posting
+ * without a signature at all), both folded away in the older enum. */
+export type Trust = 'signed' | 'mismatch' | 'first-sight' | 'unsigned';
+
 export interface Agent {
   id: string;
   display: string;
@@ -98,6 +110,11 @@ export interface Agent {
   lastHost: string | null;
   live: boolean;
   verified: 'signed' | 'first-sight' | 'unverified';
+  /** Three-state liveness + heartbeat age (design/47) — absent until the
+   * backend lands it. */
+  liveness?: Liveness;
+  hbAgeSecs?: number | null;
+  trust?: Trust;
   color: string;
   abbr: string;
   wip: { id: string; summary: string; status: RequestStatus }[];

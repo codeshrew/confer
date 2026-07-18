@@ -93,7 +93,7 @@
   });
 </script>
 
-<div class="board-wrap">
+<div class="board-wrap" data-testid="board-view">
   <div class="board-head">
     <div class="board-topline">
       <h2>Ticket board · {hubName}</h2>
