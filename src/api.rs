@@ -6,7 +6,7 @@
 //! contract with that frontend, not incidental.
 
 use crate::schema::{sanitize_term, CodeRef, Message};
-use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, store, tiers, verify};
+use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, seen, store, tiers, verify};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -557,7 +557,16 @@ fn message_json(
     repo_inv: &repos::Repos,
     clone_cache: &mut HashMap<String, Option<PathBuf>>,
     staleness_cache: &mut HashMap<StalenessKey, refcode::Staleness>,
+    seen_index: &HashMap<String, Vec<seen::SeenBy>>,
 ) -> Value {
+    let seen_by = seen_index
+        .get(&m.front.id)
+        .map(|v| {
+            v.iter()
+                .map(|s| json!({ "role": s.role, "ts": s.ts }))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     json!({
         "id": m.front.id,
         "from": m.front.from,
@@ -573,6 +582,7 @@ fn message_json(
         "replyTo": m.front.reply_to,
         "supersedes": m.front.supersedes,
         "refs": m.front.refs.iter().map(|r| coderef_json(r, repo_inv, clone_cache, staleness_cache)).collect::<Vec<_>>(),
+        "seenBy": seen_by,
     })
 }
 
@@ -603,9 +613,10 @@ fn messages(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
     let repo_inv = repos::load(dir);
     let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
     let mut staleness_cache: HashMap<StalenessKey, refcode::Staleness> = HashMap::new();
+    let seen_index = seen::index(dir, &msgs, &holder.get().roster);
     ApiResponse::ok(json!(msgs
         .iter()
-        .map(|m| message_json(m, &repo_inv, &mut clone_cache, &mut staleness_cache))
+        .map(|m| message_json(m, &repo_inv, &mut clone_cache, &mut staleness_cache, &seen_index))
         .collect::<Vec<_>>()))
 }
 

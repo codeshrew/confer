@@ -47,6 +47,7 @@ mod roster;
 mod schema;
 mod screen;
 mod secrets;
+mod seen;
 #[cfg(feature = "serve")]
 mod serve;
 mod skills;
