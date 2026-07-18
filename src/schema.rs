@@ -62,6 +62,16 @@ pub struct CodeRef {
     /// when `sha == "unresolved"` (never alongside a real pin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
+    /// The branch this ref's branch forked from (design/44 Addendum 2) — best-effort:
+    /// configured upstream, else the repo's default branch. Only present when
+    /// `ref_type == "branch"` and it differs from `ref_name` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    /// `merge-base(sha, base_ref)`, full hex (design/44 Addendum 2) — the divergence
+    /// commit, which survives a squash/merge that GCs the branch's own commits. Omitted
+    /// when `base_ref` is unknown or equals `sha` itself (no real divergence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -373,6 +383,8 @@ mod tests {
             dirty: true,
             untracked: false,
             rev: None,
+            base_ref: Some("main".into()),
+            fork_point: Some("c".repeat(40)),
         };
         let yaml = serde_yaml::to_string(&r).unwrap();
         let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
@@ -382,6 +394,8 @@ mod tests {
         assert!(back.dirty);
         assert!(!back.untracked);
         assert_eq!(back.rev, None);
+        assert_eq!(back.base_ref.as_deref(), Some("main"));
+        assert_eq!(back.fork_point.as_deref(), Some("c".repeat(40).as_str()));
     }
 
     #[test]
@@ -397,6 +411,8 @@ mod tests {
         assert!(!r.dirty);
         assert!(!r.untracked);
         assert_eq!(r.rev, None);
+        assert_eq!(r.base_ref, None);
+        assert_eq!(r.fork_point, None);
     }
 
     #[test]

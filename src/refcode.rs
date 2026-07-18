@@ -311,6 +311,8 @@ mod tests {
             dirty: false,
             untracked: false,
             rev: None,
+            base_ref: None,
+            fork_point: None,
         };
         let out = render_resolved(&repo_inv, &r, 50);
         assert!(out.contains("not cloned here"), "out: {out}");
@@ -334,6 +336,8 @@ mod tests {
             dirty: false,
             untracked: false,
             rev: None,
+            base_ref: None,
+            fork_point: None,
         };
         let out = render_resolved(&repo_inv, &r, 50);
         // a non-full-hex sha (legacy "HEAD") is shown as-is, not truncated/mangled.

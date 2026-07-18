@@ -708,6 +708,8 @@ mod tests {
             dirty: false,
             untracked: false,
             rev: None,
+            base_ref: None,
+            fork_point: None,
         }
     }
 

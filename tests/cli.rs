@@ -5435,6 +5435,125 @@ fn ref_captures_from_worktree_not_the_mapped_clone() {
 }
 
 #[test]
+fn ref_captures_fork_point_and_base_ref_for_a_branch_off_main() {
+    // design/44 Addendum 2: a ref made on a branch cut from `main` captures `base_ref`
+    // ("main") and `fork_point` (the merge-base — here exactly main's tip, since the
+    // branch forked right off it and main hasn't moved since).
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let main_sha = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    assert!(git(&code, &["checkout", "-q", "-b", "feature"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "feature-c1"]).status.success());
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"branch\""), "j: {j}");
+    assert!(j.contains("\"ref_name\":\"feature\""), "j: {j}");
+    assert!(j.contains("\"base_ref\":\"main\""), "base_ref should be main: {j}");
+    assert!(j.contains(&format!("\"fork_point\":\"{main_sha}\"")), "fork_point should be main's tip: {j}");
+    // The send receipt (stderr) surfaces it too.
+    assert!(err(&a).contains("forked from main@"), "stderr should show the fork point: {}", err(&a));
+}
+
+#[test]
+fn ref_omits_base_ref_and_fork_point_on_the_default_branch_itself() {
+    // A ref made directly on `main` has nothing to report — main didn't fork from
+    // itself. base_ref/fork_point must be absent, not present-and-equal-to-main.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-onmain");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"branch\""), "j: {j}");
+    assert!(j.contains("\"ref_name\":\"main\""), "j: {j}");
+    assert!(!j.contains("\"base_ref\""), "on the default branch itself, base_ref must be omitted: {j}");
+    assert!(!j.contains("\"fork_point\""), "on the default branch itself, fork_point must be omitted: {j}");
+}
+
+#[test]
+fn ref_omits_base_ref_and_fork_point_on_detached_head() {
+    // Detached HEAD has no branch at all — nothing to compute a fork point FROM.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-detached");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let sha0 = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    assert!(git(&code, &["checkout", "-q", &sha0]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"detached\""), "j: {j}");
+    assert!(!j.contains("\"base_ref\""), "detached HEAD has no base_ref: {j}");
+    assert!(!j.contains("\"fork_point\""), "detached HEAD has no fork_point: {j}");
+}
+
+#[test]
+fn ref_fork_point_anchor_survives_a_squash_that_gcs_the_branch_commits() {
+    // design/44 Addendum 2: the fork_point lives ON the base branch, so it survives a
+    // squash-merge that collapses (and eventually GCs) the feature branch's own
+    // mid-feature commits — the stable anchor even after the branch itself is gone.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-squash");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+
+    assert!(git(&code, &["checkout", "-q", "-b", "feature"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "feature-c1"]).status.success());
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    let fork_point = j
+        .split("\"fork_point\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("fork_point present")
+        .to_string();
+
+    // Squash-merge feature into main (one new commit; feature's own commit is now
+    // reachable only via the deleted branch ref) then delete + prune the branch.
+    assert!(git(&code, &["checkout", "-q", "main"]).status.success());
+    assert!(git(&code, &["merge", "--squash", "feature"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "squashed feature"]).status.success());
+    assert!(git(&code, &["branch", "-D", "feature"]).status.success());
+    assert!(git(&code, &["reflog", "expire", "--all", "--expire=now"]).status.success());
+    let _ = git(&code, &["gc", "--prune=now", "-q"]);
+
+    // The anchor (fork_point == main's pre-squash tip) is still an ancestor of main —
+    // unaffected by the branch's own commits being gone.
+    let is_anc = git(&code, &["merge-base", "--is-ancestor", &fork_point, "main"]);
+    assert!(is_anc.status.success(), "fork_point must remain an ancestor of main after the squash+prune");
+}
+
+#[test]
 fn ref_integrity_gate_clean_commit_pins_normally() {
     let c = new_hub().clone("alpha");
     let code = tmp("coderepo-gate-clean");
