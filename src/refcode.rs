@@ -82,6 +82,26 @@ pub fn staleness(
     }
 }
 
+/// Total line count of `<sha>:<path>` in `dir` — the cheap general check behind the
+/// integrity gate's "range past EOF" rule (design/44 §2). `None` if unresolvable or
+/// too large to bother reading (mirrors `snippet`'s size guard).
+pub fn blob_line_count(dir: &Path, sha: &str, path: &str) -> Option<u64> {
+    let spec = format!("{sha}:{path}");
+    let szo = gitcmd::output(dir, &["cat-file", "-s", &spec]).ok()?;
+    if !szo.status.success() {
+        return None;
+    }
+    let size: u64 = String::from_utf8_lossy(&szo.stdout).trim().parse().ok()?;
+    if size > 2_000_000 {
+        return None;
+    }
+    let o = gitcmd::output(dir, &["cat-file", "-p", &spec]).ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&o.stdout).lines().count() as u64)
+}
+
 /// The referenced lines (1-based, inclusive), read from the clone at the PINNED sha,
 /// bounded to `max_lines` and sanitized. None if unresolvable (no clone / missing
 /// object / too large / empty range).
@@ -204,6 +224,14 @@ mod tests {
     }
 
     #[test]
+    fn staleness_unresolved_sha_is_unpinned_like_legacy_head() {
+        // design/44 §3: the new `sha: "unresolved"` marker (the untracked / no-clone
+        // forced no-pin case) flows through the SAME non-full-hex → Unpinned path as a
+        // legacy `sha: HEAD` ref — old binaries render both correctly with zero compat work.
+        assert_eq!(staleness(None, "unresolved", "f.rs", None), Staleness::Unpinned);
+    }
+
+    #[test]
     fn staleness_unknown_without_clone_or_content_hash() {
         let (dir, head, blob) = repo_with_file("unknown", "a\nb\n");
         // no clone at all
@@ -277,6 +305,12 @@ mod tests {
             path: "f.rs".into(),
             range: None,
             content_hash: None,
+            ref_name: None,
+            ref_type: None,
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
         };
         let out = render_resolved(&repo_inv, &r, 50);
         assert!(out.contains("not cloned here"), "out: {out}");
@@ -288,7 +322,19 @@ mod tests {
     #[test]
     fn render_resolved_keeps_short_sha_unmodified() {
         let repo_inv: repos::Repos = Default::default();
-        let r = schema::CodeRef { repo: "mylib".into(), sha: "HEAD".into(), path: "f.rs".into(), range: None, content_hash: None };
+        let r = schema::CodeRef {
+            repo: "mylib".into(),
+            sha: "HEAD".into(),
+            path: "f.rs".into(),
+            range: None,
+            content_hash: None,
+            ref_name: None,
+            ref_type: None,
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+        };
         let out = render_resolved(&repo_inv, &r, 50);
         // a non-full-hex sha (legacy "HEAD") is shown as-is, not truncated/mangled.
         assert!(out.contains("@HEAD"), "out: {out}");

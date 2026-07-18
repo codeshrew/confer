@@ -696,7 +696,19 @@ mod tests {
     }
 
     fn code_ref(repo: &str, path: &str, range: Option<[u64; 2]>) -> crate::schema::CodeRef {
-        crate::schema::CodeRef { repo: repo.into(), path: path.into(), sha: "a".repeat(40), range, content_hash: None }
+        crate::schema::CodeRef {
+            repo: repo.into(),
+            path: path.into(),
+            sha: "a".repeat(40),
+            range,
+            content_hash: None,
+            ref_name: None,
+            ref_type: None,
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+        }
     }
 
     #[test]

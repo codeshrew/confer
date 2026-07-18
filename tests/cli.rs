@@ -141,6 +141,24 @@ impl Clone {
         a.extend_from_slice(extra);
         self.confer(&a)
     }
+    /// Like `confer`, but run with the process cwd set to `cwd` — for exercising
+    /// design/44 §1.1's "capture from the agent's cwd" rule (e.g. a worktree the
+    /// machine-local clone map doesn't itself know about).
+    fn confer_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        Command::new(BIN)
+            .env("HOME", &self.home)
+            .env("CONFER_HUB", &self.dir)
+            .env("CONFER_ROLE", &self.role)
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("run confer")
+    }
+    fn append_in(&self, cwd: &Path, extra: &[&str]) -> Output {
+        let mut a: Vec<&str> = vec!["append", "--from", &self.role];
+        a.extend_from_slice(extra);
+        self.confer_in(cwd, &a)
+    }
     fn append_stdin(&self, extra: &[&str], stdin: &str) -> Output {
         use std::io::Write;
         let mut a: Vec<&str> = vec!["append", "--from", &self.role];
@@ -5208,7 +5226,10 @@ fn refs_reverse_lookup_finds_conversations_about_code() {
     // code repo + register (layer 1) + map (layer 2)
     let code = tmp("coderepo3");
     assert!(git(&code, &["init", "-q"]).status.success());
-    std::fs::write(code.join("lib.rs"), "a\nb\nc\nd\n").unwrap();
+    // 20 lines — long enough for the #L10-20 ref below to be a real, committed range
+    // (design/44's write-time integrity gate now refuses a range past the pinned EOF).
+    let content: String = (1..=20).map(|n| format!("line{n}\n")).collect();
+    std::fs::write(code.join("lib.rs"), content).unwrap();
     assert!(git(&code, &["add", "-A"]).status.success());
     assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
     std::fs::create_dir_all(c.dir.join("repos")).unwrap();
@@ -5294,4 +5315,283 @@ fn ref_show_renders_snippet_and_flags_drift() {
     assert!(out(&r).contains("changed"), "refs should flag drift: {}", out(&r));
     // the snippet still shows the code AS PINNED (old bytes), not HEAD's
     assert!(out(&s2).contains("one"), "snippet must read at the pinned sha: {}", out(&s2));
+}
+
+// ── design/44 Phase 1: write-time capture + integrity gate ──────────────────────────
+
+#[test]
+fn ref_pins_without_a_hub_card_registration_independent() {
+    // design/44 §1.3 (absorbs task-#49): pinning must not depend on hub-card
+    // registration — a repo that's ONLY in the machine-local clone map (no
+    // repos/<slug>.md card at all) still pins a symbolic rev to a full hex sha.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-noreg");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "fn f() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // NO repos/mylib.md card — only the machine-local map.
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "append with --ref (no hub card) failed: {}", err(&a));
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains(&format!("\"sha\":\"{head}\"")), "must pin to the full sha: {shown}");
+}
+
+#[test]
+fn ref_identity_captures_branch_tag_detached_and_explicit_hex() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-identity");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let sha0 = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Implicit HEAD on a branch → branch + name + date + full sha.
+    let a1 = c.append(&["--type", "note", "--to", "b", "--summary", "s1", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a1), "err: {}", err(&a1));
+    let id1 = newest_id(&c);
+    let j1 = out(&c.confer(&["show", &id1, "--json"]));
+    assert!(j1.contains("\"ref_type\":\"branch\""), "j1: {j1}");
+    assert!(j1.contains("\"ref_name\":\"main\""), "j1: {j1}");
+    assert!(j1.contains("\"commit_date\":\""), "j1: {j1}");
+    assert!(j1.contains(&format!("\"sha\":\"{sha0}\"")), "j1: {j1}");
+
+    // Detached HEAD (checked out by raw sha) → detached, no name.
+    assert!(git(&code, &["checkout", "-q", &sha0]).status.success());
+    let a2 = c.append(&["--type", "note", "--to", "b", "--summary", "s2", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a2), "err: {}", err(&a2));
+    let id2 = newest_id(&c);
+    let j2 = out(&c.confer(&["show", &id2, "--json"]));
+    assert!(j2.contains("\"ref_type\":\"detached\""), "j2: {j2}");
+    assert!(!j2.contains("\"ref_name\""), "detached must carry no name: {j2}");
+
+    // A tag checkout (detached-at-a-tag) → tag + name.
+    assert!(git(&code, &["tag", "-a", "v1", "-m", "v1"]).status.success());
+    assert!(git(&code, &["checkout", "-q", "v1"]).status.success());
+    let a3 = c.append(&["--type", "note", "--to", "b", "--summary", "s3", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a3), "err: {}", err(&a3));
+    let id3 = newest_id(&c);
+    let j3 = out(&c.confer(&["show", &id3, "--json"]));
+    assert!(j3.contains("\"ref_type\":\"tag\""), "j3: {j3}");
+    assert!(j3.contains("\"ref_name\":\"v1\""), "j3: {j3}");
+
+    // Explicit short-hex → detached, resolved to the full sha.
+    assert!(git(&code, &["checkout", "-q", "main"]).status.success());
+    let shorthex = &sha0[..7];
+    let a4 = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s4", "--text", "t",
+        "--ref", &format!("mylib:f.rs@{shorthex}"),
+    ]);
+    assert!(ok(&a4), "err: {}", err(&a4));
+    let id4 = newest_id(&c);
+    let j4 = out(&c.confer(&["show", &id4, "--json"]));
+    assert!(j4.contains("\"ref_type\":\"detached\""), "j4: {j4}");
+    assert!(j4.contains(&format!("\"sha\":\"{sha0}\"")), "j4: {j4}");
+}
+
+#[test]
+fn ref_captures_from_worktree_not_the_mapped_clone() {
+    // design/44 §1.1: the mapped clone map records ONE path, but the agent may be
+    // working in a linked worktree on a DIFFERENT branch/commit — capture must come
+    // from the worktree (the tree the agent is actually in), never the mapped path.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-worktree");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "main-content\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "main-c0"]).status.success());
+    let main_sha = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    let wt = tmp("worktree-feature");
+    let _ = std::fs::remove_dir_all(&wt); // `git worktree add` requires the target not exist
+    assert!(git(&code, &["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()]).status.success());
+    std::fs::write(wt.join("f.rs"), "feature-content\n").unwrap();
+    assert!(git(&wt, &["add", "-A"]).status.success());
+    assert!(git(&wt, &["commit", "-q", "-m", "feature-c0"]).status.success());
+    let feature_sha = String::from_utf8_lossy(&git(&wt, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    assert_ne!(feature_sha, main_sha);
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Capture FROM the worktree (cwd) — must record the WORKTREE's sha/branch, not
+    // the mapped clone's.
+    let a = c.append_in(&wt, &["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains(&format!("\"sha\":\"{feature_sha}\"")), "must pin the WORKTREE's sha: {j}");
+    assert!(j.contains("\"ref_name\":\"feature\""), "must record the worktree's branch: {j}");
+    // The capture provenance (stderr-only, never persisted) names the cwd source.
+    assert!(err(&a).contains("[cwd]"), "stderr should show cwd provenance: {}", err(&a));
+}
+
+#[test]
+fn ref_integrity_gate_clean_commit_pins_normally() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-clean");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L2-3"]);
+    assert!(ok(&a), "clean+committed ref should pin normally: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(!j.contains("\"dirty\":true"), "j: {j}");
+    assert!(!j.contains("\"untracked\":true"), "j: {j}");
+}
+
+#[test]
+fn ref_integrity_gate_dirty_in_range_fails_then_embeds_with_allow_dirty() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-dirty");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Uncommitted edit INSIDE the referenced range → default FAIL.
+    std::fs::write(code.join("f.rs"), "l1\nCHANGED\nl3\nl4\nl5\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L2-3"]);
+    assert!(!ok(&bad), "an in-range uncommitted edit must fail by default");
+    assert!(err(&bad).contains("uncommitted"), "err: {}", err(&bad));
+    assert!(err(&bad).contains("--allow-dirty"), "remedy must be named: {}", err(&bad));
+
+    // --allow-dirty embeds the working-tree lines instead of refusing.
+    let ok_a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s", "--text", "t",
+        "--ref", "mylib:f.rs#L2-3", "--allow-dirty",
+    ]);
+    assert!(ok(&ok_a), "err: {}", err(&ok_a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"dirty\":true"), "j: {j}");
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("confer-ref") && body.contains("CHANGED"), "body should embed the dirty lines: {body}");
+}
+
+#[test]
+fn ref_integrity_gate_remaps_range_for_edits_above_it() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-remap");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "a\nb\nc\nd\ne\nf\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // The agent's editor now shows 2 NEW uncommitted lines inserted ABOVE the range
+    // it's about to reference — d/e are now at working-tree lines 6/7.
+    std::fs::write(code.join("f.rs"), "a\nNEW1\nNEW2\nb\nc\nd\ne\nf\n").unwrap();
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L6-7"]);
+    // An above-range shift is a remap, NOT a failure — no --allow-dirty needed.
+    assert!(ok(&a), "an above-range edit must remap, not fail: {}", err(&a));
+    assert!(err(&a).contains("remapped"), "stderr should explain the remap: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    // Remapped into the pinned blob's (committed) coordinates: d=L4, e=L5.
+    assert!(j.contains("\"range\":[4,5]"), "j: {j}");
+    assert!(!j.contains("\"dirty\":true"), "a remap is not a dirty embed: {j}");
+}
+
+#[test]
+fn ref_integrity_gate_untracked_fails_then_embeds_as_unresolved() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-untracked");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // A file that was never committed at all.
+    std::fs::write(code.join("new.rs"), "brand new content\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:new.rs"]);
+    assert!(!ok(&bad), "an untracked path must fail by default");
+    assert!(err(&bad).contains("untracked"), "err: {}", err(&bad));
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s", "--text", "t",
+        "--ref", "mylib:new.rs", "--allow-dirty",
+    ]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"sha\":\"unresolved\""), "j: {j}");
+    assert!(j.contains("\"untracked\":true"), "j: {j}");
+    assert!(!j.contains("\"rev\""), "rev must be omitted for the untracked case: {j}");
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("brand new content"), "body should embed the untracked content: {body}");
+}
+
+#[test]
+fn ref_integrity_gate_range_past_eof_fails() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-eof");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Working tree adds lines 3-4 (not yet committed) — the ref claims them anyway.
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L3-4"]);
+    assert!(!ok(&bad), "referencing lines past the pinned blob's EOF must fail");
+    assert!(err(&bad).contains("committed"), "err: {}", err(&bad));
+}
+
+#[test]
+fn ref_pins_from_a_shallow_clone_not_refused_by_identity() {
+    // design/44 §1.5: a shallow clone's root-sha is the shallow boundary, not the true
+    // root — a hub card's root_sha (from the full origin) would never match it. The
+    // fix skips that comparison for a shallow mapped clone (advisory, never refuse).
+    let c = new_hub().clone("alpha");
+    let origin = tmp("shallow-origin");
+    assert!(git(&origin, &["init", "-q"]).status.success());
+    std::fs::write(origin.join("f.rs"), "l1\n").unwrap();
+    assert!(git(&origin, &["add", "-A"]).status.success());
+    assert!(git(&origin, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(git(&origin, &["commit", "--allow-empty", "-q", "-m", "c1"]).status.success());
+    let true_root =
+        String::from_utf8_lossy(&git(&origin, &["rev-list", "--max-parents=0", "HEAD"]).stdout).trim().to_string();
+
+    let shallow = tmp("shallow-clone");
+    let _ = std::fs::remove_dir_all(&shallow);
+    // `--depth` is a no-op on a plain local-path clone (git hardlinks and ignores
+    // shallowing) — force the real shallow codepath via `file://`.
+    let cl = Command::new("git")
+        .args([
+            "clone", "-q", "--depth", "1",
+            &format!("file://{}", origin.display()), shallow.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(cl.status.success(), "shallow clone failed: {}", String::from_utf8_lossy(&cl.stderr));
+
+    // The hub card asserts the ORIGIN's true root_sha, which the shallow clone's own
+    // root-sha (the shallow boundary commit, c1) will NOT reproduce.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), format!("---\nrole: code\nroot_sha: {true_root}\n---\n"))
+        .unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", shallow.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "a shallow clone must be ACCEPTED (advisory), not refused: {}", err(&a));
+    assert!(err(&a).contains("shallow"), "stderr should carry the shallow advisory: {}", err(&a));
+    let id = newest_id(&c);
+    let s = out(&c.confer(&["show", &id]));
+    assert!(!s.contains("not cloned here"), "the shallow clone must render, not degrade to pointer-only: {s}");
 }

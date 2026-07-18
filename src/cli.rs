@@ -182,6 +182,17 @@ pub(crate) enum Cmd {
         /// blocks common token/key shapes — history is permanent + fleet-wide).
         #[arg(long = "allow-secret")]
         allow_secret: bool,
+        /// capture EVERY `--ref`'s identity from this directory's worktree instead of the
+        /// mapped clone (message-wide) — the escape hatch when the agent's cwd isn't the
+        /// tree it means; only applies to refs whose repo identity matches this dir.
+        #[arg(long = "ref-from")]
+        ref_from: Option<String>,
+        /// allow a `--ref` whose content is uncommitted/untracked at capture: embeds the
+        /// working-tree lines into the message body (a `confer-ref` fence) instead of
+        /// refusing to pin. Default is to FAIL — a ref is a promise peers can retrieve
+        /// what's pinned; use this only when that promise can't hold yet.
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
     /// Open a new tracked request (a ticket). Sugar for `append --type request`.
     /// note = chat, request = ticket: use this when the thing needs someone to DO

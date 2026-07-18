@@ -3,13 +3,14 @@
 
 use anyhow::{anyhow, Result};
 use std::io::{IsTerminal, Read};
+use std::path::Path;
 
 use crate::projection::claimants;
 use crate::schema::{self, Frontmatter, Message, TYPES};
 use crate::{
-    config, gitcmd, groups, hint, id_matches, is_full_ulid, is_reserved_name, now, repos,
-    resolve_unique, roster, secrets, short_id, store, truncate, valid_slug,
-    warn_if_watch_should_be_live, CreateArgs, LifecycleArgs,
+    config, crosshub, gitcmd, groups, hint, id_matches, is_full_ulid, is_reserved_name, now,
+    refcode, repomap, repos, resolve_unique, roster, secrets, short_id, store, truncate,
+    valid_slug, warn_if_watch_should_be_live, CreateArgs, LifecycleArgs,
 };
 
 pub(crate) struct AppendArgs {
@@ -31,6 +32,12 @@ pub(crate) struct AppendArgs {
     pub(crate) defer: bool,
     /// override the secret-shape lint (post even if the body looks like it has a key).
     pub(crate) allow_secret: bool,
+    /// design/44 §1.1: capture EVERY `--ref`'s identity from this dir instead of the
+    /// mapped clone (message-wide; only applies to refs whose repo identity matches it).
+    pub(crate) ref_from: Option<String>,
+    /// design/44 §2: downgrade the write-time integrity gate from a hard FAIL to a
+    /// warning + auto-embed of the working-tree content actually referenced.
+    pub(crate) allow_dirty: bool,
 }
 
 /// Parse a `--ref` token `repo:path[@sha][#Lstart-Lend]` into a CodeRef.
@@ -67,6 +74,12 @@ fn parse_ref(s: &str) -> Result<schema::CodeRef> {
         path: path.to_string(),
         range,
         content_hash: None,
+        ref_name: None,
+        ref_type: None,
+        commit_date: None,
+        dirty: false,
+        untracked: false,
+        rev: None,
     })
 }
 
@@ -90,41 +103,339 @@ pub(crate) fn parse_range(span: &str) -> Result<[u64; 2]> {
     }
 }
 
-/// Pin a `--ref`'s sha to an immutable full sha AT WRITE TIME, and record the
-/// referenced blob's OID as `content_hash` when the repo is cloned here (design/40
-/// #2 + #3). A code reference must be reproducible — we never persist a moving
-/// `HEAD`/branch. Rules (per the Fable review):
-///  - an explicit full-hex sha (40 or 64) is accepted as-is (you may reference code
-///    you only have a sha for — no clone required); `content_hash` is filled in only
-///    if a clone is mapped AND has the object.
-///  - a symbolic sha (`HEAD`, a branch, a short sha) REQUIRES a local clone — resolved
-///    via the machine-local repo map, validated against the card's `root_sha` — and is
-///    resolved to a full sha there. Without a clone it's an error: we won't persist an
-///    unpinnable ref.
-fn resolve_and_pin_ref(repo_inv: &repos::Repos, r: &mut schema::CodeRef) -> Result<()> {
-    let is_full_hex =
-        (r.sha.len() == 40 || r.sha.len() == 64) && r.sha.chars().all(|c| c.is_ascii_hexdigit());
-    let card_root_sha = repo_inv.get(&r.repo).and_then(|c| c.root_sha.clone());
-    let clone = crate::repomap::resolve(&r.repo, card_root_sha.as_deref());
+/// Bound on an embedded `confer-ref` fence (design/44 §2; sized like design/40's ~150-line
+/// diff-embed gate). A working-tree snapshot beyond this refuses to embed ("too large —
+/// commit it") rather than bloat the permanent, fleet-wide hub log.
+const EMBED_MAX_LINES: usize = 200;
 
-    if !is_full_hex {
-        let Some(dir) = clone.as_ref() else {
+/// What the caller (`cmd_append`) must fold back into the message for one pinned `--ref`
+/// (design/44 §1/§2): an optional stderr-only capture-provenance line (NEVER persisted —
+/// worktree paths are machine-local), an optional `confer-ref` body fence (only produced
+/// under `--allow-dirty`), and non-fatal advisories.
+pub(crate) struct PinOutcome {
+    pub(crate) provenance: Option<String>,
+    pub(crate) fence: Option<String>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// How the pinned commit was reached — feeds `ref_name`/`ref_type` (design/44 §1.2).
+enum RefKind {
+    Branch(String),
+    Tag(String),
+    Detached,
+}
+
+impl RefKind {
+    fn apply(self, r: &mut schema::CodeRef) {
+        match self {
+            RefKind::Branch(n) => {
+                r.ref_type = Some("branch".to_string());
+                r.ref_name = Some(n);
+            }
+            RefKind::Tag(n) => {
+                r.ref_type = Some("tag".to_string());
+                r.ref_name = Some(n);
+            }
+            RefKind::Detached => {
+                r.ref_type = Some("detached".to_string());
+                r.ref_name = None;
+            }
+        }
+    }
+}
+
+fn is_full_hex(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// A short/full hex-looking token — the boundary design/44 §1.2 classifies as `detached`
+/// regardless of whether a same-named branch/tag happens to exist ("you typed a sha").
+fn looks_like_hex(s: &str) -> bool {
+    s.len() >= 4 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Classify an IMPLICIT `HEAD` capture (design/44 §1.2): the checked-out branch, else an
+/// exact-match tag (detached-at-a-tag), else plain detached.
+fn classify_implicit_head(dir: &Path) -> RefKind {
+    if let Ok(o) = gitcmd::output(dir, &["symbolic-ref", "--short", "-q", "HEAD"]) {
+        if o.status.success() {
+            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !name.is_empty() {
+                return RefKind::Branch(name);
+            }
+        }
+    }
+    if let Ok(o) = gitcmd::output(dir, &["describe", "--tags", "--exact-match", "HEAD"]) {
+        if o.status.success() {
+            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !name.is_empty() {
+                return RefKind::Tag(name);
+            }
+        }
+    }
+    RefKind::Detached
+}
+
+/// Classify an EXPLICIT `@R` capture (design/44 §1.2): a hex-looking token → detached;
+/// else `refs/heads/<R>` → branch, `refs/tags/<R>` → tag; anything else → detached.
+fn classify_explicit(dir: &Path, token: &str) -> RefKind {
+    if looks_like_hex(token) {
+        return RefKind::Detached;
+    }
+    let verified = |refname: &str| {
+        gitcmd::output(dir, &["show-ref", "--verify", "--quiet", refname])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if verified(&format!("refs/heads/{token}")) {
+        return RefKind::Branch(token.to_string());
+    }
+    if verified(&format!("refs/tags/{token}")) {
+        return RefKind::Tag(token.to_string());
+    }
+    RefKind::Detached
+}
+
+/// One `git diff -U0` hunk header (`@@ -a[,b] +c[,d] @@`), old/new line spans.
+struct Hunk {
+    old_len: u64,
+    new_start: u64,
+    new_len: u64,
+}
+
+/// Parse `-U0` hunk headers into their old/new coordinates — the exact line mapping the
+/// integrity gate's remap uses (design/44 §2). Ignores anything that doesn't parse (never
+/// panics on unexpected diff output).
+fn parse_hunks(diff_text: &str) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    let parse_span = |s: &str| -> Option<(u64, u64)> {
+        match s.split_once(',') {
+            Some((a, b)) => Some((a.parse().ok()?, b.parse().ok()?)),
+            None => Some((s.parse().ok()?, 1)),
+        }
+    };
+    for line in diff_text.lines() {
+        let Some(rest) = line.strip_prefix("@@ -") else { continue };
+        let Some(end) = rest.find(" @@") else { continue };
+        let Some((old, new)) = rest[..end].split_once(" +") else { continue };
+        let (Some((_, old_len)), Some((new_start, new_len))) = (parse_span(old), parse_span(new))
+        else {
+            continue;
+        };
+        out.push(Hunk { old_len, new_start, new_len });
+    }
+    out
+}
+
+/// The write-time integrity gate's verdict for one ref (design/44 §2). Only called when
+/// the pinned sha equals the capture dir's CURRENT HEAD commit — a deliberate historical
+/// `@sha` never reaches this (§1.3).
+enum GateVerdict {
+    /// Nothing to remap or fail.
+    Clean,
+    /// Above-range edits shifted the stored range into blob coordinates.
+    Remapped { range: [u64; 2], note: String },
+    /// Untracked (or `.gitignore`d) — no blob exists at any sha.
+    Untracked { ignored: bool },
+    /// Tracked, but the referenced content itself is uncommitted (or past EOF at the pin).
+    Dirty { reason: String },
+}
+
+/// Hunk-overlap (not file-level) dirty check (design/44 §2): a hunk whose NEW-side span
+/// (working-tree coordinates, matching the ref's stored range) intersects `[s,e]` → the
+/// referenced content itself is uncommitted; hunks entirely above shift the range by
+/// `Σ(new_len − old_len)`, remapped into blob coordinates; no range → any hunk fails.
+fn integrity_gate(dir: &Path, pinned_sha: &str, path: &str, range: Option<[u64; 2]>) -> Result<GateVerdict> {
+    let tracked = gitcmd::output(dir, &["ls-files", "--error-unmatch", "--", path])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !tracked {
+        let ignored = gitcmd::output(dir, &["check-ignore", "-q", "--", path])
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        return Ok(GateVerdict::Untracked { ignored });
+    }
+    let o = gitcmd::output(dir, &["diff", "-U0", pinned_sha, "--", path])?;
+    if !o.status.success() {
+        return Ok(GateVerdict::Clean); // diff couldn't run (e.g. binary) — don't block on it
+    }
+    let hunks = parse_hunks(&String::from_utf8_lossy(&o.stdout));
+    if hunks.is_empty() {
+        // Nothing uncommitted at all — working tree == the pinned blob exactly. The ONLY
+        // way a range can still be invalid here is if it was never valid: pointing past
+        // the file's (unchanged) length. A genuine dirty-EOF case (lines that exist in
+        // the working tree but not yet in the blob) is instead an INTERSECTING hunk,
+        // caught below — never reached when `hunks` is empty.
+        if let Some([_, e]) = range {
+            if let Some(n) = refcode::blob_line_count(dir, pinned_sha, path) {
+                if e > n {
+                    return Ok(GateVerdict::Dirty {
+                        reason: format!("those lines aren't committed yet (the pinned commit only has {n} lines)"),
+                    });
+                }
+            }
+        }
+        return Ok(GateVerdict::Clean);
+    }
+    let Some([s, e]) = range else {
+        // Whole-file ref: any uncommitted change at all breaks "this file as pinned".
+        return Ok(GateVerdict::Dirty { reason: "the file has uncommitted changes".to_string() });
+    };
+    let mut shift: i64 = 0;
+    for h in &hunks {
+        let new_end = if h.new_len == 0 { h.new_start } else { h.new_start + h.new_len - 1 };
+        if h.new_len > 0 && h.new_start <= e && new_end >= s {
+            return Ok(GateVerdict::Dirty {
+                reason: format!("uncommitted changes overlapping L{s}-{e}"),
+            });
+        }
+        if new_end < s {
+            shift += h.new_len as i64 - h.old_len as i64;
+        }
+    }
+    if shift != 0 {
+        let ns = (s as i64 - shift).max(1) as u64;
+        let ne = (e as i64 - shift).max(1) as u64;
+        return Ok(GateVerdict::Remapped {
+            range: [ns, ne],
+            note: format!("range remapped L{s}-{e} → L{ns}-{ne}: uncommitted insertion above"),
+        });
+    }
+    Ok(GateVerdict::Clean)
+}
+
+/// Build a `confer-ref` body fence (design/40) embedding the CURRENT working-tree content
+/// of the referenced range (or whole file) — the `--allow-dirty` escape hatch (design/44
+/// §2). `Err` (not embedded) when it doesn't fit the size gate or can't be read.
+fn embed_fence(working_path: &Path, repo: &str, path: &str, sha: &str, range: Option<[u64; 2]>) -> Result<String, String> {
+    let text = std::fs::read_to_string(working_path)
+        .map_err(|e| format!("could not read {} to embed: {e}", working_path.display()))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let (start, end, header_range) = match range {
+        Some([s, e]) => (s.max(1) as usize, e as usize, format!(" range=L{s}-{e}")),
+        None => (1, lines.len(), String::new()),
+    };
+    let snippet: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            let n = i + 1;
+            n >= start && n <= end
+        })
+        .map(|(_, l)| *l)
+        .collect();
+    if snippet.len() > EMBED_MAX_LINES {
+        return Err(format!(
+            "{} lines is too large to embed (> {EMBED_MAX_LINES}) — commit it instead of --allow-dirty",
+            snippet.len()
+        ));
+    }
+    let mut fence = format!("```confer-ref repo={repo} path={path} sha={sha}{header_range}\n");
+    for l in &snippet {
+        fence.push_str(l);
+        fence.push('\n');
+    }
+    fence.push_str("```\n");
+    Ok(fence)
+}
+
+/// Pin a `--ref` to an immutable full sha AT WRITE TIME, capture its temporal identity, and
+/// run the write-time integrity gate (design/44 §1–2). A code reference is either pinned to
+/// a full commit sha with its identity captured, or explicitly marked `sha: "unresolved"` —
+/// the literal `HEAD`, a branch name, or a short hash never lands in `sha` again.
+///
+/// Capture-directory precedence (§1.1, worktree-correct): `--ref-from` (repo-matching) → the
+/// agent's cwd (same repo) → the mapped clone (fallback) → none. EVERY subsequent command for
+/// this ref — sha, ref_name/ref_type, commit_date, content_hash, the dirty check — runs
+/// against that SAME directory; never mixed. Pinning does NOT depend on hub-card registration
+/// (§1.3/task-#49): the clone map alone governs local resolvability.
+fn resolve_and_pin_ref(
+    repo_inv: &repos::Repos,
+    r: &mut schema::CodeRef,
+    ref_from: Option<&Path>,
+    allow_dirty: bool,
+) -> Result<PinOutcome> {
+    let raw_rev = r.sha.clone(); // as typed/defaulted ("HEAD" or an explicit token)
+    let is_full_hex_sha = is_full_hex(&raw_rev);
+    let hex_token = looks_like_hex(&raw_rev);
+    let card_root_sha = repo_inv.get(&r.repo).and_then(|c| c.root_sha.clone());
+    let capture = repomap::capture_dir(&r.repo, card_root_sha.as_deref(), ref_from);
+    let mut warnings = Vec::new();
+
+    // Shallow-clone advisory (design/44 §1.5): the capture dir's root-sha identity check
+    // was SKIPPED (unverifiable, not mismatched) — accepted anyway, but say so.
+    if let Some(cap) = capture.as_ref() {
+        if card_root_sha.is_some() && crosshub::is_shallow(&cap.dir) {
+            warnings.push(format!(
+                "--ref {}:{}: '{}' is a shallow clone — its root-sha identity can't be verified against \
+                 the hub card; accepted anyway (unverifiable, not mismatched).",
+                r.repo, r.path, r.repo
+            ));
+        }
+    }
+
+    if !is_full_hex_sha {
+        let Some(cap) = capture.as_ref() else {
+            if allow_dirty {
+                r.sha = "unresolved".to_string();
+                r.rev = Some(raw_rev.clone());
+                warnings.push(format!(
+                    "--ref {}:{}@{}: no local clone resolvable on this machine (checked --ref-from, cwd, \
+                     and the repo map) — stored as unresolved (--allow-dirty). Map a clone \
+                     (`confer repos map {} <path>`) for a durable pin.",
+                    r.repo, r.path, raw_rev, r.repo
+                ));
+                return Ok(PinOutcome { provenance: None, fence: None, warnings });
+            }
             return Err(anyhow!(
-                "cannot pin --ref {}:{}@{}: no local clone of '{}' is mapped on this machine, and a \
-                 non-sha ref can't be made durable without one. Map a clone (`confer repos map {} <path>`), \
-                 or pass an explicit full commit sha (`@<40-hex>`).",
-                r.repo, r.path, r.sha, r.repo, r.repo
+                "cannot pin --ref {}:{}@{}: no local clone of '{}' is mapped on this machine (or reachable \
+                 from your cwd/--ref-from), and a non-sha ref can't be made durable without one. Map a clone \
+                 (`confer repos map {} <path>`), pass an explicit full commit sha (`@<40-hex>`), or use \
+                 --allow-dirty to store it as unresolved.",
+                r.repo, r.path, raw_rev, r.repo, r.repo
             ));
         };
-        let spec = format!("{}^{{commit}}", r.sha);
-        let o = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &spec])?;
+        let spec = format!("{raw_rev}^{{commit}}");
+        let o = gitcmd::output(&cap.dir, &["rev-parse", "--verify", "--quiet", &spec])?;
         if !o.status.success() {
+            let shallow_hint = if crosshub::is_shallow(&cap.dir) {
+                " (shallow clone — fetch with `--unshallow` or deepen to reach it)"
+            } else {
+                ""
+            };
             return Err(anyhow!(
-                "cannot resolve --ref {}:{}@{} in the mapped clone {} (unknown revision)",
-                r.repo, r.path, r.sha, dir.display()
+                "cannot resolve --ref {}:{}@{} in {}{} (unknown revision)",
+                r.repo,
+                r.path,
+                raw_rev,
+                cap.dir.display(),
+                shallow_hint
             ));
         }
         r.sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    }
+
+    // Identity classification (§1.2) — best-effort, only when a capture dir resolved.
+    if hex_token {
+        r.ref_type = Some("detached".to_string());
+        r.ref_name = None;
+    } else if let Some(cap) = capture.as_ref() {
+        let kind = if raw_rev == "HEAD" {
+            classify_implicit_head(&cap.dir)
+        } else {
+            classify_explicit(&cap.dir, &raw_rev)
+        };
+        kind.apply(r);
+    }
+    if let Some(cap) = capture.as_ref() {
+        if let Ok(o) = gitcmd::output(&cap.dir, &["log", "-1", "--format=%cI", &r.sha]) {
+            if o.status.success() {
+                let d = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !d.is_empty() {
+                    r.commit_date = Some(d);
+                }
+            }
+        }
     }
 
     // Best-effort content_hash: the blob OID of `<sha>:<path>`, when a clone has the
@@ -132,9 +443,9 @@ fn resolve_and_pin_ref(repo_inv: &repos::Repos, r: &mut schema::CodeRef) -> Resu
     // even if the pinned commit is GC'd/unfetched — you never need the commit to ask
     // "have these bytes changed?".
     if r.content_hash.is_none() {
-        if let Some(dir) = clone.as_ref() {
+        if let Some(cap) = capture.as_ref() {
             let spec = format!("{}:{}", r.sha, r.path);
-            if let Ok(o) = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &spec]) {
+            if let Ok(o) = gitcmd::output(&cap.dir, &["rev-parse", "--verify", "--quiet", &spec]) {
                 if o.status.success() {
                     let oid = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     if !oid.is_empty() {
@@ -144,7 +455,92 @@ fn resolve_and_pin_ref(repo_inv: &repos::Repos, r: &mut schema::CodeRef) -> Resu
             }
         }
     }
-    Ok(())
+
+    // The write-time integrity gate (§2) — only when the pinned sha IS the capture dir's
+    // current HEAD commit (§1.3): a deliberate historical `@sha` is never blocked by today's
+    // working tree.
+    let mut fence = None;
+    if let Some(cap) = capture.as_ref() {
+        let head_sha = gitcmd::output(&cap.dir, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        if head_sha.as_deref() == Some(r.sha.as_str()) {
+            match integrity_gate(&cap.dir, &r.sha, &r.path, r.range)? {
+                GateVerdict::Clean => {}
+                GateVerdict::Remapped { range, note } => {
+                    r.range = Some(range);
+                    warnings.push(format!("--ref {}:{}: {note}", r.repo, r.path));
+                }
+                GateVerdict::Untracked { ignored } => {
+                    if !allow_dirty {
+                        let what = if ignored { "is ignored by .gitignore" } else { "is untracked" };
+                        return Err(anyhow!(
+                            "cannot --ref {}:{}: the file {what} — there is no committed content for peers \
+                             to retrieve. Commit it, or pass --allow-dirty to embed the current lines instead.",
+                            r.repo, r.path
+                        ));
+                    }
+                    let working = cap.dir.join(&r.path);
+                    match embed_fence(&working, &r.repo, &r.path, "unresolved", r.range) {
+                        Ok(f) => {
+                            r.sha = "unresolved".to_string();
+                            r.content_hash = None;
+                            r.untracked = true;
+                            r.rev = None; // §2: rev is omitted for the untracked case
+                            warnings.push(format!(
+                                "--ref {}:{}: {} — embedded (--allow-dirty)",
+                                r.repo,
+                                r.path,
+                                if ignored { "ignored by .gitignore" } else { "untracked" }
+                            ));
+                            fence = Some(f);
+                        }
+                        Err(e) => return Err(anyhow!("--ref {}:{}: {e}", r.repo, r.path)),
+                    }
+                }
+                GateVerdict::Dirty { reason } => {
+                    if !allow_dirty {
+                        return Err(anyhow!(
+                            "cannot --ref {}:{}{}: {reason} (working tree ≠ pinned commit {}). Commit the \
+                             change so peers can retrieve what you mean, or pass --allow-dirty to embed the \
+                             current lines into the message instead.",
+                            r.repo,
+                            r.path,
+                            r.range.map(|x| format!("#L{}-{}", x[0], x[1])).unwrap_or_default(),
+                            &r.sha[..r.sha.len().min(9)]
+                        ));
+                    }
+                    let working = cap.dir.join(&r.path);
+                    match embed_fence(&working, &r.repo, &r.path, &r.sha, r.range) {
+                        Ok(f) => {
+                            r.dirty = true;
+                            warnings.push(format!(
+                                "--ref {}:{}: {reason} — embedded (--allow-dirty)",
+                                r.repo, r.path
+                            ));
+                            fence = Some(f);
+                        }
+                        Err(e) => return Err(anyhow!("--ref {}:{}: {e}", r.repo, r.path)),
+                    }
+                }
+            }
+        }
+    }
+
+    let provenance = capture.map(|cap| {
+        let label = match cap.source {
+            repomap::CaptureSource::RefFrom => "ref-from",
+            repomap::CaptureSource::Cwd => "cwd",
+            repomap::CaptureSource::Mapped => "mapped clone",
+        };
+        let short = &r.sha[..r.sha.len().min(9)];
+        let name = r.ref_name.as_deref().unwrap_or_else(|| r.ref_type.as_deref().unwrap_or("?"));
+        let date = r.commit_date.as_deref().map(|d| format!(", {}", &d[..d.len().min(10)])).unwrap_or_default();
+        format!("pinned {short} ({name}{date}) from {} [{label}]", cap.dir.display())
+    });
+
+    Ok(PinOutcome { provenance, fence, warnings })
 }
 
 /// Warn (non-fatally) when a message's addressees can't receive it in THIS hub:
@@ -263,6 +659,8 @@ pub(crate) fn cmd_lifecycle(
         resolution,
         defer: false,
         allow_secret: false,
+        ref_from: a.ref_from,
+        allow_dirty: a.allow_dirty,
     })
 }
 
@@ -290,6 +688,8 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
         resolution: None,
         defer: a.defer,
         allow_secret: a.allow_secret,
+        ref_from: a.ref_from,
+        allow_dirty: a.allow_dirty,
     })
 }
 
@@ -332,12 +732,22 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         .iter()
         .map(|s| parse_ref(s))
         .collect::<Result<Vec<_>>>()?;
-    // Pin each --ref to an immutable full sha AT WRITE TIME + record its blob OID
-    // (design/40 #2, #3) — a durable reference never stores a moving HEAD/branch.
+    // Pin each --ref to an immutable full sha AT WRITE TIME, capture its temporal identity,
+    // and run the write-time integrity gate (design/44 §1–2; design/40 #2, #3) — a durable
+    // reference never stores a moving HEAD/branch. `--ref-from` is message-wide: the same
+    // escape-hatch dir applies to every ref whose repo identity matches it (§1.1).
+    let ref_from = a.ref_from.as_deref().map(Path::new);
+    let mut ref_fences: Vec<String> = Vec::new();
+    let mut ref_provenance: Vec<String> = Vec::new();
     if !refs.is_empty() {
         let repo_inv = repos::load(&root);
         for r in refs.iter_mut() {
-            resolve_and_pin_ref(&repo_inv, r)?;
+            let outcome = resolve_and_pin_ref(&repo_inv, r, ref_from, a.allow_dirty)?;
+            for w in outcome.warnings {
+                hint(w);
+            }
+            ref_provenance.extend(outcome.provenance);
+            ref_fences.extend(outcome.fence);
         }
     }
     // A blank value counts as absent (an empty `--of`/`--supersedes` must not slip
@@ -563,6 +973,15 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         std::io::stdin().read_to_string(&mut s)?;
         body = s.trim_end().to_string();
     }
+    // `--allow-dirty` embeds: fold the working-tree `confer-ref` fence(s) into the body BEFORE
+    // the empty-body/secret/control-char lints below, so an otherwise summary-only message that
+    // embeds dirty code isn't rejected as empty, and the embedded content is screened too.
+    for fence in &ref_fences {
+        if !body.trim().is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(fence);
+    }
     // Fail loud on an empty / lone-sentinel body — the silent `-`/empty-body data
     // loss the fleet hit (a review finding). A genuine
     // summary-only note must opt in with --allow-empty-body — EXCEPT lifecycle
@@ -694,6 +1113,11 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             " [NOT synced — committed locally]"
         }
     );
+    // Capture provenance (design/44 §1.1) — which dir each --ref's identity came from.
+    // NEVER persisted (worktree paths are machine-local); this stderr line is the only record.
+    for p in &ref_provenance {
+        eprintln!("confer: {p}");
+    }
 
     // Claim-race check: on a broadcast request two agents can both
     // claim. Resolution is by fold order — the earliest claim owns. After sync

@@ -688,6 +688,8 @@ fn run() -> Result<()> {
             resolution,
             defer,
             allow_secret,
+            ref_from,
+            allow_dirty,
         } => cmd_append(AppendArgs {
             msg_type,
             text,
@@ -706,6 +708,8 @@ fn run() -> Result<()> {
             allow_secret,
             resolution,
             defer,
+            ref_from,
+            allow_dirty,
         }),
         Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
         Cmd::Note { args } => cmd_create("note", args, None),
@@ -1004,6 +1008,12 @@ pub(crate) struct LifecycleArgs {
     /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
     #[arg(long = "ref")]
     refs: Vec<String>,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    allow_dirty: bool,
 }
 
 /// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
@@ -1055,6 +1065,12 @@ pub(crate) struct CreateArgs {
     /// blocks common token/key shapes — history is permanent + fleet-wide).
     #[arg(long = "allow-secret")]
     allow_secret: bool,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    allow_dirty: bool,
 }
 
 struct PollArgs {

@@ -25,6 +25,13 @@ fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
 }
 
 /// A structured pointer to code, resilient across moves/renames.
+///
+/// Temporal-identity fields (design/44 §3), all additive/optional so old messages parse
+/// unchanged and old binaries parse new refs (serde ignores unknown fields, and every new
+/// field here is `Option`/defaulted). `sha` stays a required String — it's either full
+/// 40/64-hex or the literal `"unresolved"` — so an old binary's non-full-hex → `Unpinned`
+/// path (`refcode::staleness`) keeps rendering both legacy `HEAD` refs AND new `unresolved`
+/// refs correctly with zero compat work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeRef {
     pub repo: String,
@@ -34,6 +41,27 @@ pub struct CodeRef {
     pub range: Option<[u64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// The one branch or tag name in play at capture (never a list — see design/44 §1.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_name: Option<String>,
+    /// How the pinned commit was reached: `branch` | `tag` | `detached`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_type: Option<String>,
+    /// `%cI` (strict ISO 8601, committer's own offset) of the pinned commit, stored verbatim —
+    /// the timeline's load-bearing field (design/44 §5.2). Never lexically sort across offsets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_date: Option<String>,
+    /// The referenced range had uncommitted working-tree changes at capture (only via
+    /// `--allow-dirty`) — the body carries a `confer-ref` fence with what was actually seen.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dirty: bool,
+    /// The path wasn't in git at all at capture (implies `sha: "unresolved"` + a mandatory fence).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub untracked: bool,
+    /// The raw rev token as typed (`HEAD`, a branch name, …), preserved intent — only present
+    /// when `sha == "unresolved"` (never alongside a real pin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -328,5 +356,57 @@ mod tests {
     fn is_actionable_excludes_notes() {
         assert!(is_actionable(&msg("request", "x")));
         assert!(!is_actionable(&msg("note", "x")));
+    }
+
+    #[test]
+    fn code_ref_new_fields_round_trip() {
+        // design/44 §3: the temporal-identity fields serialize and deserialize intact.
+        let r = CodeRef {
+            repo: "mylib".into(),
+            sha: "a".repeat(40),
+            path: "f.rs".into(),
+            range: Some([1, 2]),
+            content_hash: Some("b".repeat(40)),
+            ref_name: Some("main".into()),
+            ref_type: Some("branch".into()),
+            commit_date: Some("2026-07-18T09:26:31-06:00".into()),
+            dirty: true,
+            untracked: false,
+            rev: None,
+        };
+        let yaml = serde_yaml::to_string(&r).unwrap();
+        let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.ref_name.as_deref(), Some("main"));
+        assert_eq!(back.ref_type.as_deref(), Some("branch"));
+        assert_eq!(back.commit_date.as_deref(), Some("2026-07-18T09:26:31-06:00"));
+        assert!(back.dirty);
+        assert!(!back.untracked);
+        assert_eq!(back.rev, None);
+    }
+
+    #[test]
+    fn legacy_ref_without_new_fields_parses_with_defaults() {
+        // A pre-design/44 message's ref carries none of the new fields at all — must
+        // still parse, with every addition defaulting (old messages parse unchanged).
+        let yaml = "repo: mylib\nsha: HEAD\npath: f.rs\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(r.sha, "HEAD");
+        assert_eq!(r.ref_name, None);
+        assert_eq!(r.ref_type, None);
+        assert_eq!(r.commit_date, None);
+        assert!(!r.dirty);
+        assert!(!r.untracked);
+        assert_eq!(r.rev, None);
+    }
+
+    #[test]
+    fn unresolved_sha_ref_parses_like_any_other_ref() {
+        // The new `sha: "unresolved"` marker (forced no-pin case) round-trips fine —
+        // it's just a required string, same as any other value.
+        let yaml = "repo: mylib\nsha: unresolved\npath: new.rs\nuntracked: true\nrev: HEAD\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(r.sha, "unresolved");
+        assert!(r.untracked);
+        assert_eq!(r.rev.as_deref(), Some("HEAD"));
     }
 }

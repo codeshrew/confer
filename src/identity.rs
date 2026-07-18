@@ -367,6 +367,8 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
                 resolution: None,
                 defer: false,
                 allow_secret: false,
+                ref_from: None,
+                allow_dirty: false,
             };
             if let Err(e) = cmd_append(note) {
                 warn_safety(format!("renamed, but the peer broadcast failed ({e}) — peers still resolve you via `confer whois`."));
