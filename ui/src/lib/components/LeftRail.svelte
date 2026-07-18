@@ -43,7 +43,6 @@
   <div class="rail-scroll">
     <div class="rail-head">
       <h3>{hubName}</h3>
-      <span class="add">+</span>
     </div>
 
     {#each topics as topic (topic.slug)}
@@ -109,10 +108,6 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--faint);
-  }
-  .rail-head .add {
-    color: var(--faint);
-    font-size: 15px;
   }
   .topic {
     display: flex;

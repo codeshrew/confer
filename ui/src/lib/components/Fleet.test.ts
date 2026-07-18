@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
-import userEvent from '@testing-library/user-event';
 import Fleet from './Fleet.svelte';
 import type { Agent } from '../types';
 
@@ -70,70 +69,36 @@ describe('Fleet', () => {
     expect(screen.getByText('2 agents · 1 stale heartbeat')).toBeInTheDocument();
   });
 
-  it('the customize-identity editor live-updates the avatar (display name + abbreviation)', async () => {
-    const user = userEvent.setup();
-    const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
-
-    const editButtons = screen.getAllByText('Customize identity');
-    await user.click(editButtons[1]!); // [0] is "You"'s editor button
-
-    const editor = container.querySelector('[data-testid="editor-reader"]') as HTMLElement;
-    expect(editor).toBeInTheDocument();
-
-    const nameInput = editor.querySelector('input[id="reader-nm"]') as HTMLInputElement;
-    await user.clear(nameInput);
-    await user.type(nameInput, 'Bookworm');
-
-    const card = container.querySelector('.agentcard:not(.you)') as HTMLElement;
-    expect(card.querySelector('.ac-nm')?.textContent).toBe('Bookworm');
-
-    const abbrInput = editor.querySelector('input[id="reader-abbr"]') as HTMLInputElement;
-    await user.clear(abbrInput);
-    await user.type(abbrInput, 'bw');
-
-    expect(card.querySelector('.ac-av')?.textContent).toBe('BW');
-  });
-
-  it('picking a color swatch in an agent\'s editor live-updates that card\'s avatar background/color, independent of other agents', async () => {
-    const user = userEvent.setup();
+  it('has no "Customize identity" editing affordance anywhere in the view (identity is read-only)', () => {
     const { container } = render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
 
-    const editButtons = screen.getAllByText('Customize identity');
-    await user.click(editButtons[1]!); // reader's editor ([0] is "You")
-
-    const editor = container.querySelector('[data-testid="editor-reader"]') as HTMLElement;
-    const swatches = editor.querySelectorAll('.ac-swatch');
-    expect(swatches.length).toBeGreaterThan(0);
-
-    await user.click(swatches[2]!); // any non-default swatch
-
-    const readerCard = container.querySelectorAll('.agentcard:not(.you)')[0] as HTMLElement;
-    const orbitCard = container.querySelectorAll('.agentcard:not(.you)')[1] as HTMLElement;
-    // The clicked swatch is now marked selected...
-    expect(swatches[2]!.classList.contains('sel')).toBe(true);
-    // ...and only reader's avatar style changed, not orbit's (each override is keyed by agent id).
-    expect(readerCard.querySelector('.ac-av')?.getAttribute('style')).toContain(
-      swatches[2]!.getAttribute('style')!.replace('background:', '')
-    );
-    expect(orbitCard.querySelector('.ac-av')?.getAttribute('style')).not.toEqual(
-      readerCard.querySelector('.ac-av')?.getAttribute('style')
-    );
+    expect(screen.queryByText('Customize identity')).not.toBeInTheDocument();
+    expect(container.querySelector('.ac-editor')).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="text"]')).not.toBeInTheDocument();
+    expect(container.querySelector('.ac-swatch')).not.toBeInTheDocument();
+    expect(container.querySelector('.ac-editbtn')).not.toBeInTheDocument();
   });
 
-  it('picking a color swatch in the "You" editor updates the You card only', async () => {
-    const user = userEvent.setup();
+  it('surfaces an informational note that appearance is agent-declared and not editable here', () => {
+    render(Fleet, { agents: [reader], hubName: 'agent-coord' });
+
+    expect(
+      screen.getByText(/appearance is self-declared.*set by the agent, not editable from here/i)
+    ).toBeInTheDocument();
+  });
+
+  it('renders identity (avatar color/abbr, display name, host) read-only for both "You" and peer agents', () => {
     const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
 
-    await user.click(screen.getAllByText('Customize identity')[0]!); // "You"'s editor
-    const editor = container.querySelector('[data-testid="editor-you"]') as HTMLElement;
-    const swatches = editor.querySelectorAll('.ac-swatch');
+    const youCard = container.querySelector('.agentcard.you') as HTMLElement;
+    expect(youCard.querySelector('.ac-nm')?.textContent).toBe('You');
+    expect(youCard.querySelector('.ac-av')?.textContent).toBe('◉');
 
-    const youCardStyleBefore = container.querySelector('.agentcard.you .ac-av')?.getAttribute('style');
-    await user.click(swatches[1]!);
-    const youCardStyleAfter = container.querySelector('.agentcard.you .ac-av')?.getAttribute('style');
-
-    expect(youCardStyleAfter).not.toBe(youCardStyleBefore);
-    expect(swatches[1]!.classList.contains('sel')).toBe(true);
+    const readerCard = container.querySelector('.agentcard:not(.you)') as HTMLElement;
+    expect(readerCard.querySelector('.ac-nm')?.textContent).toBe('Reader');
+    expect(readerCard.querySelector('.ac-av')?.textContent).toBe('RE');
+    expect(readerCard.querySelector('.ac-av')?.getAttribute('style')).toContain('var(--ag-reader)');
+    expect(readerCard.querySelector('.ac-host')?.textContent).toBe('reader');
   });
 
   it('shows the "first-sight" verify glyph (distinct from "unverified") without a stale-peer warning line', () => {

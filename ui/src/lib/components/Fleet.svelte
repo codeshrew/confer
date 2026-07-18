@@ -1,12 +1,12 @@
 <script lang="ts">
   // Fleet / agent-identity view. Ports `.fleetgrid`/`.agentcard`/`.ac-*` from
   // design/serve-dashboard-v2-mockup.html: identity cards (color/host/
-  // heartbeat/verification), a "You · viewing" card, a public-hub warn card,
-  // and a "customize identity" inline editor that live-updates the avatar.
+  // heartbeat/verification) and a "You · viewing" card.
   //
-  // Appearance edits here are local-preview only (no backend call exists
-  // yet to persist a role card's self-declared display/color/abbr) — same
-  // seam as the mockup's `liveEdit`/`pickColor`, which only mutate the DOM.
+  // Identity (display name / abbreviation / color) is READ-ONLY here: it's
+  // self-declared in the agent's signed role card and synced across the hub.
+  // There's no editor in this view — appearance is set by the agent via the
+  // CLI (not yet built), not by clicking around a dashboard.
   import type { Agent } from '../types';
   import { formatAge } from '../format';
 
@@ -17,35 +17,9 @@
 
   let { agents, hubName }: Props = $props();
 
-  const SWATCHES = ['--ag-herald', '--ag-reader', '--ag-pipeline', '--ag-compositor', '--ag-jarvis', '--ag-orbit', '--accent'];
-
-  interface Override {
-    display: string;
-    abbr: string;
-    color: string;
-  }
-
-  // Keyed by agent id (or 'you'); undefined until the editor's first touched.
-  let overrides = $state<Record<string, Override>>({});
-  let openEditors = $state<Record<string, boolean>>({});
-
-  function overrideFor(id: string, base: Override): Override {
-    return overrides[id] ?? base;
-  }
-
-  function setOverride(id: string, patch: Partial<Override>, base: Override) {
-    const current = overrideFor(id, base);
-    overrides = { ...overrides, [id]: { ...current, ...patch } };
-  }
-
-  function toggleEditor(id: string) {
-    openEditors = { ...openEditors, [id]: !openEditors[id] };
-  }
-
   const staleCount = $derived(agents.filter((a) => !a.live).length);
 
-  const youBase: Override = { display: 'You', abbr: '◉', color: 'var(--accent)' };
-  const you = $derived(overrideFor('you', youBase));
+  const you = { display: 'You', abbr: '◉', color: 'var(--accent)' };
 
   const VERIFY_GLYPH: Record<Agent['verified'], { g: string; cls: string; title: string }> = {
     signed: { g: '✓', cls: 'ok', title: 'verified — key matches the role card' },
@@ -62,6 +36,11 @@
     </div>
   </div>
 
+  <p class="ac-note fleet-note">
+    Appearance is self-declared in each agent's role card and synced across the hub — set by the agent, not editable
+    from here.
+  </p>
+
   <div class="fleetgrid">
     <!-- "You" — the dashboard viewer, a first-class but non-claiming peer -->
     <div class="agentcard you">
@@ -73,57 +52,16 @@
         </div>
       </div>
       <div class="ac-hb">watching · not a claiming peer</div>
-      <button type="button" class="ac-editbtn" onclick={() => toggleEditor('you')}>Customize identity</button>
-      {#if openEditors['you']}
-        <div class="ac-editor open" data-testid="editor-you">
-          <div class="ac-field">
-            <label for="you-nm">Display name</label>
-            <input id="you-nm" type="text" value={you.display} oninput={(e) => setOverride('you', { display: e.currentTarget.value }, youBase)} />
-          </div>
-          <div class="ac-field">
-            <label for="you-abbr">Abbreviation (2 chars)</label>
-            <input
-              id="you-abbr"
-              type="text"
-              maxlength="2"
-              value={you.abbr}
-              oninput={(e) => setOverride('you', { abbr: e.currentTarget.value }, youBase)}
-            />
-          </div>
-          <div class="ac-field">
-            <label for="you-color">Color</label>
-            <div class="ac-swatches" id="you-color">
-              {#each SWATCHES as sw (sw)}
-                <button
-                  type="button"
-                  class="ac-swatch"
-                  class:sel={you.color === `var(${sw})`}
-                  style="background:var({sw})"
-                  aria-label={sw}
-                  onclick={() => setOverride('you', { color: `var(${sw})` }, youBase)}
-                ></button>
-              {/each}
-            </div>
-          </div>
-          <div class="ac-imgslot"><span class="box">🖼</span> image icon — coming later, falls back to the abbreviation</div>
-          <p class="ac-note">
-            Appearance is self-declared and travels with the role card — every peer sees the same name/color/abbreviation
-            you pick here.
-          </p>
-        </div>
-      {/if}
     </div>
 
     {#each agents as agent (agent.id)}
-      {@const base = { display: agent.display, abbr: agent.abbr, color: agent.color }}
-      {@const cur = overrideFor(agent.id, base)}
       {@const stale = !agent.live}
       {@const vm = VERIFY_GLYPH[agent.verified]}
       <div class="agentcard" class:stale>
         <div class="ac-top">
-          <span class="ac-av" style="color:{cur.color};background:color-mix(in srgb, {cur.color} 18%, transparent)">{cur.abbr}</span>
+          <span class="ac-av" style="color:{agent.color};background:color-mix(in srgb, {agent.color} 18%, transparent)">{agent.abbr}</span>
           <div class="ac-id">
-            <div class="ac-nm">{cur.display}</div>
+            <div class="ac-nm">{agent.display}</div>
             <div class="ac-host">{agent.lastHost ?? agent.expectedHost ?? '—'}</div>
           </div>
           <span class="ac-verify {vm.cls}" title={vm.title}>{vm.g}</span>
@@ -146,50 +84,6 @@
             {/each}
           {/if}
         </div>
-        <button type="button" class="ac-editbtn" onclick={() => toggleEditor(agent.id)}>Customize identity</button>
-        {#if openEditors[agent.id]}
-          <div class="ac-editor open" data-testid="editor-{agent.id}">
-            <div class="ac-field">
-              <label for="{agent.id}-nm">Display name</label>
-              <input
-                id="{agent.id}-nm"
-                type="text"
-                value={cur.display}
-                oninput={(e) => setOverride(agent.id, { display: e.currentTarget.value }, base)}
-              />
-            </div>
-            <div class="ac-field">
-              <label for="{agent.id}-abbr">Abbreviation (2 chars)</label>
-              <input
-                id="{agent.id}-abbr"
-                type="text"
-                maxlength="2"
-                value={cur.abbr}
-                oninput={(e) => setOverride(agent.id, { abbr: e.currentTarget.value.toUpperCase() }, base)}
-              />
-            </div>
-            <div class="ac-field">
-              <label for="{agent.id}-color">Color</label>
-              <div class="ac-swatches" id="{agent.id}-color">
-                {#each SWATCHES.slice(0, 6) as sw (sw)}
-                  <button
-                    type="button"
-                    class="ac-swatch"
-                    class:sel={cur.color === `var(${sw})`}
-                    style="background:var({sw})"
-                    aria-label={sw}
-                    onclick={() => setOverride(agent.id, { color: `var(${sw})` }, base)}
-                  ></button>
-                {/each}
-              </div>
-            </div>
-            <div class="ac-imgslot"><span class="box">🖼</span> image icon — coming later, falls back to the abbreviation</div>
-            <p class="ac-note">
-              Appearance is self-declared and travels with the role card — every peer sees the same
-              name/color/abbreviation you pick here.
-            </p>
-          </div>
-        {/if}
       </div>
     {/each}
   </div>
@@ -367,84 +261,12 @@
     font-size: 11px;
     color: var(--blocked);
   }
-  .ac-editbtn {
-    margin-left: auto;
-    border: 1px solid var(--border-2);
-    background: var(--panel-2);
-    color: var(--muted);
-    font: 600 10.5px/1 var(--sans);
-    padding: 4px 9px;
-    border-radius: 6px;
-  }
-  .ac-editbtn:hover {
-    color: var(--text);
-    border-color: var(--faint);
-  }
-  .ac-editor {
-    border-top: 1px solid var(--border);
-    padding-top: 11px;
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-  }
-  .ac-field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .ac-field label {
-    font: 700 9px/1 var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--faint);
-  }
-  .ac-field input[type='text'] {
-    font: 600 12.5px/1 var(--sans);
-    color: var(--text);
-    background: var(--panel-2);
-    border: 1px solid var(--border-2);
-    border-radius: 6px;
-    padding: 6px 8px;
-  }
-  .ac-swatches {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .ac-swatch {
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
-    border: 2px solid transparent;
-    cursor: pointer;
-    padding: 0;
-  }
-  .ac-swatch.sel {
-    border-color: var(--text);
-  }
-  .ac-imgslot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 9px;
-    border: 1.5px dashed var(--border-2);
-    border-radius: 8px;
-    color: var(--faint);
-    font-size: 11.5px;
-  }
-  .ac-imgslot .box {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-    background: var(--panel-3);
-    display: grid;
-    place-items: center;
-    font-size: 13px;
-    flex: 0 0 auto;
-  }
   .ac-note {
     font-size: 11px;
     color: var(--faint);
     margin: 0;
+  }
+  .fleet-note {
+    margin: 0 0 12px;
   }
 </style>
