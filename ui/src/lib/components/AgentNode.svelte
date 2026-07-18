@@ -45,7 +45,7 @@
   data-testid="agent-node"
 >
   <div class="an-top">
-    <span class="an-avatar" style={agent.liveness === 'down' ? undefined : `background:${agent.color}`}>{agent.abbr}</span>
+    <span class="an-avatar" style={agent.liveness === 'down' ? undefined : `--ac:${agent.color};background:${agent.color}`}>{agent.abbr}</span>
     <span class="an-who">
       <span class="an-nm">{agent.display}</span>
       <span class="an-host">{agent.host ?? '—'}</span>
@@ -116,7 +116,7 @@
   .an-live .an-avatar {
     box-shadow:
       0 0 0 2px var(--panel-2),
-      0 0 12px -1px currentColor;
+      0 0 12px -1px color-mix(in srgb, var(--ac, var(--accent)) 55%, transparent);
     animation: an-breathe 3.4s ease-in-out infinite;
   }
   @media (prefers-reduced-motion: reduce) {
@@ -129,12 +129,12 @@
     100% {
       box-shadow:
         0 0 0 2px var(--panel-2),
-        0 0 8px -2px currentColor;
+        0 0 8px -2px color-mix(in srgb, var(--ac, var(--accent)) 55%, transparent);
     }
     50% {
       box-shadow:
         0 0 0 2px var(--panel-2),
-        0 0 16px 1px currentColor;
+        0 0 16px 1px color-mix(in srgb, var(--ac, var(--accent)) 55%, transparent);
     }
   }
   .an-who {
