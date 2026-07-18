@@ -93,4 +93,73 @@ describe('Fleet', () => {
 
     expect(card.querySelector('.ac-av')?.textContent).toBe('BW');
   });
+
+  it('picking a color swatch in an agent\'s editor live-updates that card\'s avatar background/color, independent of other agents', async () => {
+    const user = userEvent.setup();
+    const { container } = render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
+
+    const editButtons = screen.getAllByText('Customize identity');
+    await user.click(editButtons[1]!); // reader's editor ([0] is "You")
+
+    const editor = container.querySelector('[data-testid="editor-reader"]') as HTMLElement;
+    const swatches = editor.querySelectorAll('.ac-swatch');
+    expect(swatches.length).toBeGreaterThan(0);
+
+    await user.click(swatches[2]!); // any non-default swatch
+
+    const readerCard = container.querySelectorAll('.agentcard:not(.you)')[0] as HTMLElement;
+    const orbitCard = container.querySelectorAll('.agentcard:not(.you)')[1] as HTMLElement;
+    // The clicked swatch is now marked selected...
+    expect(swatches[2]!.classList.contains('sel')).toBe(true);
+    // ...and only reader's avatar style changed, not orbit's (each override is keyed by agent id).
+    expect(readerCard.querySelector('.ac-av')?.getAttribute('style')).toContain(
+      swatches[2]!.getAttribute('style')!.replace('background:', '')
+    );
+    expect(orbitCard.querySelector('.ac-av')?.getAttribute('style')).not.toEqual(
+      readerCard.querySelector('.ac-av')?.getAttribute('style')
+    );
+  });
+
+  it('picking a color swatch in the "You" editor updates the You card only', async () => {
+    const user = userEvent.setup();
+    const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
+
+    await user.click(screen.getAllByText('Customize identity')[0]!); // "You"'s editor
+    const editor = container.querySelector('[data-testid="editor-you"]') as HTMLElement;
+    const swatches = editor.querySelectorAll('.ac-swatch');
+
+    const youCardStyleBefore = container.querySelector('.agentcard.you .ac-av')?.getAttribute('style');
+    await user.click(swatches[1]!);
+    const youCardStyleAfter = container.querySelector('.agentcard.you .ac-av')?.getAttribute('style');
+
+    expect(youCardStyleAfter).not.toBe(youCardStyleBefore);
+    expect(swatches[1]!.classList.contains('sel')).toBe(true);
+  });
+
+  it('shows the "first-sight" verify glyph (distinct from "unverified") without a stale-peer warning line', () => {
+    const firstSight: Agent = { ...orbit, id: 'newbie', display: 'Newbie', verified: 'first-sight', live: true };
+    const { container } = render(Fleet, { agents: [firstSight], hubName: 'agent-coord' });
+
+    const badge = container.querySelector('.ac-verify') as HTMLElement;
+    expect(badge.classList.contains('warn')).toBe(true);
+    expect(badge.getAttribute('title')).toMatch(/first-sight/);
+    // The "unverified peer" warning line is specific to verified === 'unverified', not first-sight.
+    expect(screen.queryByText(/unverified peer/)).not.toBeInTheDocument();
+  });
+
+  it('shows the "signed" verify glyph as ok, with no warning line', () => {
+    const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
+
+    const badge = container.querySelector('.ac-verify') as HTMLElement;
+    expect(badge.classList.contains('ok')).toBe(true);
+    expect(badge.textContent).toBe('✓');
+    expect(screen.queryByText(/unverified peer/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to "—" for host when neither lastHost nor expectedHost is set', () => {
+    const noHost: Agent = { ...reader, id: 'ghost', lastHost: null, expectedHost: null };
+    const { container } = render(Fleet, { agents: [noHost], hubName: 'agent-coord' });
+
+    expect(container.querySelector('.agentcard:not(.you) .ac-host')?.textContent).toBe('—');
+  });
 });

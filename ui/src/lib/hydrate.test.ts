@@ -33,6 +33,11 @@ describe('selectDefaultHub', () => {
   it('returns null for an empty hub list', () => {
     expect(selectDefaultHub([])).toBeNull();
   });
+
+  it('picks the first hub marked current if more than one claims it (malformed backend data)', () => {
+    const hubs = [hub('a/one', false), hub('b/two', true), hub('c/three', true)];
+    expect(selectDefaultHub(hubs)?.id).toBe('b/two');
+  });
 });
 
 describe('selectDefaultTopic', () => {
@@ -60,6 +65,11 @@ describe('selectDefaultTopic', () => {
   it('falls back to the first topic when none has messages yet', () => {
     const ov = overviewOf([topic('scratch', 0), topic('empty-too', 0)]);
     expect(selectDefaultTopic(ov)).toBe('scratch');
+  });
+
+  it('a tie on message count keeps the first topic in list order (strict >, not >=)', () => {
+    const ov = overviewOf([topic('first', 10), topic('second', 10), topic('third', 3)]);
+    expect(selectDefaultTopic(ov)).toBe('first');
   });
 
   it('returns null when the hub has no topics, or overview is null', () => {

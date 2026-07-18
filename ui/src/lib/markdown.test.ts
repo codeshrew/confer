@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import DOMPurify from 'dompurify';
-import { renderMarkdown } from './markdown';
+import { __clearMarkdownCachesForTest, highlightRenderedCodeBlocks, renderMarkdown } from './markdown';
 
 describe('renderMarkdown', () => {
   it('memoizes on the raw source: re-rendering the same body reuses the cached HTML instead of re-parsing it', () => {
@@ -23,6 +23,24 @@ describe('renderMarkdown', () => {
     const third = renderMarkdown(`${src} — different`);
     expect(sanitizeSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
     expect(third).not.toBe(first);
+
+    sanitizeSpy.mockRestore();
+  });
+
+  it('__clearMarkdownCachesForTest actually drops the render cache — a subsequent identical call re-sanitizes', () => {
+    const sanitizeSpy = vi.spyOn(DOMPurify, 'sanitize');
+    const src = `cache-clear probe ${Math.random()}`;
+
+    renderMarkdown(src);
+    const callsAfterFirst = sanitizeSpy.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    renderMarkdown(src);
+    expect(sanitizeSpy.mock.calls.length).toBe(callsAfterFirst); // still cached
+
+    __clearMarkdownCachesForTest();
+    renderMarkdown(src);
+    expect(sanitizeSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst); // cache was actually emptied
 
     sanitizeSpy.mockRestore();
   });
@@ -91,6 +109,48 @@ describe('renderMarkdown', () => {
     expect(clean).not.toMatch(/javascript:/i);
   });
 
+  it('never produces a real <a> for a data: URI (markdown-it refuses to link it, matching its javascript: handling)', () => {
+    const html = renderMarkdown('[click me](data:text/html,<script>alert(1)</script>)');
+    const dom = document.createElement('div');
+    dom.innerHTML = html;
+    expect(dom.querySelector('a')).toBeNull();
+  });
+
+  it('never produces a real <a> for a vbscript: URI', () => {
+    const html = renderMarkdown('[click me](vbscript:msgbox(1))');
+    const dom = document.createElement('div');
+    dom.innerHTML = html;
+    expect(dom.querySelector('a')).toBeNull();
+  });
+
+  it('renderMarkdown\'s own sanitize config (ALLOWED_URI_REGEXP) rejects data:/vbscript hrefs even if something upstream produced an <a> tag for one — the same allow-list this module actually uses, not a hand-picked one', () => {
+    const config = {
+      ALLOWED_TAGS: ['a'],
+      ALLOWED_ATTR: ['href'],
+      ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\/)/i,
+    };
+    const dataDirty = '<a href="data:text/html,<script>alert(1)</script>">click</a>';
+    expect(DOMPurify.sanitize(dataDirty, config)).not.toMatch(/data:/i);
+
+    const vbsDirty = '<a href="vbscript:msgbox(1)">click</a>';
+    expect(DOMPurify.sanitize(vbsDirty, config)).not.toMatch(/vbscript:/i);
+  });
+
+  it('the afterSanitizeAttributes hook still strips a javascript:/data:/vbscript: href as a second layer, if the allow-list regexp alone somehow let one through', () => {
+    // renderMarkdown's DOMPurify.addHook runs globally for every sanitize
+    // call in this process (registered once at module load), so exercising
+    // it via a permissive ALLOWED_URI_REGEXP proves the hook itself — not
+    // just the regexp — refuses these schemes.
+    const permissive = { ALLOWED_TAGS: ['a'], ALLOWED_ATTR: ['href'] };
+    for (const scheme of ['javascript:alert(1)', 'data:text/html,x', 'vbscript:msgbox(1)']) {
+      const clean = DOMPurify.sanitize(`<a href="${scheme}">click</a>`, permissive);
+      const dom = document.createElement('div');
+      dom.innerHTML = clean;
+      const href = dom.querySelector('a')?.getAttribute('href');
+      expect(href ?? '').not.toMatch(/^(javascript|data|vbscript):/i);
+    }
+  });
+
   it('adds safe rel/target to ordinary links', () => {
     const html = renderMarkdown('[confer](https://example.com/confer)');
     expect(html).toContain('target="_blank"');
@@ -101,5 +161,64 @@ describe('renderMarkdown', () => {
   it('never emits raw HTML tags outside the allow-list (e.g. <iframe>)', () => {
     const html = renderMarkdown('before <iframe src="https://evil.example"></iframe> after');
     expect(html).not.toContain('<iframe');
+  });
+});
+
+describe('highlightRenderedCodeBlocks', () => {
+  it('upgrades a rendered fenced-code block to Shiki tokens and marks it done', async () => {
+    const html = renderMarkdown('```rust\nfn main() {}\n```');
+    const root = document.createElement('div');
+    root.innerHTML = html;
+    document.body.appendChild(root);
+
+    const pre = root.querySelector('pre.md-fence')!;
+    expect(pre.hasAttribute('data-hl-done')).toBe(false);
+    const before = pre.querySelector('code')!.innerHTML;
+
+    await highlightRenderedCodeBlocks(root);
+
+    expect(pre.hasAttribute('data-hl-done')).toBe(true);
+    const after = pre.querySelector('code')!.innerHTML;
+    expect(after).not.toBe(before);
+    expect(after).toContain('shiki-tok');
+    // The original code text still round-trips through the tokenized markup.
+    expect(pre.querySelector('code')!.textContent).toBe('fn main() {}\n');
+
+    document.body.removeChild(root);
+  });
+
+  it('is a no-op (does not re-tokenize) on a block already marked data-hl-done', async () => {
+    const html = renderMarkdown('```rust\nfn again() {}\n```');
+    const root = document.createElement('div');
+    root.innerHTML = html;
+
+    await highlightRenderedCodeBlocks(root);
+    const pre = root.querySelector('pre.md-fence')!;
+    const firstPass = pre.querySelector('code')!.innerHTML;
+
+    // Tamper with the content to prove a second call leaves it alone.
+    pre.querySelector('code')!.innerHTML = firstPass + '<!-- tamper -->';
+    await highlightRenderedCodeBlocks(root);
+
+    expect(pre.querySelector('code')!.innerHTML).toBe(firstPass + '<!-- tamper -->');
+  });
+
+  it('does nothing when there are no fenced-code blocks under root', async () => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown('just plain text, no code fences');
+
+    await expect(highlightRenderedCodeBlocks(root)).resolves.toBeUndefined();
+  });
+
+  it('leaves the plain (already-safe) text in place if tokenizing throws, and still marks the block done', async () => {
+    // An empty <pre.md-fence> with no inner <code> exercises the "codeEl not
+    // found -> continue" branch without needing to fake a Shiki failure.
+    const root = document.createElement('div');
+    root.innerHTML = '<pre class="md-fence" data-lang="rust"></pre>';
+
+    await expect(highlightRenderedCodeBlocks(root)).resolves.toBeUndefined();
+    // No <code> child, so the "continue" branch is taken and the block is
+    // simply skipped — data-hl-done is only set inside the per-block loop
+    // after the try/finally, which requires a <code> element to reach.
   });
 });

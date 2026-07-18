@@ -43,6 +43,29 @@ describe('appState.drawer', () => {
   });
 });
 
+describe('appState.theme', () => {
+  it('defaults to dark', () => {
+    expect(appState.theme).toBe('dark');
+  });
+
+  it('toggleTheme() flips dark <-> light', () => {
+    appState.theme = 'dark';
+    appState.toggleTheme();
+    expect(appState.theme).toBe('light');
+
+    appState.toggleTheme();
+    expect(appState.theme).toBe('dark');
+  });
+
+  it('setting the theme mirrors it onto <html data-theme> so app.css can key off it', () => {
+    appState.theme = 'light';
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+
+    appState.theme = 'dark';
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+  });
+});
+
 describe('appState.chatDensity', () => {
   it('defaults to summary', () => {
     expect(appState.chatDensity).toBe('summary');
