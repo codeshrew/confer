@@ -453,6 +453,10 @@ pub struct Health {
     pub behind: Option<u64>,
     pub watch: Option<watchlock::WatchState>,
     pub disk_gb: Option<f64>,
+    /// Seconds since this clone's last successful fetch (`.git/FETCH_HEAD` mtime),
+    /// the honest "synced N ago" signal. `None` when never fetched / not statable —
+    /// the front-end must render "sync unknown", never a fabricated time.
+    pub last_fetch_secs: Option<u64>,
 }
 
 /// One line in the activity tail (raw ids; the renderer resolves display).
@@ -535,15 +539,23 @@ impl Snapshot {
             board: Board::default(),
             agents: Vec::new(),
             tail: Vec::new(),
-            health: Health { role: String::new(), reachable: Some(false), pending: None, behind: None, watch: None, disk_gb: None },
+            health: Health { role: String::new(), reachable: Some(false), pending: None, behind: None, watch: None, disk_gb: None, last_fetch_secs: None },
             error: Some(msg.to_string()),
             messages: Vec::new(),
         }
     }
 }
 
+/// Seconds since this clone's last successful fetch, from `.git/FETCH_HEAD`'s mtime.
+/// `None` when the file is absent (never fetched, or `.git` isn't a plain dir) or the
+/// clock skews backwards — an honest "unknown", never a fabricated zero.
+fn last_fetch_secs(dir: &Path) -> Option<u64> {
+    let mtime = std::fs::metadata(dir.join(".git").join("FETCH_HEAD")).ok()?.modified().ok()?;
+    std::time::SystemTime::now().duration_since(mtime).ok().map(|d| d.as_secs())
+}
+
 /// Local-only health probe (no network): role, pending/behind vs upstream, watch
-/// state, free disk. `reachable` stays `None` until a live worker sets it.
+/// state, free disk, last-fetch age. `reachable` stays `None` until a live worker sets it.
 pub fn probe_health(dir: &Path) -> Health {
     let role = config::resolve_role(None, dir).unwrap_or_default();
     let count = |range: &str| {
@@ -563,6 +575,7 @@ pub fn probe_health(dir: &Path) -> Health {
         behind: count("HEAD..@{u}"),
         watch,
         disk_gb: disk_free_gb(dir),
+        last_fetch_secs: last_fetch_secs(dir),
         role,
     }
 }

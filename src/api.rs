@@ -6,7 +6,7 @@
 //! contract with that frontend, not incidental.
 
 use crate::schema::{sanitize_term, CodeRef, Message};
-use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, store, verify};
+use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, store, tiers, verify};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -175,12 +175,32 @@ fn presence_map(dir: &Path) -> HashMap<String, presence::Presence> {
     presence::load_all(dir, false).into_iter().map(|p| (p.role.clone(), p)).collect()
 }
 
-fn hub_json(dirs: &[PathBuf], dir: &Path, agent_count: usize) -> Value {
+fn hub_json(dirs: &[PathBuf], dir: &Path, agent_count: usize, health: Option<&projection::Health>) -> Value {
     let _ = dirs;
     let label = hub_id(dir);
     let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("hub").to_string();
     let current = config::repo_root().ok().map(|c| same_dir(dir, &c)).unwrap_or(false);
-    json!({ "id": label, "label": label, "name": name, "current": current, "agentCount": agent_count })
+    // The SERVER's OWN configured trust tier for this hub, read from local ~/.confer
+    // (tiers.rs) — never client-supplied, never derived from anything a peer can script
+    // (design/48 §2 / design/34). Absent → null (the operator never classified it).
+    let tier = tiers::get(&config::hub_key(dir)).map(|t| t.as_str());
+    // Per-hub git-sync freshness, straight from the warm cache's already-folded Health
+    // (background sweep sets `reachable` from its integrate; the rest are local probes).
+    // Every field honest-nullable: a null is "unknown", never a fabricated zero/true —
+    // so a stale hub can't render as a calm all-clear (design/48 §3). `null` health
+    // (pre-first-sweep / fold error) → whole `sync` null.
+    let sync = health.map(|h| {
+        json!({
+            "lastFetchedSecs": h.last_fetch_secs,
+            "behind": h.behind,
+            "pending": h.pending,
+            "reachable": h.reachable,
+        })
+    });
+    json!({
+        "id": label, "label": label, "name": name, "current": current, "agentCount": agent_count,
+        "tier": tier, "sync": sync,
+    })
 }
 
 /// Route `path` (already stripped of query) to a handler. Anything unrecognized under
@@ -243,7 +263,8 @@ fn hubs(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>) -> ApiRespon
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let n = guard.as_ref().and_then(|g| g.get(i)).map(|s| s.agents.len()).unwrap_or_else(|| {
+            let snap = guard.as_ref().and_then(|g| g.get(i));
+            let n = snap.map(|s| s.agents.len()).unwrap_or_else(|| {
                 store::all_messages(d)
                     .map(|msgs| {
                         let ros = roster::load(d);
@@ -253,7 +274,7 @@ fn hubs(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>) -> ApiRespon
                     })
                     .unwrap_or(0)
             });
-            hub_json(dirs, d, n)
+            hub_json(dirs, d, n, snap.map(|s| &s.health))
         })
         .collect();
     ApiResponse::ok(json!(list))
@@ -479,7 +500,7 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
     let requests_json: Vec<Value> = board.rows.iter().map(|r| request_row_json(r, &topic_of)).collect();
 
     ApiResponse::ok(json!({
-        "hub": hub_json(dirs, dir, agent_rows.len()),
+        "hub": hub_json(dirs, dir, agent_rows.len(), Some(&snap.health)),
         "topics": topics_json,
         "board": {
             "requests": requests_json,
