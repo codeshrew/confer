@@ -58,6 +58,30 @@ function hitOn(line: number, path = 'Sources/Reader/PlateBundle.swift'): RefHit 
   };
 }
 
+/** A whole-file reference — `range: null` — the shape nearly all real
+ * `--ref` hits actually take. */
+function wholeFileHit(overrides: Partial<RefHit> = {}, path = 'Sources/Reader/PlateBundle.swift'): RefHit {
+  return {
+    repo: 'wealdlore',
+    path,
+    sha: 'HEAD',
+    range: null,
+    contentHash: null,
+    staleness: 'current',
+    msgId: 'msg_done_1',
+    from: 'studio',
+    msgType: 'done',
+    ts: '2026-07-17T15:00:00Z',
+    topic: 'general',
+    summary: 'shipped the taxonomy pass',
+    threadRoot: 'msg_root_1',
+    requestStatus: null,
+    hub: 'agent-coord',
+    hubPrivate: false,
+    ...overrides,
+  };
+}
+
 describe('CodeLens', () => {
   it('fetches getCodeFiles(hub) and loads the first (mapped) file, calling getCode/getRefs with the right args', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
@@ -259,5 +283,99 @@ describe('CodeLens', () => {
       expect(api.getCode).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'HEAD')
     );
     expect(api.getCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires onFileRefs with the whole-file (range:null) hits too — not just the ones that light the gutter', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    const ranged = hitOn(45);
+    const wholeFile = wholeFileHit();
+    vi.mocked(api.getRefs).mockResolvedValue([ranged, wholeFile]);
+    const onFileRefs = vi.fn();
+
+    render(CodeLens, { hub: 'agent-coord', onFileRefs });
+
+    await waitFor(() =>
+      expect(onFileRefs).toHaveBeenCalledWith(
+        { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift' },
+        expect.arrayContaining([ranged, wholeFile])
+      )
+    );
+    // The gutter only ever sees the ranged hit — a range:null hit lights no
+    // line — but it must still be present in what onFileRefs reports.
+    const [, hits] = onFileRefs.mock.calls[onFileRefs.mock.calls.length - 1]!;
+    expect(hits).toHaveLength(2);
+  });
+
+  it('renders at the newest hit\'s pinned sha instead of a hardcoded HEAD', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    const older = wholeFileHit({ msgId: 'msg_old', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ts: '2026-07-10T09:00:00Z' });
+    const newest = wholeFileHit({ msgId: 'msg_new', sha: '6c513dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ts: '2026-07-17T15:00:00Z' });
+    vi.mocked(api.getRefs).mockResolvedValue([older, newest]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() =>
+      expect(api.getCode).toHaveBeenCalledWith(
+        'agent-coord',
+        'wealdlore',
+        'Sources/Reader/PlateBundle.swift',
+        '6c513dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      )
+    );
+  });
+
+  it('falls back to HEAD when there are no hits at all (unchanged behavior)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() =>
+      expect(api.getCode).toHaveBeenCalledWith('agent-coord', 'wealdlore', 'Sources/Reader/PlateBundle.swift', 'HEAD')
+    );
+  });
+
+  it('empty-state: a dangling pinned-sha ref (not in the local clone) gets a precise message, not the generic HEAD one', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    // getCode resolves nothing at that sha — as it would for a real dangling ref.
+    vi.mocked(api.getCode).mockResolvedValue({ lang: 'swift', staleness: 'unknown', lines: [] });
+    const dangling = wholeFileHit({
+      sha: '6c513dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      staleness: 'unknown',
+    });
+    vi.mocked(api.getRefs).mockResolvedValue([dangling]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    expect(await screen.findByText("Referenced revision isn't in your clone")).toBeInTheDocument();
+    expect(screen.getByText(/6c513dcaa.*isn't in your local clone of wealdlore/)).toBeInTheDocument();
+  });
+
+  it('empty-state: a "moved" ref (path renamed since the pin) is distinguished from an unresolvable sha', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue({ lang: 'swift', staleness: 'moved', lines: [] });
+    const moved = wholeFileHit({
+      sha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      staleness: 'moved',
+    });
+    vi.mocked(api.getRefs).mockResolvedValue([moved]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    expect(await screen.findByText('Referenced path not found at that revision')).toBeInTheDocument();
+    expect(screen.getByText(/moved or renamed since/)).toBeInTheDocument();
+  });
+
+  it('empty-state: no hits at all keeps the original generic "no content at HEAD" message', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue({ lang: 'swift', staleness: 'unknown', lines: [] });
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    expect(await screen.findByText('No code returned')).toBeInTheDocument();
   });
 });

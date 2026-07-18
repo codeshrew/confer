@@ -156,6 +156,13 @@
   let refHits = $state<RefHit[]>([]);
   let refContext = $state<{ repo: string; path: string; range: [number, number] | null } | null>(null);
 
+  // A reverse-index hit clicked from the right rail (Code's file-level list,
+  // or a line's hot-line drill-in) navigates to Chat, at that message — even
+  // across hubs. Cross-hub, `messages` isn't populated yet the instant
+  // appState.hub flips, so the jump is deferred here and resolved by the
+  // $effect below once that hub's messages actually land.
+  let pendingHit = $state<{ msgId: string; topic: string | null } | null>(null);
+
   // Applies a fetched (or cached) hub's overview/messages to the view state.
   // Shared by the cache-hit and cache-miss paths in loadHub below so the
   // "keep current topic if still valid, else pick a default" logic can't
@@ -333,6 +340,49 @@
     appState.drawer = 'right';
   }
 
+  // Fired by CodeLens whenever the SELECTED FILE's full reference list loads
+  // (whole-file `range:null` hits included) — not a click, just "a file is
+  // now showing", so the right rail's reverse index stays in sync with the
+  // Code pane without forcing the mobile drawer open the way an explicit
+  // hot-line click does.
+  function onCodeFileRefs(ctx: { repo: string; path: string }, hits: RefHit[]) {
+    refContext = { repo: ctx.repo, path: ctx.path, range: null };
+    refHits = hits;
+    contextMode = 'refs';
+  }
+
+  // A reverse-index entry (file-level list or line drill-in) was clicked —
+  // jump to that message in Chat, switching hub/topic first if the hit came
+  // from elsewhere (getRefs(allHubs=1) can span hubs).
+  function openHitInChat(hit: RefHit) {
+    appState.view = 'chat';
+    // Defensive: a hit's `hub` is documented as always-populated (see
+    // RefHit in types.ts), but a live backend has been observed to omit it
+    // (a server-side /api/refs contract gap, not this UI's to fix) — falling
+    // back to the CURRENT hub instead of hub `undefined` keeps navigation
+    // working rather than 404ing every subsequent fetch.
+    const targetHub = hit.hub || appState.hub;
+    if (targetHub && targetHub !== appState.hub) {
+      pendingHit = { msgId: hit.msgId, topic: hit.topic };
+      appState.hub = targetHub;
+      return;
+    }
+    if (hit.topic) appState.topic = hit.topic;
+    selectMessage(hit.msgId);
+  }
+
+  $effect(() => {
+    // Resolves openHitInChat's cross-hub jump once the target hub's
+    // messages have actually loaded (loadHub is async).
+    const p = pendingHit;
+    if (!p) return;
+    const found = messages.find((m) => m.id === p.msgId);
+    if (!found) return;
+    if (p.topic) appState.topic = p.topic;
+    selectMessage(p.msgId);
+    pendingHit = null;
+  });
+
   function selectTopic(slug: string) {
     appState.topic = slug;
     // Choosing a topic from the left drawer is "done with the menu" on
@@ -471,7 +521,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
-          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} />
+          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>
@@ -507,7 +557,13 @@
         {#if contextMode === 'request' && selectedRequest}
           <RequestDetail request={selectedRequest} {messages} agents={overview?.fleet ?? []} hub={appState.hub} onOpenRefs={openRefs} />
         {:else if contextMode === 'refs'}
-          <ReverseIndexPanel hits={refHits} repo={refContext?.repo ?? null} path={refContext?.path ?? null} range={refContext?.range ?? null} />
+          <ReverseIndexPanel
+            hits={refHits}
+            repo={refContext?.repo ?? null}
+            path={refContext?.path ?? null}
+            range={refContext?.range ?? null}
+            onSelectHit={openHitInChat}
+          />
         {:else}
           <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} />
         {/if}

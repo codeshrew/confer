@@ -20,9 +20,15 @@
   interface Props {
     hub: string;
     onOpenRefs?: (ctx: { repo: string; path: string; range: [number, number] | null }, hits: RefHit[]) => void;
+    /** Fired whenever the active file's FULL reference list (whole-file `range:null`
+     * hits included) is (re)loaded — lets the host surface a file-level conversation
+     * list in the right rail without requiring the reader to click a hot line first.
+     * Distinct from `onOpenRefs` (a deliberate click) so it never yanks open the
+     * mobile details drawer just because a file was selected. */
+    onFileRefs?: (ctx: { repo: string; path: string }, hits: RefHit[]) => void;
   }
 
-  let { hub, onOpenRefs }: Props = $props();
+  let { hub, onOpenRefs, onFileRefs }: Props = $props();
 
   function fileKey(f: { repo: string; path: string }): string {
     return `${f.repo} ${f.path}`;
@@ -45,8 +51,45 @@
   let lang = $state<string | null>(null);
   let highlighted = $state<HighlightedLine[]>([]);
   let hitsByLine = $state<Map<number, RefHit[]>>(new Map());
+  // ALL of the active file's hits (whole-file `range:null` ones included) —
+  // the file-level "conversations about this code" list, distinct from
+  // `hitsByLine` which only carries the ranged subset for the gutter.
+  let fileRefs = $state<RefHit[]>([]);
+  // The sha actually rendered — the newest hit's pinned sha, or 'HEAD' when
+  // there are no hits (or the hit itself is an unpinned/legacy 'HEAD' ref).
+  let codeSha = $state('HEAD');
 
   const active = $derived(codeFiles.find((f) => fileKey(f) === activeKey) ?? null);
+
+  /** Most-recently-posted hit for the active file (ISO ts, string-sortable) —
+   * drives both the sha `getCode` renders at and the empty-state copy. */
+  const newestHit = $derived.by((): RefHit | null => {
+    if (fileRefs.length === 0) return null;
+    return [...fileRefs].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!;
+  });
+
+  const emptyCodeMessage = $derived.by((): { title: string; body: string } => {
+    const hit = newestHit;
+    const repo = active?.repo ?? hit?.repo ?? 'this repo';
+    if (!hit || hit.sha === 'HEAD') {
+      return {
+        title: 'No code returned',
+        body: `confer's index has no content for this file at HEAD — it may have been deleted, or never committed to ${repo}.`,
+      };
+    }
+    const shortSha = hit.sha.slice(0, 10);
+    const span = hit.range ? `lines ${hit.range[0]}–${hit.range[1]}` : 'whole file';
+    if (hit.staleness === 'moved') {
+      return {
+        title: 'Referenced path not found at that revision',
+        body: `Referenced at \`${shortSha}\` (${span}) — the path was moved or renamed since; it isn't at that path in ${repo} at \`${shortSha}\`.`,
+      };
+    }
+    return {
+      title: "Referenced revision isn't in your clone",
+      body: `Referenced at \`${shortSha}\` (${span}) — that revision isn't in your local clone of ${repo}.`,
+    };
+  });
 
   // Group by repo, preserving the backend's own order (refCount desc, path
   // asc) within and across groups — files may span more than one repo.
@@ -75,25 +118,37 @@
     }
   }
 
+  function pickSha(hits: RefHit[]): string {
+    if (hits.length === 0) return 'HEAD';
+    return [...hits].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!.sha;
+  }
+
   async function loadFile() {
     const f = active;
     if (!f || !f.mapped) {
       lines = [];
       hitsByLine = new Map();
+      fileRefs = [];
+      codeSha = 'HEAD';
       loading = false;
       return;
     }
     loading = true;
     try {
-      const [snippet, hits] = await Promise.all([
-        api.getCode(hub, f.repo, f.path, 'HEAD'),
-        api.getRefs(hub, `${f.repo}:${f.path}`, true),
-      ]);
+      // Refs first — the sha `getCode` renders at (the newest hit's pinned
+      // sha, not a hardcoded 'HEAD') depends on knowing them.
+      const hits = await api.getRefs(hub, `${f.repo}:${f.path}`, true);
+      const relevant = hits.filter((h) => h.repo === f.repo && h.path === f.path);
+      fileRefs = relevant;
+      onFileRefs?.({ repo: f.repo, path: f.path }, relevant);
+      const sha = pickSha(relevant);
+      codeSha = sha;
+
+      const snippet = await api.getCode(hub, f.repo, f.path, sha);
       lines = snippet.lines;
       lang = snippet.lang;
       highlighted = lines.length ? await highlightSnippetLines(lines, resolveLang(lang)) : [];
 
-      const relevant = hits.filter((h) => h.repo === f.repo && h.path === f.path);
       const byLine = new Map<number, RefHit[]>();
       for (const h of relevant) {
         if (!h.range) continue;
@@ -161,6 +216,9 @@
       <span class="ct-crumb">◆ {active.repo}</span>
       <span class="ct-sep">›</span>
       <span class="ct-crumb">{active.path}</span>
+      {#if codeSha !== 'HEAD'}
+        <span class="ct-sha" title={`Rendered at the newest reference's pinned sha`}>@{codeSha.slice(0, 10)}</span>
+      {/if}
       <span class="ct-hint">conversation-density gutter · click a hot line to see who discussed it</span>
     </div>
     <div class="codepage">
@@ -195,7 +253,7 @@
           </div>
         {:else if lines.length === 0}
           <div class="clonestub">
-            <EmptyState glyph="◇" title="No code returned" body="confer's index has no content for this file at HEAD." />
+            <EmptyState glyph="◇" title={emptyCodeMessage.title} body={emptyCodeMessage.body} />
           </div>
         {:else}
           <div class="densefile">
@@ -256,6 +314,14 @@
   }
   .ct-sep {
     color: var(--faint);
+  }
+  .ct-sha {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--muted);
+    background: var(--panel-3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 6px;
   }
   .ct-hint {
     margin-left: auto;
