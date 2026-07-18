@@ -212,7 +212,7 @@ describe('Message', () => {
       delete (navigator as { clipboard?: unknown }).clipboard;
     });
 
-    it('exposes a copy-id control for the bare message id, which copies without also selecting the message', async () => {
+    it('exposes a copy-id control for the bare message id, which copies without also selecting the message, and flips to the copied state', async () => {
       // userEvent.setup() installs its own navigator.clipboard stub, so our
       // mock must be defined AFTER setup() or it gets clobbered.
       const user = userEvent.setup();
@@ -227,7 +227,14 @@ describe('Message', () => {
 
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith('msg_01JQ001');
+        // Same observable success feedback MetaThread's `.gid` copy uses:
+        // aria-label swaps to "Copied …" and the `copied` class is set.
+        expect(copyBtn).toHaveAttribute('aria-label', 'Copied msg_01JQ001');
       });
+      expect(copyBtn.className).toMatch(/copied/);
+      // Clicking the nested copy button must never ALSO fire the row's own
+      // onclick (selectMessage) — this is the specific mechanism the bug
+      // report suspected (nested button inside a role="button" row).
       expect(onSelect).not.toHaveBeenCalled();
     });
   });

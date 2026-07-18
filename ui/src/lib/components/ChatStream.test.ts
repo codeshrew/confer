@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import ChatStream from './ChatStream.svelte';
 import type { Agent, Message, RequestRow } from '../types';
 
@@ -210,5 +210,175 @@ describe('ChatStream — scrollToMessageId + highlight pulse (design/41 Phase 0)
     });
 
     await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('ChatStream — seen roster vs. an offline recipient (#58)', () => {
+  const jarvisOffline: Agent = {
+    id: 'jarvis',
+    display: 'Jarvis',
+    desc: null,
+    expectedHost: null,
+    // Last active 3 days before the note below was posted — cannot possibly
+    // have seen it.
+    lastTs: '2026-07-14T09:00:00Z',
+    lastHost: null,
+    live: false,
+    verified: 'signed',
+    color: 'var(--ag-jarvis)',
+    abbr: 'JV',
+    wip: [],
+  };
+
+  it('does not mark an offline recipient "seen" for a note posted after they went offline', () => {
+    // This ts is BEFORE ChatStream's demo NEW_CUTOFF, i.e. exactly the
+    // "already old, must be all-seen-by-now" branch that previously
+    // stamped every other agent as seen unconditionally.
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'code-ref note')];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader, jarvisOffline],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    const seen = container.querySelector('.seen');
+    expect(seen).toBeInTheDocument();
+    // Not "✓ all seen" — an offline, not-yet-back recipient is still pending.
+    expect(seen?.className).not.toMatch(/done/);
+    const jarvisRow = Array.from(container.querySelectorAll('.roster .rr')).find((el) => el.textContent?.includes('Jarvis'));
+    expect(jarvisRow?.className).toMatch(/un/);
+    expect(jarvisRow?.textContent).toContain('unseen');
+  });
+
+  it('still marks a recipient seen if they were active again after the message posted', () => {
+    const jarvisBackOnline: Agent = { ...jarvisOffline, lastTs: '2026-07-17T15:00:00Z' };
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'code-ref note')];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader, jarvisBackOnline],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    const seen = container.querySelector('.seen');
+    expect(seen?.className).toMatch(/done/);
+  });
+});
+
+describe('ChatStream — stick-to-bottom vs. an active hover (design/41 copy-id bug)', () => {
+  // Bug: a busy topic's live SSE-appended note snaps `scrollTop` to the new
+  // bottom via the stick-to-bottom effect. If that snap lands while the
+  // reader is mid-hover lining up a click on a small hover-revealed
+  // affordance (CopyIdButton, expand-toggle, ...), every row shifts out from
+  // under the stationary cursor and the click lands on whatever is now
+  // there instead — silently, with no error. MetaThread (a static,
+  // non-live-scrolling list) never had this failure mode, which is why "the
+  // same copy affordance works there." Fix: suspend the forced scroll while
+  // the pointer is over `.stream`, and catch up the instant it leaves.
+  function spyOnScrollTop(el: Element): ReturnType<typeof vi.fn> {
+    const setter = vi.fn();
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set: setter,
+    });
+    return setter;
+  }
+
+  it('does not force-scroll while the pointer is hovering the stream, even when new messages arrive', async () => {
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first')];
+    const { container, rerender } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    const streamEl = container.querySelector('.stream') as HTMLElement;
+
+    await fireEvent.mouseEnter(streamEl);
+    const scrollTopSetter = spyOnScrollTop(streamEl);
+
+    // A new note lands (mirrors App.svelte's SSE-driven appendNewestChatMessages).
+    await rerender({
+      messages: [...messages, msg('m2', '2026-07-17T14:01:00Z', 'second')],
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(scrollTopSetter).not.toHaveBeenCalled();
+  });
+
+  it('catches up to the bottom the instant the pointer leaves the stream', async () => {
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first')];
+    const { container, rerender } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    const streamEl = container.querySelector('.stream') as HTMLElement;
+
+    await fireEvent.mouseEnter(streamEl);
+    await rerender({
+      messages: [...messages, msg('m2', '2026-07-17T14:01:00Z', 'second')],
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const scrollTopSetter = spyOnScrollTop(streamEl);
+    await fireEvent.mouseLeave(streamEl);
+
+    expect(scrollTopSetter).toHaveBeenCalled();
+  });
+
+  it('still auto-scrolls on new messages when the pointer was never over the stream', async () => {
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first')];
+    const { container, rerender } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    const streamEl = container.querySelector('.stream') as HTMLElement;
+    const scrollTopSetter = spyOnScrollTop(streamEl);
+
+    await rerender({
+      messages: [...messages, msg('m2', '2026-07-17T14:01:00Z', 'second')],
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(scrollTopSetter).toHaveBeenCalled();
   });
 });

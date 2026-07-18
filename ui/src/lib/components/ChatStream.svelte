@@ -101,17 +101,43 @@
     return new Date(message.ts).getTime() > NEW_CUTOFF;
   }
 
+  // CONTRACT GAP (#58): `Message` carries no real per-recipient read
+  // receipt at all — the "seen" timestamps below (bar this one check) are
+  // synthesized filler, not sourced from the backend (see the CONTRACT GAP
+  // note atop this file). That's fine for demo polish on ONLINE agents, but
+  // it produced a real, reported bug: a recipient who is OFFLINE and has not
+  // been active since before this message was even posted is being
+  // unconditionally stamped "seen" anyway (confer-lab #code-refs showing
+  // "✓ all seen" while Jarvis, last seen 3d ago, plainly cannot have read
+  // it). That specific case IS decidable from data we already have —
+  // `Agent.live` / `Agent.lastTs` — so it's fixed here: an agent is only
+  // ever synthesized as "seen" if they were live, or demonstrably active
+  // (lastTs) at or after the message's own timestamp. Anyone who fails that
+  // check is marked `unseen` (rendered "pending <name>") regardless of the
+  // demo NEW_CUTOFF below. A real fix still needs the backend to project an
+  // actual per-message seen-by roster; until then this is the ceiling of
+  // what the frontend can honestly claim.
+  function couldHaveSeen(agent: Agent, messageTs: string): boolean {
+    if (agent.live) return true;
+    if (!agent.lastTs) return false;
+    return new Date(agent.lastTs).getTime() >= new Date(messageTs).getTime();
+  }
+
   function buildSeenEntries(message: MessageT): SeenEntry[] {
     const others = agents.filter((a) => a.id !== message.from);
     const baseMs = new Date(message.ts).getTime();
     if (!isUnseenByYou(message)) {
       return [
-        ...others.map((a, i) => ({
-          id: a.id,
-          name: a.display,
-          color: a.color,
-          ts: formatClock(new Date(baseMs + (i + 1) * 90_000).toISOString()),
-        })),
+        ...others.map((a, i) =>
+          couldHaveSeen(a, message.ts)
+            ? {
+                id: a.id,
+                name: a.display,
+                color: a.color,
+                ts: formatClock(new Date(baseMs + (i + 1) * 90_000).toISOString()),
+              }
+            : { id: a.id, name: a.display, color: a.color, ts: null, unseen: true }
+        ),
         {
           id: 'you',
           name: 'You',
@@ -121,7 +147,7 @@
       ];
     }
     return others.map((a, i) =>
-      i === 0
+      i === 0 && couldHaveSeen(a, message.ts)
         ? { id: a.id, name: a.display, color: a.color, ts: formatClock(message.ts) }
         : { id: a.id, name: a.display, color: a.color, ts: null, unseen: true }
     );
@@ -139,6 +165,21 @@
   let stickToBottom = $state(true);
   let lastKey: string | null = null;
   let loadingOlderNow = $state(false);
+  // True while the pointer is anywhere over the stream — i.e. the reader is
+  // mid-hover on a message, most likely lining up a click on a small,
+  // hover-revealed affordance (CopyIdButton, the expand-toggle, a code-ref
+  // card). A live SSE-appended note snapping `scrollTop` to the new bottom
+  // at that exact moment shifts every row's on-screen position out from
+  // under an already-positioned mouse cursor, so the click that lands next
+  // hits whatever now happens to be under the pointer instead — often
+  // nothing, reading to the reader as "the copy button didn't work" (see
+  // design/41 bug report: chat's copy-id button appeared to silently fail
+  // while MetaThread's identical affordance — a static, non-live-scrolling
+  // list — never had this problem). Suspending the forced scroll while
+  // hovering fixes that without giving up "stick to bottom" for a reader
+  // who's just watching, not interacting: it catches up the moment the
+  // pointer leaves (see handlePointerLeave below).
+  let pointerOverStream = $state(false);
 
   $effect(() => {
     // A hub or topic switch is a fresh stream — reset to "follow the
@@ -155,15 +196,29 @@
     // append, or an older-page prepend). Only actually forces scroll when
     // `stickToBottom` — a prepend happens while the reader is scrolled up
     // (so this is a no-op then; the prepend's own scroll-compensation in
-    // loadOlder handles that case instead).
+    // loadOlder handles that case instead) — AND the pointer isn't
+    // currently over the stream (see pointerOverStream's own note above).
     void topicMessages;
-    if (stickToBottom && streamEl) {
+    if (stickToBottom && streamEl && !pointerOverStream) {
       const el = streamEl;
       void tick().then(() => {
         el.scrollTop = el.scrollHeight;
       });
     }
   });
+
+  function handlePointerEnter() {
+    pointerOverStream = true;
+  }
+
+  function handlePointerLeave() {
+    pointerOverStream = false;
+    // Catch up on whatever arrived while the pointer was parked here, same
+    // as the effect above would have done in the moment.
+    if (stickToBottom && streamEl) {
+      streamEl.scrollTop = streamEl.scrollHeight;
+    }
+  }
 
   const NEAR_TOP_PX = 60;
   const NEAR_BOTTOM_PX = 40;
@@ -257,7 +312,18 @@
   });
 </script>
 
-<div class="stream" bind:this={streamEl} onscroll={handleScroll}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- This div is a scroll container, not an interactive control — the mouse
+     enter/leave pair here only pauses/resumes the stick-to-bottom
+     auto-scroll while the reader is hovering (see pointerOverStream's note
+     above); there's no keyboard-equivalent action needed. -->
+<div
+  class="stream"
+  bind:this={streamEl}
+  onscroll={handleScroll}
+  onmouseenter={handlePointerEnter}
+  onmouseleave={handlePointerLeave}
+>
   {#if topicMessages.length === 0}
     <div class="emptystate">
       <div class="es-glyph">#</div>
