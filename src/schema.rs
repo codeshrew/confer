@@ -72,6 +72,18 @@ pub struct CodeRef {
     /// when `base_ref` is unknown or equals `sha` itself (no real divergence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_point: Option<String>,
+    /// design/45 §1.2: this ref anchors a proposed change to `path`, carried in the message's
+    /// `confer-patch` body fence (the anti-spoof pairing rule: the fence is honored only when a
+    /// `patch: true` ref matching its repo+sha covers the path). Default false, omitted — old
+    /// binaries/messages ignore it entirely (additive-safe).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub patch: bool,
+    /// design/45 §1.2: the blob OID `path` would have AFTER applying the patch — computed at
+    /// write time from a temp-index apply (§1.4). Absent on a deletion. `content_hash` stays the
+    /// *base* blob OID (absent on a file creation); this is the landed-detection field
+    /// (`HEAD:<path>` == `result_hash` ⇒ the patch has landed, `Staleness::Landed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_hash: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -385,6 +397,8 @@ mod tests {
             rev: None,
             base_ref: Some("main".into()),
             fork_point: Some("c".repeat(40)),
+            patch: false,
+            result_hash: None,
         };
         let yaml = serde_yaml::to_string(&r).unwrap();
         let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
@@ -413,6 +427,55 @@ mod tests {
         assert_eq!(r.rev, None);
         assert_eq!(r.base_ref, None);
         assert_eq!(r.fork_point, None);
+        assert!(!r.patch);
+        assert_eq!(r.result_hash, None);
+    }
+
+    #[test]
+    fn patch_and_result_hash_round_trip() {
+        // design/45 §1.2: the patch primitive's two new fields serialize and deserialize intact,
+        // and `patch` is omitted from the YAML entirely when false (additive-safe default).
+        let r = CodeRef {
+            repo: "app".into(),
+            sha: "a".repeat(40),
+            path: "src/lib.rs".into(),
+            range: Some([10, 20]),
+            content_hash: None,
+            ref_name: Some("main".into()),
+            ref_type: Some("branch".into()),
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+            base_ref: None,
+            fork_point: None,
+            patch: true,
+            result_hash: Some("b".repeat(40)),
+        };
+        let yaml = serde_yaml::to_string(&r).unwrap();
+        assert!(yaml.contains("patch: true"), "yaml: {yaml}");
+        assert!(yaml.contains("result_hash:"), "yaml: {yaml}");
+        let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
+        assert!(back.patch);
+        assert_eq!(back.result_hash.as_deref(), Some("b".repeat(40).as_str()));
+
+        // patch: false (the common case) is OMITTED from the YAML — not written as `patch: false`.
+        let mut plain = r.clone();
+        plain.patch = false;
+        plain.result_hash = None;
+        let yaml2 = serde_yaml::to_string(&plain).unwrap();
+        assert!(!yaml2.contains("patch:"), "yaml2: {yaml2}");
+        assert!(!yaml2.contains("result_hash:"), "yaml2: {yaml2}");
+    }
+
+    #[test]
+    fn legacy_ref_without_patch_fields_defaults_to_a_plain_ref() {
+        // A pre-design/45 ref (or one from an old binary) carries neither field at all — must
+        // still parse, defaulting `patch` to false and `result_hash` to None.
+        let yaml = "repo: app\nsha: HEAD\npath: f.rs\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert!(!r.patch);
+        assert_eq!(r.result_hash, None);
     }
 
     #[test]

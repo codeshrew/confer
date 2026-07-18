@@ -5764,3 +5764,396 @@ fn ref_pins_from_a_shallow_clone_not_refused_by_identity() {
     let s = out(&c.confer(&["show", &id]));
     assert!(!s.contains("not cloned here"), "the shallow clone must render, not degrade to pointer-only: {s}");
 }
+
+// ── design/45 S-phase: the patch primitive (`--patch`, `confer suggest`, `confer apply`) ───
+
+/// Generate a `--full-index` unified diff for a MODIFICATION to an already-committed `path` in
+/// `codedir` (from its current committed content to `new_content`), leaving the working tree clean
+/// again afterward (`git checkout --`) — so the SAME clone can be reused as a clean apply target.
+fn diff_for_change(codedir: &Path, path: &str, new_content: &str) -> String {
+    std::fs::write(codedir.join(path), new_content).unwrap();
+    let o = git(codedir, &["diff", "--full-index", "-U3", "--", path]);
+    assert!(o.status.success(), "git diff failed");
+    let diff = out(&o);
+    assert!(git(codedir, &["checkout", "--", path]).status.success());
+    diff
+}
+
+/// Post a `--patch` against `repo_slug`/`path` (an ordinary `note`, addressed so it's a real
+/// message) and return its id. Deliberately passes NEITHER `--text` NOR `--allow-empty-body` —
+/// the `confer-patch` fence folded into the body is what satisfies the non-empty-body gate.
+fn post_patch(c: &Clone, codedir: &Path, repo_slug: &str, path: &str, new_content: &str) -> String {
+    let diff = diff_for_change(codedir, path, new_content);
+    let patch_file = codedir.join(format!("__confer_test_patch_{}.diff", ulid_like()));
+    std::fs::write(&patch_file, &diff).unwrap();
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "proposed change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", repo_slug,
+    ]);
+    assert!(ok(&a), "post_patch failed: {}", err(&a));
+    let _ = std::fs::remove_file(&patch_file);
+    newest_id(c)
+}
+
+/// A cheap unique-enough suffix for scratch filenames (no ulid dev-dep in the test crate).
+fn ulid_like() -> String {
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    format!("{}-{n}", std::process::id())
+}
+
+/// A codedir repo with one commit of `f.rs` (3 lines), mapped as `mylib` in `c`'s hub.
+fn code_repo_mapped(c: &Clone, tag: &str) -> PathBuf {
+    let codedir = tmp(tag);
+    assert!(git(&codedir, &["init", "-q"]).status.success());
+    std::fs::write(codedir.join("f.rs"), "line1\nline2\nline3\n").unwrap();
+    assert!(git(&codedir, &["add", "-A"]).status.success());
+    assert!(git(&codedir, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", codedir.to_str().unwrap()])));
+    codedir
+}
+
+#[test]
+fn patch_attach_derives_refs_and_result_hash() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-happy");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"patch\":true"), "j: {j}");
+    assert!(j.contains("\"result_hash\":"), "j: {j}");
+    assert!(j.contains("\"path\":\"f.rs\""), "j: {j}");
+    assert!(j.contains("\"repo\":\"mylib\""), "j: {j}");
+
+    // the result_hash is the REAL blob OID f.rs would have after applying — verify it against
+    // a plain `git hash-object` of the intended new content (independent of confer's own logic).
+    let expected_blob = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut ch| {
+                use std::io::Write;
+                ch.stdin.take().unwrap().write_all(b"line1\nCHANGED\nline3\n").unwrap();
+                ch.wait_with_output()
+            })
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert!(j.contains(&format!("\"result_hash\":\"{expected_blob}\"")), "j: {j}, expected {expected_blob}");
+
+    // the confer-patch fence rides the body, carrying the raw unified diff.
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("```confer-patch"), "body: {body}");
+    assert!(body.contains("CHANGED"), "body: {body}");
+}
+
+#[test]
+fn patch_write_gate_refuses_a_diff_that_does_not_apply() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-badapply");
+
+    // A diff whose context lines don't match ANYTHING in the base commit.
+    let bogus = "diff --git a/f.rs b/f.rs\nindex 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n nomatch1\n-nomatch2\n+replacement\n nomatch3\n";
+    let patch_file = codedir.join("bad.diff");
+    std::fs::write(&patch_file, bogus).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "bad patch",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "a patch that doesn't apply at its base must be refused");
+    assert!(err(&a).contains("does not apply"), "err: {}", err(&a));
+}
+
+#[test]
+fn patch_requires_repo_and_a_registered_slug() {
+    let c = new_hub().clone("alpha");
+    let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let patch_file = tmp("patch-norepo").join("p.diff");
+    std::fs::write(&patch_file, diff).unwrap();
+
+    let missing_repo = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(),
+    ]);
+    assert!(!ok(&missing_repo), "must require --repo when --patch is given");
+    assert!(err(&missing_repo).contains("--repo"), "err: {}", err(&missing_repo));
+
+    let unmapped = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "nope",
+    ]);
+    assert!(!ok(&unmapped), "must refuse an unresolvable base (no mapped clone)");
+    assert!(err(&unmapped).contains("no local clone"), "err: {}", err(&unmapped));
+}
+
+/// Build a real, applying diff that replaces `n` lines of `path` — `2n` changed lines total —
+/// for exercising the size gate at a chosen magnitude.
+fn diff_replacing_n_lines(codedir: &Path, path: &str, n: usize) -> String {
+    let orig: String = (0..n).map(|i| format!("orig{i}\n")).collect();
+    std::fs::write(codedir.join(path), &orig).unwrap();
+    assert!(git(codedir, &["add", "-A"]).status.success());
+    assert!(git(codedir, &["commit", "-q", "-m", "base-n"]).status.success());
+    let changed: String = (0..n).map(|i| format!("changed{i}\n")).collect();
+    diff_for_change(codedir, path, &changed)
+}
+
+#[test]
+fn patch_size_gate_warns_between_thresholds() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-warn");
+    // 100 lines replaced = 200 changed lines: between WARN(150) and REFUSE(400) → warns, sends.
+    let diff = diff_replacing_n_lines(&codedir, "big.rs", 100);
+    let patch_file = codedir.join("big.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(ok(&a), "between warn/refuse must still SEND: {}", err(&a));
+    assert!(err(&a).contains("changed lines"), "should hint about size: {}", err(&a));
+}
+
+#[test]
+fn patch_size_gate_refuses_above_400_without_flag_sends_with_it() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-refuse");
+    // 250 lines replaced = 500 changed lines: above REFUSE(400).
+    let diff = diff_replacing_n_lines(&codedir, "big.rs", 250);
+    let patch_file = codedir.join("big.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let refused = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&refused), "above 400 changed lines must refuse without --allow-large-patch");
+    assert!(err(&refused).contains("branch"), "should nudge toward a branch: {}", err(&refused));
+
+    let allowed = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change take 2",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib", "--allow-large-patch",
+    ]);
+    assert!(ok(&allowed), "--allow-large-patch should let it through: {}", err(&allowed));
+}
+
+#[test]
+fn patch_size_gate_hard_cap_refuses_even_with_the_flag() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-hardcap");
+    // 1100 lines replaced = 2200 changed lines: above the hard cap (2000) even allowed.
+    let diff = diff_replacing_n_lines(&codedir, "huge.rs", 1100);
+    let patch_file = codedir.join("huge.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "huge change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib", "--allow-large-patch",
+    ]);
+    assert!(!ok(&a), "the hard cap refuses even with --allow-large-patch");
+    assert!(err(&a).contains("hard cap"), "err: {}", err(&a));
+}
+
+#[test]
+fn suggest_requires_patch_and_to_and_creates_a_tracked_request() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "suggest-happy");
+    let diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    let patch_file = codedir.join("s.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    // requires --patch
+    let no_patch = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "no patch here",
+    ]);
+    assert!(!ok(&no_patch), "suggest without --patch must fail");
+    assert!(err(&no_patch).contains("--patch"), "err: {}", err(&no_patch));
+
+    // requires --to (inherited request validation)
+    let no_to = c.confer(&[
+        "suggest", "--from", "alpha", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&no_to), "suggest without --to must fail (it's a request)");
+
+    let a = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "please take this",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"type\":\"request\""), "suggest must be a tracked request: {j}");
+    assert!(j.contains("\"patch\":true"), "j: {j}");
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("please take this"), "should show up on the open board: {reqs}");
+}
+
+#[test]
+fn apply_clean_when_head_equals_base_and_never_commits() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-clean");
+    let head_before = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(ok(&chk), "--check should predict a clean apply: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "apply failed: {}", err(&a));
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nCHANGED\nline3\n");
+    assert!(out(&a).contains("close the loop"), "should print the close-the-loop hint: {}", out(&a));
+
+    let head_after = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+    assert_eq!(head_before, head_after, "confer apply must NEVER commit");
+}
+
+#[test]
+fn apply_three_way_when_head_has_advanced_past_the_base() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-3way");
+    std::fs::write(codedir.join("other.rs"), "x\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "seed other.rs"]);
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Advance HEAD with an UNRELATED commit (a different file) — the patch's pinned base is no
+    // longer HEAD, but the patch itself still applies cleanly via --3way.
+    std::fs::write(codedir.join("other.rs"), "y\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "unrelated"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(ok(&chk), "--check should predict a clean 3-way apply: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "3-way apply failed: {}", err(&a));
+    assert!(out(&a).contains("3-way"), "should note the 3-way path: {}", out(&a));
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nCHANGED\nline3\n");
+}
+
+#[test]
+fn apply_check_conflict_is_exit_1_via_scratch_worktree() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-conflict");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // A CONFLICTING commit on top of the pinned base: touches the SAME line the patch does.
+    std::fs::write(codedir.join("f.rs"), "line1\nOTHEREDIT\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "conflicting edit"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 1, "a genuine 3-way conflict must be exit 1: {}", err(&chk));
+
+    // The real repo must be UNTOUCHED by the --check (no scratch leftovers, no dirty tree).
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "repo must stay clean after --check");
+}
+
+#[test]
+fn apply_already_landed_short_circuits() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-landed");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Land the SAME change directly (simulating "someone already applied + committed it").
+    std::fs::write(codedir.join("f.rs"), "line1\nCHANGED\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "landed"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 2, "already-landed must be exit 2: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "a landed patch is a REPORT, not an error: {}", err(&a));
+    assert!(out(&a).contains("already landed"), "{}", out(&a));
+}
+
+#[test]
+fn apply_unresolvable_when_no_clone_is_mapped() {
+    let c = new_hub().clone("alpha");
+    // A message whose repo was never mapped/registered at all (constructed via a mapped clone,
+    // then the machine-local map is pointed at a DIFFERENT machine by using a fresh $HOME for
+    // the check — simplest: just never map "mylib" here and hand-craft a confer-patch message).
+    let codedir = tmp("apply-unresolvable-src");
+    assert!(git(&codedir, &["init", "-q"]).status.success());
+    std::fs::write(codedir.join("f.rs"), "a\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "c0"]);
+    assert!(ok(&c.confer(&["repos", "map", "mylib", codedir.to_str().unwrap()])));
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "b\n");
+
+    // Now unmap it (point the machine-local map at nothing) by remapping "mylib" to a directory
+    // that's a DIFFERENT (non-matching) repo — capture_dir's identity check then refuses it, and
+    // there's no cwd/--ref-from fallback either.
+    let other = tmp("apply-unresolvable-other");
+    assert!(git(&other, &["init", "-q"]).status.success());
+    std::fs::write(other.join("g.rs"), "x\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "unrelated repo"]);
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    let root_sha = out(&git(&codedir, &["rev-list", "--max-parents=0", "HEAD"])).trim().to_string();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), format!("---\nrole: codedir\nroot_sha: {root_sha}\n---\n")).unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", other.to_str().unwrap()])), "remap should still succeed (map doesn't check identity)");
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 3, "no resolvable clone of the right repo → unresolvable (exit 3): {}", err(&chk));
+}
+
+#[test]
+fn apply_dirty_guard_refuses_unless_force() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-dirty");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Dirty the touched path with UNRELATED uncommitted content (append a line).
+    std::fs::write(codedir.join("f.rs"), "line1\nline2\nline3\nUNRELATED\n").unwrap();
+
+    let bad = c.confer(&["apply", &id]);
+    assert!(!ok(&bad), "must refuse to apply onto an uncommitted touched path");
+    assert!(err(&bad).contains("uncommitted"), "err: {}", err(&bad));
+    assert!(err(&bad).contains("--force"), "err: {}", err(&bad));
+
+    let forced = c.confer(&["apply", &id, "--force"]);
+    assert!(ok(&forced), "--force should let it through: {}", err(&forced));
+}
+
+#[test]
+fn refs_and_show_carry_the_patch_kind_and_landed_chip() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "refs-patch-kind");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Before landing: `confer refs` marks it a patch, still open.
+    let refs_open = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(refs_open.contains("proposed a change here (open)"), "refs_open: {refs_open}");
+    let refs_json_open = out(&c.confer(&["refs", "mylib:f.rs", "--json"]));
+    assert!(refs_json_open.contains("\"patch\":true"), "refs_json_open: {refs_json_open}");
+
+    let shown_open = out(&c.confer(&["show", &id]));
+    assert!(shown_open.contains("proposed a change here (open)"), "shown_open: {shown_open}");
+
+    // Land it directly (commit the same content) — the SAME data now reads as applied/landed.
+    std::fs::write(codedir.join("f.rs"), "line1\nCHANGED\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "landed"]);
+
+    let refs_landed = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(refs_landed.contains("proposed a change here (applied)"), "refs_landed: {refs_landed}");
+    let refs_json_landed = out(&c.confer(&["refs", "mylib:f.rs", "--json"]));
+    assert!(refs_json_landed.contains("\"staleness\":\"landed\""), "refs_json_landed: {refs_json_landed}");
+
+    let shown_landed = out(&c.confer(&["show", &id]));
+    assert!(shown_landed.contains("proposed a change here (applied)"), "shown_landed: {shown_landed}");
+}

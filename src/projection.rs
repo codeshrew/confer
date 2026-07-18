@@ -220,6 +220,14 @@ pub fn thread_root<'a>(msgs: &'a [Message], m: &'a Message) -> &'a Message {
     cur
 }
 
+/// design/45 §1.2/§1.7: the three tenses a `RefHit` can denote — read off the stored `patch`
+/// marker (a `confer-ref` embed is still `Ref`; only `patch: true` refs are `Patch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    Ref,
+    Patch,
+}
+
 /// One code reference as the reverse index sees it: the ref itself + the message and
 /// thread that made it (resolved to the thread root + its request status).
 #[derive(Debug, Clone)]
@@ -229,6 +237,11 @@ pub struct RefHit {
     pub sha: String,
     pub range: Option<[u64; 2]>,
     pub content_hash: Option<String>,
+    /// design/45 §1.7: `Patch` for a `patch: true` ref, else `Ref` (a pointer or embed).
+    pub kind: RefKind,
+    /// design/45 §1.2: present only on a `Patch` hit — the blob OID the touched path would have
+    /// after applying (absent on a deletion).
+    pub result_hash: Option<String>,
     /// design/44 §3 — temporal identity fields, carried through unchanged from the
     /// stored `CodeRef` (no enrichment here; see `refcode`/`api::coderef_json` for the
     /// legacy `commit_date` best-effort enrichment at read time).
@@ -288,6 +301,8 @@ impl RefIndex {
                     sha: r.sha.clone(),
                     range: r.range,
                     content_hash: r.content_hash.clone(),
+                    kind: if r.patch { RefKind::Patch } else { RefKind::Ref },
+                    result_hash: r.result_hash.clone(),
                     ref_name: r.ref_name.clone(),
                     ref_type: r.ref_type.clone(),
                     commit_date: r.commit_date.clone(),
@@ -727,6 +742,8 @@ mod tests {
             rev: None,
             base_ref: None,
             fork_point: None,
+            patch: false,
+            result_hash: None,
         }
     }
 

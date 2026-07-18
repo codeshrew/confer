@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
+use crate::patch;
 use crate::projection::claimants;
 use crate::schema::{self, Frontmatter, Message, TYPES};
 use crate::{
@@ -38,6 +39,13 @@ pub(crate) struct AppendArgs {
     /// design/44 §2: downgrade the write-time integrity gate from a hard FAIL to a
     /// warning + auto-embed of the working-tree content actually referenced.
     pub(crate) allow_dirty: bool,
+    /// design/45 §1.3: attach a prepared unified diff (file path, or `-` for stdin) as a
+    /// `confer-patch` — requires `patch_repo`.
+    pub(crate) patch: Option<String>,
+    /// the `repos/<slug>` `patch` is against (design/45 §1.3).
+    pub(crate) patch_repo: Option<String>,
+    /// raise `patch`'s size gate to the hard cap (design/45 §1.2).
+    pub(crate) allow_large_patch: bool,
 }
 
 /// Parse a `--ref` token `repo:path[@sha][#Lstart-Lend]` into a CodeRef.
@@ -82,6 +90,8 @@ fn parse_ref(s: &str) -> Result<schema::CodeRef> {
         rev: None,
         base_ref: None,
         fork_point: None,
+        patch: false,
+        result_hash: None,
     })
 }
 
@@ -120,7 +130,9 @@ pub(crate) struct PinOutcome {
     pub(crate) warnings: Vec<String>,
 }
 
-/// How the pinned commit was reached — feeds `ref_name`/`ref_type` (design/44 §1.2).
+/// How the pinned commit was reached — feeds `ref_name`/`ref_type` (design/44 §1.2). `Clone` so
+/// design/45's `attach_patch` can apply ONE captured identity to several derived per-file refs.
+#[derive(Clone)]
 enum RefKind {
     Branch(String),
     Tag(String),
@@ -663,6 +675,95 @@ fn build_provenance(cap: &repomap::Capture, r: &schema::CodeRef) -> String {
     format!("pinned {short} ({name}{date}) from {} [{label}]{fork}", cap.dir.display())
 }
 
+/// Read a `--patch <file|->` source: `-` reads stdin (the natural channel for an agent that just
+/// computed a diff), else the given file path.
+fn read_patch_source(src: &str) -> Result<String> {
+    if src == "-" {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s)?;
+        Ok(s)
+    } else {
+        std::fs::read_to_string(src).map_err(|e| anyhow!("--patch {src}: {e}"))
+    }
+}
+
+/// Attach a prepared unified diff as a `confer-patch` (design/45 §1.3–1.4): resolve+pin its base
+/// sha (design/44 §1.1's capture-dir precedence — reused verbatim; a patch is NEVER written with
+/// `sha: unresolved`, a hard error, since a proposal against an unpinnable base is meaningless),
+/// run the write-time apply-gate (a temp-index `read-tree` + `apply --cached`, `patch::
+/// validate_and_derive`), and derive one `patch: true` ref per touched file straight from the
+/// diff — so an honestly-authored patch always pairs with its fence (the anti-spoof rule, §1.2).
+/// Returns the derived refs plus the `confer-patch` body fence to fold into the message (which
+/// also puts the diff through the same secret/control-char lints as any other body content).
+fn attach_patch(
+    repo_inv: &repos::Repos,
+    repo: &str,
+    diff: &str,
+    ref_from: Option<&Path>,
+    allow_large: bool,
+) -> Result<(Vec<schema::CodeRef>, String)> {
+    if let Some(warning) = patch::size_gate(diff, allow_large)? {
+        hint(warning);
+    }
+    let card_root_sha = repo_inv.get(repo).and_then(|c| c.root_sha.clone());
+    let capture = repomap::capture_dir(repo, card_root_sha.as_deref(), ref_from).ok_or_else(|| {
+        anyhow!(
+            "cannot pin --patch: no local clone of '{repo}' is mapped on this machine (or reachable \
+             from your cwd/--ref-from) — a patch needs a real base to apply against. Map one: \
+             `confer repos map {repo} <path>`."
+        )
+    })?;
+    let dir = &capture.dir;
+    let head = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
+    if !head.status.success() {
+        return Err(anyhow!("cannot pin --patch: '{repo}' has no commits at HEAD in {}", dir.display()));
+    }
+    let base_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+    let hashes = patch::validate_and_derive(dir, &base_sha, diff)?;
+    let touched = patch::parse_diff_touched_files(diff);
+    if touched.is_empty() {
+        return Err(anyhow!(
+            "--patch: no files found in the diff (expected `diff --git a/… b/…` / `--- `/`+++ ` headers)"
+        ));
+    }
+
+    let identity = capture_identity(dir, &base_sha, "HEAD", false);
+    let mut refs = Vec::with_capacity(touched.len());
+    for t in &touched {
+        let mut r = schema::CodeRef {
+            repo: repo.to_string(),
+            sha: base_sha.clone(),
+            path: t.path.clone(),
+            range: t.old_range,
+            content_hash: None,
+            ref_name: None,
+            ref_type: None,
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+            base_ref: None,
+            fork_point: None,
+            patch: true,
+            result_hash: hashes.get(&t.path).cloned(),
+        };
+        if let Some(kind) = identity.kind.clone() {
+            kind.apply(&mut r);
+        }
+        r.commit_date = identity.commit_date.clone();
+        r.base_ref = identity.base_ref.clone();
+        r.fork_point = identity.fork_point.clone();
+        refs.push(r);
+    }
+    hint(format!(
+        "--patch: {} file(s) against {repo}@{}",
+        refs.len(),
+        &base_sha[..base_sha.len().min(9)]
+    ));
+    Ok((refs, patch::patch_fence(repo, &base_sha, diff)))
+}
+
 /// Warn (non-fatally) when a message's addressees can't receive it in THIS hub:
 /// a named `--to`/`--cc` role that hasn't joined, or a broadcast/group that
 /// resolves to no one but the sender. This is the guardrail for the split-brain
@@ -781,6 +882,9 @@ pub(crate) fn cmd_lifecycle(
         allow_secret: false,
         ref_from: a.ref_from,
         allow_dirty: a.allow_dirty,
+        patch: None,
+        patch_repo: None,
+        allow_large_patch: false,
     })
 }
 
@@ -810,7 +914,25 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
         allow_secret: a.allow_secret,
         ref_from: a.ref_from,
         allow_dirty: a.allow_dirty,
+        patch: a.patch,
+        patch_repo: a.patch_repo,
+        allow_large_patch: a.allow_large_patch,
     })
+}
+
+/// `confer suggest` — sugar for `append --type request --patch …` (design/45 §1.3): a
+/// suggestion aimed at someone is a proposable change WITH a resolution — design/39's Track
+/// side — so it gets the full request lifecycle (claim/done/wont-do/supersede), `--to` required
+/// exactly like any request. Requires `--patch`; the `--worktree` capture flow (diffing an
+/// agent's own dirty tree instead of a prepared file) is design/45's M-phase, not implemented
+/// here — an FYI alternative with no expectation of action is the Talk-side `note --patch`.
+pub(crate) fn cmd_suggest(a: CreateArgs) -> Result<()> {
+    if a.patch.is_none() {
+        return Err(anyhow!(
+            "confer suggest requires --patch <file|-> (the --worktree capture flow isn't implemented yet)"
+        ));
+    }
+    cmd_create("request", a, None)
 }
 
 /// Split comma-lists inside repeated `--to`/`--cc` values (`--to a,b` == `--to a --to b`), trimming
@@ -869,6 +991,29 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             ref_provenance.extend(outcome.provenance);
             ref_fences.extend(outcome.fence);
         }
+    }
+    // design/45 §1.3: attach a prepared unified diff as a `confer-patch` — reads its stdin (if
+    // `-`) BEFORE the body's own stdin fallback below, resolves+pins a real base, runs the
+    // write-time apply-gate, and derives one `patch: true` ref per touched file. The fence is
+    // folded into `ref_fences` (below) exactly like a `confer-ref` embed, so it rides the same
+    // non-empty-body / secret-shape / control-char lints as any other body content.
+    if let Some(patch_src) = &a.patch {
+        let repo = a.patch_repo.clone().ok_or_else(|| {
+            anyhow!("--patch requires --repo <slug> (which repo the diff is against)")
+        })?;
+        if !valid_slug(&repo) {
+            return Err(anyhow!(
+                "invalid --repo '{repo}': must be a repos/<slug> key ([a-z0-9][a-z0-9-]*)"
+            ));
+        }
+        let diff = read_patch_source(patch_src)?;
+        if diff.trim().is_empty() {
+            return Err(anyhow!("--patch {patch_src}: empty diff"));
+        }
+        let repo_inv = repos::load(&root);
+        let (mut derived, fence) = attach_patch(&repo_inv, &repo, &diff, ref_from, a.allow_large_patch)?;
+        refs.append(&mut derived);
+        ref_fences.push(fence);
     }
     // A blank value counts as absent (an empty `--of`/`--supersedes` must not slip
     // past the required-field guard — see C1).

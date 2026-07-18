@@ -41,6 +41,11 @@ pub enum Staleness {
     /// No mapped clone, no `content_hash` recorded, or the object isn't present
     /// locally (shallow/unfetched) — can't tell.
     Unknown,
+    /// *(design/45 §1.2/§1.7, new)* A patch (`patch: true` ref) whose proposed change has
+    /// already landed: `HEAD:<path>`'s blob OID equals `result_hash` (or, for a deletion, the
+    /// path is now absent at HEAD). Detected purely from hub data + any clone — no tracking
+    /// state, no CI hook, no server.
+    Landed,
 }
 
 impl Staleness {
@@ -54,6 +59,7 @@ impl Staleness {
             Staleness::Squashed => "squashed",
             Staleness::Unpinned => "unpinned",
             Staleness::Unknown => "unknown",
+            Staleness::Landed => "landed",
         }
     }
     /// A compact human badge — empty for the common no-clone `Unknown` case, so we
@@ -68,6 +74,7 @@ impl Staleness {
             Staleness::Squashed => "  [⚠ squashed — merged away]",
             Staleness::Unpinned => "  [⚠ unpinned — legacy HEAD ref]",
             Staleness::Unknown => "",
+            Staleness::Landed => "  [patch landed]",
         }
     }
 }
@@ -176,6 +183,24 @@ pub fn staleness_ex(
         (Some(b), Some(f)) if squash_anchor_reachable(dir, f, b) => Staleness::Squashed,
         _ => Staleness::Offline,
     }
+}
+
+/// design/45 §1.2/§1.7: has a patch's proposed change already landed at HEAD? `HEAD:<path>`'s
+/// blob OID equals `result_hash` (a deletion — no `result_hash` — landed iff the path is now
+/// absent at HEAD). `Unknown` with no clone; only meaningful for a `patch: true` ref (an
+/// ordinary ref's staleness comes from `staleness_ex` instead).
+pub fn patch_staleness(clone: Option<&Path>, path: &str, result_hash: Option<&str>) -> Staleness {
+    let Some(dir) = clone else { return Staleness::Unknown };
+    let at_head = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &format!("HEAD:{path}")])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let landed = match (result_hash, at_head) {
+        (Some(rh), Some(oid)) => oid == rh,
+        (None, None) => true,
+        _ => false,
+    };
+    if landed { Staleness::Landed } else { Staleness::Unknown }
 }
 
 /// Total line count of `<sha>:<path>` in `dir` — the cheap general check behind the
@@ -334,6 +359,12 @@ pub fn render_resolved(repo_inv: &repos::Repos, r: &schema::CodeRef, max_lines: 
         ));
         return s;
     }
+    // design/45 §1.7: the patch chip — "proposed a change here (applied/open)", detected purely
+    // from `result_hash` vs `HEAD:<path>` (Staleness::Landed), no tracking state involved.
+    if r.patch {
+        let applied = patch_staleness(clone.as_deref(), &r.path, r.result_hash.as_deref()) == Staleness::Landed;
+        s.push_str(&format!("\n   ⟳ proposed a change here ({})", if applied { "applied" } else { "open" }));
+    }
     if let Some(lines) = snippet(clone.as_deref(), &r.sha, &r.path, r.range, max_lines) {
         for (n, line) in lines {
             s.push_str(&format!("\n   {n:>5} │ {line}"));
@@ -481,6 +512,8 @@ mod tests {
             rev: None,
             base_ref: None,
             fork_point: None,
+            patch: false,
+            result_hash: None,
         };
         let out = render_resolved(&repo_inv, &r, 50);
         assert!(out.contains("not cloned here"), "out: {out}");
@@ -506,6 +539,8 @@ mod tests {
             rev: None,
             base_ref: None,
             fork_point: None,
+            patch: false,
+            result_hash: None,
         };
         let out = render_resolved(&repo_inv, &r, 50);
         // a non-full-hex sha (legacy "HEAD") is shown as-is, not truncated/mangled.

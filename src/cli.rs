@@ -193,6 +193,19 @@ pub(crate) enum Cmd {
         /// what's pinned; use this only when that promise can't hold yet.
         #[arg(long = "allow-dirty")]
         allow_dirty: bool,
+        /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch`
+        /// (design/45): pinned to a base sha, write-time apply-gated via a temp index, one
+        /// derived `patch: true` ref per touched file with its `result_hash`. Requires --repo.
+        #[arg(long)]
+        patch: Option<String>,
+        /// the `repos/<slug>` --patch is against — resolves its base sha's capture dir the same
+        /// way --ref-from does (--ref-from itself, if given, is reused as that capture dir).
+        #[arg(long = "repo")]
+        patch_repo: Option<String>,
+        /// raise --patch's size gate from refuse-above-400-changed-lines to a hard ~2000-line
+        /// cap. Above THAT, the change is branch-scale: push a branch and --ref the commit.
+        #[arg(long = "allow-large-patch")]
+        allow_large_patch: bool,
     },
     /// Open a new tracked request (a ticket). Sugar for `append --type request`.
     /// note = chat, request = ticket: use this when the thing needs someone to DO
@@ -242,6 +255,38 @@ pub(crate) enum Cmd {
     Defer {
         #[command(flatten)]
         args: LifecycleArgs,
+    },
+    /// Propose a change: sugar for `append --type request --patch …` (design/45 §1.3) — the
+    /// reviewer's/refactorer's concrete output, applicable by the author with one `confer apply`
+    /// command, traceable forever via the request lifecycle (claim/done/wont-do/supersede). An
+    /// alternative with no expectation of action is the Talk-side `note --patch` instead. `--to`
+    /// is required, exactly as for any request. Requires `--patch <file|->` (the `--worktree`
+    /// capture flow is design/45's M-phase, not yet implemented).
+    Suggest {
+        #[command(flatten)]
+        args: CreateArgs,
+    },
+    /// Apply a `confer-patch` from a message to its target repo's WORKING TREE (design/45 §1.5).
+    /// EXPLICIT and never automatic: confer stops at `git apply`/`git apply --3way`, leaving
+    /// review, staging, committing, and attribution to YOU in your own repo — it never commits
+    /// or pushes to a work repo. `--check` is the predicate form (design/37): exit 0 applies
+    /// cleanly, 1 conflicts/drift, 2 already landed (HEAD already has this change), 3
+    /// unresolvable here (no mapped clone, or the base commit isn't present locally).
+    Apply {
+        /// the message id (or id-prefix) carrying the `confer-patch` fence.
+        id: String,
+        /// predicate mode: report the verdict via exit code only (0/1/2/3); never touches the
+        /// working tree.
+        #[arg(long)]
+        check: bool,
+        /// resolve the target repo here instead of the mapped clone (the `--ref-from` analogue —
+        /// design/44 §1.1).
+        #[arg(long = "repo-dir")]
+        repo_dir: Option<String>,
+        /// apply even though a touched path has uncommitted changes (default: refuse — never
+        /// stack a proposal onto unsaved work).
+        #[arg(long)]
+        force: bool,
     },
     /// Print what's new since the cursor, then exit (for /loop and hooks).
     Poll {

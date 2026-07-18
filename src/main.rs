@@ -35,6 +35,7 @@ mod keygen_release;
 mod keyring;
 mod knownhubs;
 mod machineconfig;
+mod patch;
 mod presence;
 mod projection;
 mod reconnect;
@@ -60,7 +61,7 @@ mod watch;
 mod watchlock;
 
 use anyhow::{anyhow, Result};
-use append::{cmd_append, cmd_create, cmd_lifecycle, AppendArgs};
+use append::{cmd_append, cmd_create, cmd_lifecycle, cmd_suggest, AppendArgs};
 use clap::Parser;
 use cli::{Cli, Cmd};
 use config_hub::{cmd_config, cmd_hub, cmd_rewatch, cmd_status};
@@ -403,15 +404,21 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
                 .entry(h.repo.clone())
                 .or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo))
                 .clone();
-            let st = refcode::staleness_ex(
-                clone.as_deref(),
-                &h.sha,
-                &h.path,
-                h.content_hash.as_deref(),
-                h.base_ref.as_deref(),
-                h.fork_point.as_deref(),
-            )
-            .label();
+            // design/45 §1.7: a patch's staleness IS the landed-detection (result_hash vs
+            // HEAD:<path>), not the ordinary base-drift signal (patch refs carry no content_hash).
+            let st = if h.kind == projection::RefKind::Patch {
+                refcode::patch_staleness(clone.as_deref(), &h.path, h.result_hash.as_deref()).label()
+            } else {
+                refcode::staleness_ex(
+                    clone.as_deref(),
+                    &h.sha,
+                    &h.path,
+                    h.content_hash.as_deref(),
+                    h.base_ref.as_deref(),
+                    h.fork_point.as_deref(),
+                )
+                .label()
+            };
             hits.push((label.clone(), h.clone(), st));
         }
     }
@@ -450,6 +457,12 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
             }
             if let Some(f) = &h.fork_point {
                 refj["fork_point"] = serde_json::json!(f);
+            }
+            if h.kind == projection::RefKind::Patch {
+                refj["patch"] = serde_json::json!(true);
+            }
+            if let Some(rh) = &h.result_hash {
+                refj["result_hash"] = serde_json::json!(rh);
             }
             let line = serde_json::json!({
                 "event": "ref-hit",
@@ -501,8 +514,15 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
             (false, true) => "  [untracked]",
             (false, false) => "",
         };
+        // design/45 §1.7: the patch chip — "proposed a change here (applied/open)", `applied`
+        // read straight off the landed-detection staleness computed above.
+        let patch_chip = if h.kind == projection::RefKind::Patch {
+            format!("  ⟳ proposed a change here ({})", if *st == "landed" { "applied" } else { "open" })
+        } else {
+            String::new()
+        };
         println!(
-            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{paren}{rng}){stmark}{flags}",
+            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{paren}{rng}){stmark}{flags}{patch_chip}",
             short_id(&h.msg_id),
             h.from,
             h.summary,
@@ -660,16 +680,30 @@ impl std::fmt::Display for StopHookBlock {
 }
 impl std::error::Error for StopHookBlock {}
 
+/// `confer apply --check`'s distinct "already landed" verdict (design/45 §1.5, design/37 exit
+/// vocabulary: 0 applies cleanly, 1 conflicts, 2 already landed, 3 unresolvable) — landing isn't a
+/// failure, but it IS distinct from "would apply cleanly" for a scriptable caller, so it gets its
+/// own code (2) rather than overloading `PredicateFalse`'s 1.
+#[derive(Debug)]
+pub(crate) struct AlreadyLanded;
+impl std::fmt::Display for AlreadyLanded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("already landed")
+    }
+}
+impl std::error::Error for AlreadyLanded {}
+
 /// Exit-code contract (DESIGN.md): 0 = success / report produced / predicate YES; 1 = predicate NO (a
-/// valid negative, ONLY from predicate commands); 2 = usage (clap) or the Stop-hook block; 3 =
-/// execution/environment error. Codes return UP through here — never `process::exit` mid-stack — so
-/// clone locks and cursor state always `Drop`.
+/// valid negative, ONLY from predicate commands); 2 = usage (clap), the Stop-hook block, or `confer
+/// apply --check`'s "already landed" verdict; 3 = execution/environment error. Codes return UP
+/// through here — never `process::exit` mid-stack — so clone locks and cursor state always `Drop`.
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.is::<PredicateFalse>() => ExitCode::from(1),
         Err(e) if e.is::<StopHookBlock>() => ExitCode::from(2),
+        Err(e) if e.is::<AlreadyLanded>() => ExitCode::from(2),
         Err(e) => {
             // Match Rust's default Result-termination output so error TEXT is unchanged; only the CODE
             // moves (1 → 3), decoupling "confer failed" from a predicate's "the answer is no".
@@ -771,6 +805,9 @@ fn run() -> Result<()> {
             allow_secret,
             ref_from,
             allow_dirty,
+            patch,
+            patch_repo,
+            allow_large_patch,
         } => cmd_append(AppendArgs {
             msg_type,
             text,
@@ -791,6 +828,9 @@ fn run() -> Result<()> {
             defer,
             ref_from,
             allow_dirty,
+            patch,
+            patch_repo,
+            allow_large_patch,
         }),
         Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
         Cmd::Note { args } => cmd_create("note", args, None),
@@ -799,6 +839,8 @@ fn run() -> Result<()> {
         Cmd::Error { args } => cmd_lifecycle("error", args, None),
         Cmd::Blocked { args } => cmd_lifecycle("blocked", args, None),
         Cmd::Defer { args } => cmd_lifecycle("defer", args, None),
+        Cmd::Suggest { args } => cmd_suggest(args),
+        Cmd::Apply { id, check, repo_dir, force } => patch::cmd_apply(id, check, repo_dir, force),
         Cmd::Poll {
             advance,
             topic,
@@ -1153,6 +1195,16 @@ pub(crate) struct CreateArgs {
     /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
     #[arg(long = "allow-dirty")]
     allow_dirty: bool,
+    /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch` (design/45)
+    /// — see `append --patch`. Requires --repo.
+    #[arg(long)]
+    patch: Option<String>,
+    /// the `repos/<slug>` --patch is against (see `append --repo`).
+    #[arg(long = "repo")]
+    patch_repo: Option<String>,
+    /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
+    #[arg(long = "allow-large-patch")]
+    allow_large_patch: bool,
 }
 
 struct PollArgs {
