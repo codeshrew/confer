@@ -328,6 +328,48 @@ fn refs_reverse_lookup_returns_ref_hits() {
 }
 
 #[test]
+fn repos_endpoint_lists_registered_repos_with_clone_status() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha); // registers + maps "mylib"
+
+    // a second repo, registered but NOT cloned anywhere.
+    std::fs::write(
+        alpha.dir.join("repos").join("unlinked.md"),
+        "---\nrole: docs\nurl: git@github.com:o/unlinked.git\naccess: [beta]\ndocs: docs/\nowner: o\n---\n",
+    )
+    .unwrap();
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/repos");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 2, "both registered repos listed: {arr:?}");
+
+    let mylib = arr.iter().find(|r| r["slug"] == "mylib").expect("mylib present");
+    for key in ["slug", "role", "url", "access", "docs", "owner", "cloned", "clonePath", "rootSha"] {
+        assert!(mylib.get(key).is_some(), "missing repo.{key} in {mylib}");
+    }
+    assert_eq!(mylib["cloned"], true, "mylib was mapped by seed(): {mylib}");
+    assert!(mylib["clonePath"].as_str().is_some(), "cloned repo should carry a path: {mylib}");
+
+    let unlinked = arr.iter().find(|r| r["slug"] == "unlinked").expect("unlinked present");
+    assert_eq!(unlinked["role"], "docs");
+    assert_eq!(unlinked["owner"], "o");
+    assert_eq!(unlinked["docs"], "docs/");
+    assert_eq!(unlinked["access"], serde_json::json!(["beta"]));
+    assert_eq!(unlinked["cloned"], false, "never mapped: {unlinked}");
+    assert!(unlinked["clonePath"].is_null());
+
+    // unknown hub still 404s the same way the other endpoints do.
+    let (s2, b2) = http_get(&server.addr, "/api/repos?hub=nope-such-hub");
+    assert_eq!(s2, 404, "body: {b2}");
+    let v2: serde_json::Value = serde_json::from_str(&b2).unwrap();
+    assert!(v2.get("error").is_some());
+}
+
+#[test]
 fn unknown_hub_404s_with_json_error() {
     let hub = new_hub();
     let alpha = hub.clone("alpha");

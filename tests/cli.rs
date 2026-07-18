@@ -5066,6 +5066,59 @@ fn repos_map_records_clone_lists_it_and_rejects_non_git() {
 }
 
 #[test]
+fn repos_discover_maps_matching_clone_and_reports_unmatched() {
+    let c = new_hub().clone("alpha");
+    // two registered repos: "foo" has a local clone to be found by canonicalized url
+    // (a DIFFERENT scheme than the card's), "bar" has none anywhere.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("foo.md"),
+        "---\nrole: code\nurl: git@github.com:o/foo.git\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("bar.md"),
+        "---\nrole: code\nurl: git@github.com:o/bar.git\n---\n",
+    )
+    .unwrap();
+
+    // a scan root with one child clone whose origin is the https form of the SAME repo.
+    let scan_root = tmp("discover-root");
+    let foo_clone = scan_root.join("foo-local");
+    std::fs::create_dir_all(&foo_clone).unwrap();
+    assert!(git(&foo_clone, &["init", "-q"]).status.success());
+    std::fs::write(foo_clone.join("f.rs"), "fn main() {}\n").unwrap();
+    git(&foo_clone, &["add", "-A"]);
+    git(&foo_clone, &["commit", "-q", "-m", "c0"]);
+    git(&foo_clone, &["remote", "add", "origin", "https://github.com/o/foo.git"]);
+
+    let d = c.confer(&["repos", "discover", "--root", scan_root.to_str().unwrap()]);
+    assert!(ok(&d), "discover failed: {}", err(&d));
+    let stdout = out(&d);
+    let canon = foo_clone.canonicalize().unwrap();
+    assert!(
+        stdout.contains(&format!("mapped foo → {}", canon.display())),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("unmatched bar"), "stdout: {stdout}");
+    assert!(!stdout.contains("mapped bar"), "bar has no local clone: {stdout}");
+
+    // reflected in the listing (local-only clone-map fact).
+    let l = c.confer(&["repos"]);
+    let listing = out(&l);
+    assert!(listing.contains("foo") && listing.contains("cloned"), "listing: {listing}");
+
+    // idempotent: a second run must not re-report the already-mapped slug.
+    let d2 = c.confer(&["repos", "discover", "--root", scan_root.to_str().unwrap()]);
+    assert!(ok(&d2));
+    assert!(
+        !out(&d2).contains("mapped foo"),
+        "already-mapped slug must be skipped on rerun: {}",
+        out(&d2)
+    );
+}
+
+#[test]
 fn ref_pins_sha_and_records_content_hash_at_write() {
     let c = new_hub().clone("alpha");
     // a code repo with a committed file

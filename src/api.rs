@@ -6,7 +6,7 @@
 //! contract with that frontend, not incidental.
 
 use crate::schema::{sanitize_term, CodeRef, Message};
-use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repos, roster, store, verify};
+use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, store, verify};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -133,8 +133,38 @@ pub fn dispatch(dirs: &[PathBuf], path: &str, url: &str) -> ApiResponse {
         "/api/thread" => thread(dirs, &q),
         "/api/refs" => refs(dirs, &q),
         "/api/code" => code(dirs, &q),
+        "/api/repos" => repos_inventory(dirs, &q),
         _ => ApiResponse::err(404, "no such API endpoint"),
     }
+}
+
+/// `GET /api/repos?hub=<id>` — the selected hub's registered repo inventory (design/40
+/// `repos/<slug>.md` cards), enriched with THIS machine's local clone-map facts
+/// (`cloned`/`clonePath`, from `repomap::path` — never from the hub, which never carries
+/// per-machine paths). A dashboard "which repos does this hub care about, and do I have
+/// them cloned" view.
+fn repo_json(slug: &str, r: &repos::Repo) -> Value {
+    let clone = repomap::path(slug);
+    json!({
+        "slug": sanitize_term(slug, false),
+        "role": sanitize_term(&r.role, false),
+        "url": r.url.as_deref().map(|u| sanitize_term(u, false)),
+        "access": r.access.iter().map(|a| sanitize_term(a, false)).collect::<Vec<_>>(),
+        "docs": r.docs.as_deref().map(|d| sanitize_term(d, false)),
+        "owner": r.owner.as_deref().map(|o| sanitize_term(o, false)),
+        "cloned": clone.is_some(),
+        "clonePath": clone.map(|p| p.to_string_lossy().into_owned()),
+        "rootSha": r.root_sha.as_deref().map(|s| sanitize_term(s, false)),
+    })
+}
+
+fn repos_inventory(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
+    let Some(dir) = resolve_hub(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
+    let inv = repos::load(dir);
+    let mut ids: Vec<&String> = inv.keys().collect();
+    ids.sort();
+    let list: Vec<Value> = ids.into_iter().map(|slug| repo_json(slug, &inv[slug])).collect();
+    ApiResponse::ok(json!(list))
 }
 
 fn hubs(dirs: &[PathBuf]) -> ApiResponse {

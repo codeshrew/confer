@@ -41,6 +41,7 @@ mod reconnect;
 mod refcode;
 mod repomap;
 mod repos;
+mod reposdiscover;
 mod roster;
 mod schema;
 mod screen;
@@ -329,6 +330,27 @@ fn cmd_repos_map(slug: String, path: Option<String>) -> Result<()> {
             "note: '{slug}' isn't in this hub's repos/ registry — peers can't resolve `--ref {slug}:…` \
              until it's shared (add repos/{slug}.md with its url + root_sha)."
         );
+    }
+    Ok(())
+}
+
+/// `confer repos discover [--root <dir>]…` — local-only backfill: match every repo
+/// registered in a hub you follow to a git clone already on this machine, and record it
+/// (`repomap::set`), so a fresh machine (or one that never ran `repos map`) doesn't need
+/// each slug typed in by hand. Never touches a hub card, never commits. A REPORT (exit 0)
+/// — even an all-unmatched run is not an error. See `reposdiscover.rs`.
+fn cmd_repos_discover(roots: Vec<String>) -> Result<()> {
+    let roots: Vec<std::path::PathBuf> = roots.into_iter().map(std::path::PathBuf::from).collect();
+    let report = reposdiscover::run(&roots)?;
+    for (slug, path) in &report.mapped {
+        println!("mapped {slug} → {}", path.display());
+    }
+    for (slug, url) in &report.unmatched {
+        let url = url.as_deref().unwrap_or("(no url)");
+        println!("unmatched {slug} ({url}) — no local clone found");
+    }
+    if report.mapped.is_empty() && report.unmatched.is_empty() {
+        println!("no repos registered across the hubs you follow — nothing to discover.");
     }
     Ok(())
 }
@@ -804,6 +826,7 @@ fn run() -> Result<()> {
         } => cmd_invite(role, host, scheme_from(ssh, https)),
         Cmd::Repos { action, json } => match action {
             Some(cli::ReposAction::Map { slug, path }) => cmd_repos_map(slug, path),
+            Some(cli::ReposAction::Discover { root }) => cmd_repos_discover(root),
             None => cmd_repos(json),
         },
         Cmd::Refs { target, check, all_hubs, json } => cmd_refs(target, check, all_hubs, json),

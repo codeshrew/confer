@@ -55,6 +55,19 @@ pub(crate) enum ReposAction {
         /// clone path (default: the current directory)
         path: Option<String>,
     },
+    /// Backfill the clone map: match every repo registered in a hub you follow to a git
+    /// clone already on this machine (by canonical remote or root-commit SHA) and record
+    /// it, without touching any hub card or committing. Idempotent — a slug already
+    /// mapped is left alone. A REPORT (exit 0): prints `mapped <slug> → <path>` for each
+    /// match found and `unmatched <slug> (<url>)` for a registered repo with no local
+    /// clone.
+    Discover {
+        /// dev root to scan (its IMMEDIATE children only); repeatable. Default: ~/git,
+        /// ~/src, ~/code, ~/Projects, ~/dev, ~/repos, $HOME, plus the parent dir of every
+        /// hub clone you already follow.
+        #[arg(long = "root")]
+        root: Vec<String>,
+    },
 }
 
 #[derive(Parser)]
