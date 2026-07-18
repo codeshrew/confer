@@ -426,13 +426,21 @@
      YOUR fleet (solid home frame + faint glow); foreign reads as someone
      else's hub (dashed frame); unclassified stays visually neutral — see
      tierFrame()'s doc comment for why "unknown" isn't folded into "home". */
+  /* A soft glow that radiates from the top-left (behind the hub's identity in
+     the header) and fades to nothing well before the work-in-flight footer —
+     so no content ever sits on a hard color band. The trust signal is carried
+     by the solid/dashed frame + tier chip; the glow is just gentle ambiance. */
   .ov-domain-home {
     border: 1.5px solid var(--home-frame);
-    box-shadow: inset 0 0 0 40px var(--home-glow);
+    background:
+      radial-gradient(135% 115% at 6% -14%, var(--home-glow), transparent 56%),
+      var(--panel);
   }
   .ov-domain-foreign {
     border: 1.5px dashed var(--foreign-frame);
-    box-shadow: inset 0 0 0 40px var(--foreign-glow);
+    background:
+      radial-gradient(135% 115% at 6% -14%, var(--foreign-glow), transparent 56%),
+      var(--panel);
   }
   .ov-dhead {
     display: flex;
