@@ -12,6 +12,7 @@
   // projection, same seam as MetaThread's.
   import type { Agent, CodeRef, Message as MessageT, MsgType, RefHit, RequestRow } from '../types';
   import { formatAgeFromSecs, formatClock } from '../format';
+  import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import CodeRefCard from './CodeRefCard.svelte';
 
   interface Props {
@@ -99,6 +100,19 @@
   const addressee = $derived(request.to.length ? request.to.map((t) => `@${cap(t)}`).join(', ') : '@all');
   const ageLabel = $derived(formatAgeFromSecs(request.ageSecs));
   const statusKey = $derived(request.status.toLowerCase());
+
+  // The full message/detail view — unlike the clamped stream (Message.svelte),
+  // this renders the ORIGINATING message's body in full, no truncation:
+  // this drawer is the "one tap away" full-content destination the clamp in
+  // the stream promises. Still goes through the same sanitized renderer —
+  // the body is equally untrusted, peer-authored content here.
+  const descriptionHtml = $derived(originMsg ? renderMarkdown(originMsg.body) : null);
+
+  let descEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    void descriptionHtml;
+    if (descEl) void highlightRenderedCodeBlocks(descEl);
+  });
 </script>
 
 <div class="reqdetail">
@@ -109,6 +123,13 @@
   <div class="kv"><span class="k2">Claimant</span><span class="v2">{claimant ? (agentsById.get(claimant)?.display ?? cap(claimant)) : 'unclaimed'}</span></div>
   <div class="kv"><span class="k2">Topic</span><span class="v2 mono">#{request.topic ?? '—'}</span></div>
   <div class="kv"><span class="k2">Age</span><span class="v2 mono">{ageLabel}</span></div>
+
+  {#if descriptionHtml}
+    <p class="ctx-note">Description — full message, rendered in full (no clamp):</p>
+    <div class="text prose md" bind:this={descEl}>
+      {@html descriptionHtml}
+    </div>
+  {/if}
 
   <p class="ctx-note">Lifecycle — folded from signed commits, no mutable status field:</p>
   <div class="lctrail">

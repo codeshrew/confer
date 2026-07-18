@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import { formatClock } from '../format';
+  import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
@@ -39,22 +40,32 @@
   const fromDisplay = $derived(fromAgent?.display ?? message.from);
   const fromAbbr = $derived(fromAgent?.abbr ?? message.from.slice(0, 2).toUpperCase());
 
-  type Seg = { type: 'text' | 'mention' | 'code'; value: string };
-  function segmentBody(body: string): Seg[] {
-    const segs: Seg[] = [];
-    const re = /(@[A-Za-z][\w-]*)|(`[^`]+`)/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(body))) {
-      if (m.index > last) segs.push({ type: 'text', value: body.slice(last, m.index) });
-      if (m[1]) segs.push({ type: 'mention', value: m[1] });
-      else if (m[2]) segs.push({ type: 'code', value: m[2].slice(1, -1) });
-      last = re.lastIndex;
-    }
-    if (last < body.length) segs.push({ type: 'text', value: body.slice(last) });
-    return segs;
+  // Long design-review / status posts (Herald/Jarvis-style) must not
+  // dominate the stream — clamp anything past a modest line/char budget and
+  // let the reader opt into the full rendered post. Thresholds are chars-
+  // first (cheap, and catches long single-paragraph posts a line-count
+  // wouldn't) with a line-count backstop for lists of many short lines.
+  const CLAMP_LINES = 10;
+  const CLAMP_CHARS = 600;
+  function isLongBody(body: string): boolean {
+    return body.length > CLAMP_CHARS || body.split('\n').length > CLAMP_LINES;
   }
-  const segs = $derived(segmentBody(message.body));
+  const isLong = $derived(isLongBody(message.body));
+  let expanded = $state(false);
+
+  // renderMarkdown sanitizes with DOMPurify — message bodies are untrusted,
+  // peer-authored content (see markdown.ts's own header note) — so this is
+  // the only string ever handed to {@html} for a message body.
+  const renderedBody = $derived(renderMarkdown(message.body));
+
+  let bodyEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    // Re-run whenever the rendered body changes; upgrades fenced code
+    // blocks to Shiki's dual-theme tokens once the (async) highlighter is
+    // ready. Falls back to (already-safe) plain text until then.
+    void renderedBody;
+    if (bodyEl) void highlightRenderedCodeBlocks(bodyEl);
+  });
 
   function selectMessage() {
     onSelect?.(message.id);
@@ -93,13 +104,27 @@
       {#if isTicket && request}
         <TicketCard {request} onSelect={onSelectTicket} />
       {:else}
-        <div class="text">
-          {#each segs as seg, i (i)}
-            {#if seg.type === 'mention'}<span class="mention">{seg.value}</span
-              >{:else if seg.type === 'code'}<code class="mono">{seg.value}</code
-              >{:else}{seg.value}{/if}
-          {/each}
+        {#if isLong}
+          <div class="summary-line">{message.summary}</div>
+        {/if}
+        <div class="text-wrap" class:clamped={isLong && !expanded}>
+          <div class="text prose md" bind:this={bodyEl}>
+            {@html renderedBody}
+          </div>
+          {#if isLong && !expanded}<div class="fade"></div>{/if}
         </div>
+        {#if isLong}
+          <button
+            type="button"
+            class="show-more"
+            onclick={(e) => {
+              e.stopPropagation();
+              expanded = !expanded;
+            }}
+          >
+            {expanded ? '▴ Show less' : '▾ Show more'}
+          </button>
+        {/if}
         {#if message.refs.length}
           {#each message.refs as ref (ref.path + ref.sha)}
             <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
@@ -206,18 +231,49 @@
     font: 500 11px/1 var(--mono);
     color: var(--faint);
   }
+  .summary-line {
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
   .text {
     font-size: 13.5px;
     color: var(--text);
   }
-  .text :global(.mention) {
+  .text-wrap {
+    position: relative;
+  }
+  .text-wrap.clamped {
+    max-height: 168px;
+    overflow: hidden;
+  }
+  .text-wrap .fade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 56px;
+    background: linear-gradient(to bottom, transparent, var(--bg) 88%);
+    pointer-events: none;
+  }
+  .show-more {
+    margin-top: 4px;
+    border: 0;
+    background: transparent;
     color: var(--accent);
-    font-weight: 600;
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    padding: 0 4px;
-    border-radius: 5px;
+    font: 600 11.5px/1 var(--mono);
+    padding: 0;
+    cursor: pointer;
   }
-  .text :global(code.mono) {
-    font-family: var(--mono);
+  .show-more:hover {
+    text-decoration: underline;
   }
+  /* Mention/inline-code look, and the rest of the `.prose`/`.md` markdown
+     typography (headings, lists, pre/code, blockquotes, links, tables), are
+     defined globally in app.css — {@html}-injected markup isn't visible to
+     Svelte's scoped-CSS compiler, so it has to be matched by an unscoped
+     stylesheet (or :global(...) here) either way; keeping it all in one
+     place in app.css means CodeRefCard/Message/RequestDetail share exactly
+     one definition of what "markdown in this app looks like". */
 </style>
