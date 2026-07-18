@@ -1,7 +1,57 @@
 // Svelte 5 runes-based app state. Small and typed — later agents extend
 // this as more panes come online (chat stream selection, filters, etc).
 
-import type { Message } from './types';
+import type { Message, Overview } from './types';
+
+// --- per-hub data cache --------------------------------------------------
+// Switching hubs in the TopBar re-fetches /api/overview + /api/messages
+// every time — including re-visiting a hub already loaded this session.
+// This cache lets App.svelte's loadHub render a previously-seen hub
+// instantly from memory instead of re-fetching. It is NOT reactive state on
+// its own (plain Map, not $state) — callers own displaying the data via
+// their own $state fields; this is purely "have we already fetched this
+// hub" bookkeeping.
+//
+// Live updates: the current hub's SSE channel invalidates this hub's entry
+// on every message/presence event (see App.svelte's subscribeEvents
+// handler), so the next loadHub() call for that hub does a real fetch
+// again — a stale cache entry never lingers for the hub you're actively
+// watching. A hub you're NOT currently on has no live channel open (the
+// backend's /api/events is scoped to one hub), so its cache entry can go
+// stale until you revisit it; that's an accepted tradeoff for "instant
+// hub-switch," not a bug.
+export interface HubData {
+  overview: Overview;
+  messages: Message[];
+}
+
+function createHubDataCache() {
+  const entries = new Map<string, HubData>();
+  return {
+    get(hubId: string): HubData | undefined {
+      return entries.get(hubId);
+    },
+    set(hubId: string, data: HubData): void {
+      entries.set(hubId, data);
+    },
+    has(hubId: string): boolean {
+      return entries.has(hubId);
+    },
+    invalidate(hubId: string): void {
+      entries.delete(hubId);
+    },
+    clear(): void {
+      entries.clear();
+    },
+    get size(): number {
+      return entries.size;
+    },
+  };
+}
+
+export type HubDataCache = ReturnType<typeof createHubDataCache>;
+
+export const hubDataCache: HubDataCache = createHubDataCache();
 
 export type View = 'chat' | 'board' | 'fleet' | 'code';
 export type Theme = 'dark' | 'light';

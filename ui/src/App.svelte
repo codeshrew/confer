@@ -12,7 +12,7 @@
   import RequestDetail from './lib/components/RequestDetail.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import { api } from './lib/api';
-  import { appState } from './lib/stores.svelte';
+  import { appState, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
   import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
 
@@ -27,6 +27,40 @@
   let reqsOn = $state(true);
   let selectedRequestId = $state<string | null>(null);
 
+  // Keep-alive for the four main view panes: switching Chat/Board/Fleet/Code
+  // via `{#if appState.view === ...}` would destroy and recreate whichever
+  // component you're leaving, then rebuild it from scratch on return — for
+  // Chat that means re-running renderMarkdown/DOMPurify.sanitize (mitigated
+  // above by markdown.ts's own cache, but still real DOM-rebuild work) and
+  // for Code a full Shiki re-tokenize + re-fetch. Instead, each pane mounts
+  // ONCE on first visit (`*Mounted` flips true and never back) and then
+  // stays alive — hidden with CSS (`.view-pane` / `.active`, see the style
+  // block below) rather than removed — so tabbing away and back is instant
+  // flip, not a re-mount. Panes never visited yet aren't mounted at all, so
+  // first load doesn't pay for a Code fetch/tokenize the user hasn't asked
+  // for.
+  let chatMounted = $state(true); // 'chat' is the initial view
+  let boardMounted = $state(false);
+  let fleetMounted = $state(false);
+  let codeMounted = $state(false);
+
+  $effect(() => {
+    switch (appState.view) {
+      case 'chat':
+        chatMounted = true;
+        break;
+      case 'board':
+        boardMounted = true;
+        break;
+      case 'fleet':
+        fleetMounted = true;
+        break;
+      case 'code':
+        codeMounted = true;
+        break;
+    }
+  });
+
   // The right rail is a single context panel that switches between the
   // reference graph (default), a request's lifecycle detail (ticket/board
   // row clicked), and the reverse index (a --ref's "N conversations
@@ -37,28 +71,48 @@
   let refHits = $state<RefHit[]>([]);
   let refContext = $state<{ repo: string; path: string; range: [number, number] | null } | null>(null);
 
+  // Applies a fetched (or cached) hub's overview/messages to the view state.
+  // Shared by the cache-hit and cache-miss paths in loadHub below so the
+  // "keep current topic if still valid, else pick a default" logic can't
+  // drift between them.
+  function applyHubData(data: { overview: Overview; messages: Message[] }) {
+    overview = data.overview;
+    messages = data.messages;
+    // The meta-thread panel is per-message (it's a reply-hash walk rooted
+    // at a specific msgId — the real backend 400s on a blank id, there is
+    // no "the hub's thread"), so it resets to empty on a hub switch and is
+    // populated lazily by selectMessage/selectTicket below, not fetched
+    // here.
+    thread = [];
+    connStatus = 'live';
+    // Keep the current topic selection if it's still valid for this hub
+    // (e.g. a same-named topic exists in both); otherwise — including the
+    // very first load, where appState.topic starts null — pick a sensible
+    // default from what this hub's overview actually has. Never falls
+    // back to a hardcoded mock slug.
+    const validSlugs = new Set(data.overview.topics.map((t) => t.slug));
+    if (!appState.topic || !validSlugs.has(appState.topic)) {
+      appState.topic = selectDefaultTopic(data.overview);
+    }
+  }
+
   async function loadHub(hubId: string) {
+    // Cache hit: render instantly from memory, no fetch, no loading flicker.
+    // A hub only ever gets fetched once per session unless its cache entry
+    // is invalidated by a live SSE event (see the subscribeEvents effect
+    // below) — that keeps the CURRENT hub fresh while still making
+    // revisiting an already-loaded hub instant.
+    const cached = hubDataCache.get(hubId);
+    if (cached) {
+      applyHubData(cached);
+      return;
+    }
+
     connStatus = 'loading';
     try {
       const [ov, msgs] = await Promise.all([api.getOverview(hubId), api.getMessages(hubId)]);
-      overview = ov;
-      messages = msgs;
-      // The meta-thread panel is per-message (it's a reply-hash walk rooted
-      // at a specific msgId — the real backend 400s on a blank id, there is
-      // no "the hub's thread"), so it resets to empty on a hub switch and is
-      // populated lazily by selectMessage/selectTicket below, not fetched
-      // here.
-      thread = [];
-      connStatus = 'live';
-      // Keep the current topic selection if it's still valid for this hub
-      // (e.g. a same-named topic exists in both); otherwise — including the
-      // very first load, where appState.topic starts null — pick a sensible
-      // default from what this hub's overview actually has. Never falls
-      // back to a hardcoded mock slug.
-      const validSlugs = new Set(ov.topics.map((t) => t.slug));
-      if (!appState.topic || !validSlugs.has(appState.topic)) {
-        appState.topic = selectDefaultTopic(ov);
-      }
+      hubDataCache.set(hubId, { overview: ov, messages: msgs });
+      applyHubData({ overview: ov, messages: msgs });
     } catch (err) {
       console.error('confer serve: failed to load hub', hubId, err);
       connStatus = 'reconnecting';
@@ -99,6 +153,10 @@
       (event) => {
         if (event.event === 'ping') return;
         if (event.hub !== appState.hub) return;
+        // A real message/presence event means the hub-data cache entry is
+        // now stale — drop it so loadHub does a real fetch instead of
+        // replaying the (now outdated) cached snapshot.
+        hubDataCache.invalidate(event.hub);
         void loadHub(appState.hub);
       },
       (status) => {
@@ -257,33 +315,44 @@
         </button>
       </div>
 
-      {#if appState.view === 'chat'}
-        <ChatStream
-          {messages}
-          requests={overview?.board.requests ?? []}
-          agents={overview?.fleet ?? []}
-          topic={appState.topic}
-          hub={appState.hub}
-          {notesOn}
-          {reqsOn}
-          selectedMessageId={appState.selectedMessage?.id ?? null}
-          onSelectMessage={selectMessage}
-          onSelectTicket={selectTicket}
-          onOpenRefs={openRefs}
-        />
-      {:else if appState.view === 'board'}
-        <Board
-          requests={overview?.board.requests ?? []}
-          agents={overview?.fleet ?? []}
-          hubName={appState.hub}
-          {selectedRequestId}
-          onSelectRequest={selectBoardRow}
-        />
-      {:else if appState.view === 'fleet'}
-        <Fleet agents={overview?.fleet ?? []} hubName={appState.hub} />
-      {:else if appState.view === 'code'}
-        <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} />
-      {/if}
+      <div class="view-pane" class:active={appState.view === 'chat'}>
+        {#if chatMounted}
+          <ChatStream
+            {messages}
+            requests={overview?.board.requests ?? []}
+            agents={overview?.fleet ?? []}
+            topic={appState.topic}
+            hub={appState.hub}
+            {notesOn}
+            {reqsOn}
+            selectedMessageId={appState.selectedMessage?.id ?? null}
+            onSelectMessage={selectMessage}
+            onSelectTicket={selectTicket}
+            onOpenRefs={openRefs}
+          />
+        {/if}
+      </div>
+      <div class="view-pane" class:active={appState.view === 'board'}>
+        {#if boardMounted}
+          <Board
+            requests={overview?.board.requests ?? []}
+            agents={overview?.fleet ?? []}
+            hubName={appState.hub}
+            {selectedRequestId}
+            onSelectRequest={selectBoardRow}
+          />
+        {/if}
+      </div>
+      <div class="view-pane" class:active={appState.view === 'fleet'}>
+        {#if fleetMounted}
+          <Fleet agents={overview?.fleet ?? []} hubName={appState.hub} />
+        {/if}
+      </div>
+      <div class="view-pane" class:active={appState.view === 'code'}>
+        {#if codeMounted}
+          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} />
+        {/if}
+      </div>
     </div>
 
     <div class="rail-r" class:open={appState.drawer === 'right'} data-testid="right-drawer">
@@ -461,6 +530,21 @@
        BoardRow, CodeLens, etc.) are what's left to decide, not this. */
     min-width: 0;
     background: var(--bg);
+  }
+  /* One wrapper per Chat/Board/Fleet/Code pane. Only the active view's
+     wrapper participates in layout (display:flex, matching what `.center`'s
+     direct child used to be); the rest are `display:none` — kept mounted
+     (see chatMounted/boardMounted/fleetMounted/codeMounted above) but out
+     of the flow entirely, not just visually hidden, so they can't be
+     tabbed/clicked into and don't affect layout. */
+  .view-pane {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .view-pane.active {
+    display: flex;
   }
   .crumb {
     display: flex;

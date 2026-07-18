@@ -102,18 +102,56 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
+// --- caches ------------------------------------------------------------
+// Re-mounting Chat (tabbing Board/Fleet/Code -> Chat, or revisiting a hub)
+// re-passes the exact same message bodies through markdown-it +
+// DOMPurify.sanitize, and re-mounted fenced code blocks re-tokenize through
+// Shiki, unless we remember the answer. Both caches are keyed on the exact
+// input and bounded with simple FIFO eviction (Map preserves insertion
+// order in JS, so deleting the first key evicts the oldest entry) — an
+// approximate LRU that's plenty to avoid redoing ~166 messages' worth of
+// work on every switch, without extra bookkeeping.
+const RENDER_CACHE_MAX = 1000;
+const renderCache = new Map<string, string>();
+const HIGHLIGHT_CACHE_MAX = 500;
+const highlightCache = new Map<string, string>();
+
+function cachedCompute(cache: Map<string, string>, max: number, key: string, compute: () => string): string {
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const value = compute();
+  if (cache.size >= max) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
+  return value;
+}
+
+/** Test-only: drop all cached render/highlight output (avoids cross-test bleed). */
+export function __clearMarkdownCachesForTest(): void {
+  renderCache.clear();
+  highlightCache.clear();
+}
+
 /**
  * Render a Markdown message body to sanitized, safe-to-`{@html}` HTML.
  * Message bodies are peer-authored and therefore untrusted; this is the
  * ONLY function in the app that may produce HTML from a message body, and
  * every code path that inserts a body into the DOM must go through it.
+ *
+ * Memoized on the raw source: re-rendering the same body (a re-mount, a
+ * revisited hub) reuses the sanitized HTML instead of re-parsing +
+ * re-sanitizing it.
  */
 export function renderMarkdown(src: string): string {
-  const rendered = md.render(src);
-  return DOMPurify.sanitize(rendered, {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\/)/i,
+  return cachedCompute(renderCache, RENDER_CACHE_MAX, src, () => {
+    const rendered = md.render(src);
+    return DOMPurify.sanitize(rendered, {
+      ALLOWED_TAGS,
+      ALLOWED_ATTR,
+      ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\/)/i,
+    });
   });
 }
 
@@ -138,26 +176,29 @@ export async function highlightRenderedCodeBlocks(root: ParentNode): Promise<voi
     // code as, giving back the original source text — never re-parsed as
     // HTML, just fed to Shiki's tokenizer.
     const code = codeEl.textContent ?? '';
+    const cacheKey = `${lang} ${code}`;
     try {
-      const { tokens } = highlighter.codeToTokens(code, {
-        lang,
-        themes: { light: 'github-light', dark: 'github-dark' },
-        defaultColor: false,
+      const html = cachedCompute(highlightCache, HIGHLIGHT_CACHE_MAX, cacheKey, () => {
+        const { tokens } = highlighter.codeToTokens(code, {
+          lang,
+          themes: { light: 'github-light', dark: 'github-dark' },
+          defaultColor: false,
+        });
+        return tokens
+          .map((line) =>
+            line
+              .map((t) => {
+                const style = t.htmlStyle
+                  ? Object.entries(t.htmlStyle)
+                      .map(([k, v]) => `${k}:${v}`)
+                      .join(';')
+                  : '';
+                return `<span class="shiki-tok" style="${style}">${md.utils.escapeHtml(t.content)}</span>`;
+              })
+              .join('')
+          )
+          .join('\n');
       });
-      const html = tokens
-        .map((line) =>
-          line
-            .map((t) => {
-              const style = t.htmlStyle
-                ? Object.entries(t.htmlStyle)
-                    .map(([k, v]) => `${k}:${v}`)
-                    .join(';')
-                : '';
-              return `<span class="shiki-tok" style="${style}">${md.utils.escapeHtml(t.content)}</span>`;
-            })
-            .join('')
-        )
-        .join('\n');
       codeEl.innerHTML = html;
     } catch {
       // Leave the plain, already-safe text in place.

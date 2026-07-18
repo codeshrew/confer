@@ -102,7 +102,7 @@
   }
 </script>
 
-<div class="code-wrap">
+<div class="code-wrap" data-testid="code-view">
   <div class="codetool">
     <span class="ct-crumb">◆ {active.repo}</span>
     <span class="ct-sep">›</span>

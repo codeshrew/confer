@@ -1,8 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import DOMPurify from 'dompurify';
 import { renderMarkdown } from './markdown';
 
 describe('renderMarkdown', () => {
+  it('memoizes on the raw source: re-rendering the same body reuses the cached HTML instead of re-parsing it', () => {
+    // Spy on markdown-it's own render path via DOMPurify.sanitize, which
+    // renderMarkdown calls exactly once per cache miss — a second call with
+    // the *same* source must not invoke it again.
+    const sanitizeSpy = vi.spyOn(DOMPurify, 'sanitize');
+    const src = `unique memo-cache probe body ${Math.random()}`;
+
+    const first = renderMarkdown(src);
+    const callsAfterFirst = sanitizeSpy.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    const second = renderMarkdown(src);
+    expect(second).toBe(first);
+    // No new sanitize call — the second render was served from cache.
+    expect(sanitizeSpy.mock.calls.length).toBe(callsAfterFirst);
+
+    // A different source still renders (and sanitizes) fresh.
+    const third = renderMarkdown(`${src} — different`);
+    expect(sanitizeSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    expect(third).not.toBe(first);
+
+    sanitizeSpy.mockRestore();
+  });
+
   it('renders headings, bold, and lists as real HTML', () => {
     const html = renderMarkdown('## Heading\n\n**bold** text and a list:\n\n- one\n- two');
     expect(html).toContain('<h2>Heading</h2>');

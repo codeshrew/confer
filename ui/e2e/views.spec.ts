@@ -63,14 +63,20 @@ test('Fleet shows agent identity cards', async ({ page }) => {
 test('Code shows the file tree and a code view', async ({ page }) => {
   await page.getByRole('tab', { name: 'Code', exact: true }).click();
 
+  // Scoped to the Code pane itself — with Chat kept alive (not destroyed)
+  // in the background for instant tab-switching, a Chat message's own
+  // CodeRefCard can render the exact same file path / highlighted token
+  // text, which would otherwise make these matches ambiguous.
+  const codeView = page.getByTestId('code-view');
+
   await expect(page.getByRole('button', { name: 'PlateBundle.swift' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'plates.py' })).toBeVisible();
   await expect(page.getByText('wealdlore', { exact: true })).toBeVisible();
-  await expect(page.getByText('Sources/Reader/PlateBundle.swift')).toBeVisible();
+  await expect(codeView.getByText('Sources/Reader/PlateBundle.swift')).toBeVisible();
   // A highlighted code line from the mock snippet.
-  await expect(page.getByText('assembleBundle')).toBeVisible();
+  await expect(codeView.getByText('assembleBundle').first()).toBeVisible();
 
   // Switching files swaps the code view.
   await page.getByRole('button', { name: 'plates.py' }).click();
-  await expect(page.getByText('pipeline/plates.py')).toBeVisible();
+  await expect(codeView.getByText('pipeline/plates.py')).toBeVisible();
 });

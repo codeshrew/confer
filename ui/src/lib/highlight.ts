@@ -93,6 +93,21 @@ function styleToCss(style: Record<string, string> | undefined): string {
     .join(';');
 }
 
+// Re-mounting CodeLens (tabbing away and back, or re-selecting the same
+// file) re-tokenizes the exact same file text through Shiki unless we
+// remember the answer. Keyed on (lang, joined source) — the tokenized
+// result doesn't depend on which line numbers were requested, so it's safe
+// to cache independent of the `n`s passed in. Bounded with simple FIFO
+// eviction (Map preserves insertion order), same approach as markdown.ts's
+// caches.
+const SNIPPET_CACHE_MAX = 200;
+const snippetTokenCache = new Map<string, HighlightToken[][]>();
+
+/** Test-only: drop cached tokenization output (avoids cross-test bleed). */
+export function __clearHighlightCacheForTest(): void {
+  snippetTokenCache.clear();
+}
+
 /**
  * Highlight a set of (possibly non-contiguous) numbered lines as one blob —
  * multi-line constructs (docstrings, block comments) tokenize correctly
@@ -103,19 +118,28 @@ export async function highlightSnippetLines(
   lines: { n: number; text: string }[],
   lang: string | null | undefined
 ): Promise<HighlightedLine[]> {
-  const highlighter = await getHighlighter();
   const effectiveLang = resolveLang(lang);
   const code = lines.map((l) => l.text).join('\n');
-  const { tokens } = highlighter.codeToTokens(code, {
-    lang: effectiveLang,
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  });
-  return lines.map((line, i) => {
-    const lineTokens = tokens[i] ?? [];
-    return {
-      n: line.n,
-      tokens: lineTokens.map((t) => ({ text: t.content, style: styleToCss(t.htmlStyle) })),
-    };
-  });
+  const cacheKey = `${effectiveLang} ${code}`;
+
+  let tokensByLine = snippetTokenCache.get(cacheKey);
+  if (!tokensByLine) {
+    const highlighter = await getHighlighter();
+    const { tokens } = highlighter.codeToTokens(code, {
+      lang: effectiveLang,
+      themes: { light: 'github-light', dark: 'github-dark' },
+      defaultColor: false,
+    });
+    tokensByLine = tokens.map((line) => line.map((t) => ({ text: t.content, style: styleToCss(t.htmlStyle) })));
+    if (snippetTokenCache.size >= SNIPPET_CACHE_MAX) {
+      const oldest = snippetTokenCache.keys().next().value;
+      if (oldest !== undefined) snippetTokenCache.delete(oldest);
+    }
+    snippetTokenCache.set(cacheKey, tokensByLine);
+  }
+
+  return lines.map((line, i) => ({
+    n: line.n,
+    tokens: tokensByLine![i] ?? [],
+  }));
 }

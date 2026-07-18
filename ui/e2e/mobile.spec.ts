@@ -55,6 +55,10 @@ test('Board has no horizontal overflow', async ({ page }) => {
 
 test('Code has no horizontal overflow', async ({ page }) => {
   await page.getByRole('tab', { name: 'Code', exact: true }).click();
-  await expect(page.getByText('assembleBundle')).toBeVisible();
+  // Scoped to the Code pane — Chat stays mounted (kept alive, just hidden)
+  // in the background for instant tab-switching, and a Chat message's own
+  // CodeRefCard can render this same highlighted token text, which would
+  // otherwise make this match ambiguous.
+  await expect(page.getByTestId('code-view').getByText('assembleBundle').first()).toBeVisible();
   await expectNoHorizontalScroll(page);
 });
