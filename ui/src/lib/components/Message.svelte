@@ -201,7 +201,7 @@
           {/if}
         {/if}
         {#if message.refs.length}
-          {#each message.refs as ref (ref.path + ref.sha)}
+          {#each message.refs as ref, i (ref.repo + ':' + ref.path + '@' + ref.sha + '#' + (ref.range ? ref.range.join('-') : 'all') + '#' + i)}
             <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
           {/each}
         {/if}
