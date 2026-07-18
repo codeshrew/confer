@@ -8,7 +8,7 @@
   // yet to persist a role card's self-declared display/color/abbr) — same
   // seam as the mockup's `liveEdit`/`pickColor`, which only mutate the DOM.
   import type { Agent } from '../types';
-  import { formatAge, isStaleAge } from '../format';
+  import { formatAge } from '../format';
 
   interface Props {
     agents: Agent[];
@@ -42,7 +42,7 @@
     openEditors = { ...openEditors, [id]: !openEditors[id] };
   }
 
-  const staleCount = $derived(agents.filter((a) => isStaleAge(a.lastTs)).length);
+  const staleCount = $derived(agents.filter((a) => !a.live).length);
 
   const youBase: Override = { display: 'You', abbr: '◉', color: 'var(--accent)' };
   const you = $derived(overrideFor('you', youBase));
@@ -117,7 +117,7 @@
     {#each agents as agent (agent.id)}
       {@const base = { display: agent.display, abbr: agent.abbr, color: agent.color }}
       {@const cur = overrideFor(agent.id, base)}
-      {@const stale = isStaleAge(agent.lastTs)}
+      {@const stale = !agent.live}
       {@const vm = VERIFY_GLYPH[agent.verified]}
       <div class="agentcard" class:stale>
         <div class="ac-top">
@@ -128,7 +128,7 @@
           </div>
           <span class="ac-verify {vm.cls}" title={vm.title}>{vm.g}</span>
         </div>
-        <div class="ac-hb">{formatAge(agent.lastTs)} ago{stale ? ' · heartbeat stale' : ''}</div>
+        <div class="ac-hb">{stale ? 'heartbeat stale' : 'live'} · last posted {formatAge(agent.lastTs)} ago</div>
         {#if agent.verified === 'unverified'}
           <div class="ac-warnline">⚠ unverified peer — if this hub's remote allows anonymous read, verify the key before trusting claims</div>
         {/if}

@@ -136,4 +136,49 @@ describe('Message', () => {
       expect(screen.queryByText(/Show more/)).not.toBeInTheDocument();
     });
   });
+
+  describe('summary density', () => {
+    it('shows only the summary line and hides the body until expanded', () => {
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      expect(screen.getByText('Shipping confer 0.7.3')).toBeInTheDocument();
+      expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
+      expect(container.textContent).not.toContain('serve --all-hubs');
+    });
+
+    it('reveals the full rendered body on expand, and hides it again on collapse', async () => {
+      const user = userEvent.setup();
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      const chevron = container.querySelector('.expand-chevron') as HTMLButtonElement;
+      expect(chevron).toBeInTheDocument();
+
+      await user.click(chevron);
+      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+      expect(container.querySelector('.mention')?.textContent).toBe('@all');
+
+      await user.click(chevron);
+      expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
+    });
+
+    it('expanding one message does not affect another (independent per-message state)', async () => {
+      const user = userEvent.setup();
+      const other: MessageT = { ...noteMessage, id: 'msg_01JQ009', summary: 'Another note', body: 'A separate body.' };
+
+      const { container: c1 } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+      const { container: c2 } = render(Message, { message: other, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      await user.click(c1.querySelector('.expand-chevron') as HTMLButtonElement);
+
+      expect(c1.querySelector('.text-wrap')).toBeInTheDocument();
+      expect(c2.querySelector('.text-wrap')).not.toBeInTheDocument();
+    });
+
+    it('in full density, no chevron is shown and the body is always visible', () => {
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'full' });
+
+      expect(container.querySelector('.expand-chevron')).not.toBeInTheDocument();
+      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+    });
+  });
 });

@@ -50,6 +50,26 @@ describe('Fleet', () => {
     expect(screen.getByText(/unverified peer/)).toBeInTheDocument();
   });
 
+  it('drives the stale/live heartbeat indicator from agent.live, not lastTs age', () => {
+    const { container } = render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
+
+    // reader: live: true (despite an old-ish lastTs) -> NOT stale, shows "live"
+    const cards = container.querySelectorAll('.agentcard:not(.you)');
+    const readerCard = cards[0] as HTMLElement;
+    const orbitCard = cards[1] as HTMLElement;
+
+    expect(readerCard.classList.contains('stale')).toBe(false);
+    expect(readerCard.querySelector('.ac-hb')?.textContent).toMatch(/^live/);
+    expect(readerCard.querySelector('.ac-hb')?.textContent).toMatch(/last posted/);
+
+    // orbit: live: false -> stale, shows "heartbeat stale"
+    expect(orbitCard.classList.contains('stale')).toBe(true);
+    expect(orbitCard.querySelector('.ac-hb')?.textContent).toMatch(/^heartbeat stale/);
+
+    // header count reflects !live agents, not lastTs-age staleness
+    expect(screen.getByText('2 agents · 1 stale heartbeat')).toBeInTheDocument();
+  });
+
   it('the customize-identity editor live-updates the avatar (display name + abbreviation)', async () => {
     const user = userEvent.setup();
     const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });

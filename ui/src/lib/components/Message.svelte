@@ -14,6 +14,11 @@
     selected?: boolean;
     unseen?: boolean;
     seenEntries: SeenEntry[];
+    /** `'summary'` shows just `message.summary`, collapsed, until the reader
+     * expands it; `'full'` is the pre-existing behavior (full body, clamped
+     * past the long-body threshold). Governs note/message BODY visibility
+     * only — ticket cards and syslines are unaffected. */
+    density?: 'summary' | 'full';
     onSelect?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
@@ -27,6 +32,7 @@
     selected = false,
     unseen = false,
     seenEntries,
+    density = 'full',
     onSelect,
     onSelectTicket,
     onOpenRefs,
@@ -51,7 +57,14 @@
     return body.length > CLAMP_CHARS || body.split('\n').length > CLAMP_LINES;
   }
   const isLong = $derived(isLongBody(message.body));
+  // Per-message expand state, independent of every other message and of the
+  // global `density` toggle: in 'summary' density it governs whether the
+  // full body is revealed at all; in 'full' density it's the pre-existing
+  // long-body show-more/show-less flag. An individually-expanded message
+  // stays expanded until collapsed, even if the global toggle flips.
   let expanded = $state(false);
+  const showBody = $derived(density === 'full' || expanded);
+  const showSummaryLine = $derived(density === 'summary' || isLong);
 
   // renderMarkdown sanitizes with DOMPurify — message bodies are untrusted,
   // peer-authored content (see markdown.ts's own header note) — so this is
@@ -104,26 +117,45 @@
       {#if isTicket && request}
         <TicketCard {request} onSelect={onSelectTicket} />
       {:else}
-        {#if isLong}
-          <div class="summary-line">{message.summary}</div>
-        {/if}
-        <div class="text-wrap" class:clamped={isLong && !expanded}>
-          <div class="text prose md" bind:this={bodyEl}>
-            {@html renderedBody}
+        {#if showSummaryLine}
+          <div class="summary-line" class:clickable={density === 'summary'}>
+            {#if density === 'summary'}
+              <button
+                type="button"
+                class="expand-chevron"
+                class:open={showBody}
+                aria-expanded={showBody}
+                aria-label={showBody ? 'Collapse message' : 'Expand message'}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  expanded = !expanded;
+                }}
+              >
+                ▸
+              </button>
+            {/if}
+            <span>{message.summary}</span>
           </div>
-          {#if isLong && !expanded}<div class="fade"></div>{/if}
-        </div>
-        {#if isLong}
-          <button
-            type="button"
-            class="show-more"
-            onclick={(e) => {
-              e.stopPropagation();
-              expanded = !expanded;
-            }}
-          >
-            {expanded ? '▴ Show less' : '▾ Show more'}
-          </button>
+        {/if}
+        {#if showBody}
+          <div class="text-wrap" class:clamped={isLong && !expanded}>
+            <div class="text prose md" bind:this={bodyEl}>
+              {@html renderedBody}
+            </div>
+            {#if isLong && !expanded}<div class="fade"></div>{/if}
+          </div>
+          {#if isLong}
+            <button
+              type="button"
+              class="show-more"
+              onclick={(e) => {
+                e.stopPropagation();
+                expanded = !expanded;
+              }}
+            >
+              {expanded ? '▴ Show less' : '▾ Show more'}
+            </button>
+          {/if}
         {/if}
         {#if message.refs.length}
           {#each message.refs as ref (ref.path + ref.sha)}
@@ -232,10 +264,31 @@
     color: var(--faint);
   }
   .summary-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
     font-size: 13px;
     font-weight: 650;
     color: var(--text);
     margin-bottom: 3px;
+  }
+  .expand-chevron {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    transform: rotate(0deg);
+    transition: transform 0.12s ease;
+  }
+  .expand-chevron.open {
+    transform: rotate(90deg);
+  }
+  .expand-chevron:hover {
+    color: var(--text);
   }
   .text {
     font-size: 13.5px;

@@ -61,6 +61,13 @@ export type Theme = 'dark' | 'light';
 // (≥1024px) ignores this entirely; the tri-pane there is always fully visible.
 export type Drawer = 'none' | 'left' | 'right';
 
+// Chat stream density: 'summary' shows each note/message's one-liner
+// (Message.summary) collapsed, expandable per-message to the full rendered
+// body; 'full' is the pre-existing always-full-body behavior. Global toggle
+// only sets the default collapsed/expanded state — an individually-expanded
+// message stays expanded until the reader collapses it (see Message.svelte).
+export type ChatDensity = 'summary' | 'full';
+
 function createAppState() {
   // No hub/topic default here: these were mock fixtures (agent-coord/reader)
   // that only exist in mock.ts. Against the real API they're hydrated in
@@ -73,6 +80,7 @@ function createAppState() {
   let selectedMessage = $state<Message | null>(null);
   let theme = $state<Theme>('dark');
   let drawer = $state<Drawer>('none');
+  let chatDensity = $state<ChatDensity>('summary');
 
   return {
     get hub() {
@@ -123,6 +131,12 @@ function createAppState() {
     },
     closeDrawer() {
       drawer = 'none';
+    },
+    get chatDensity() {
+      return chatDensity;
+    },
+    set chatDensity(value: ChatDensity) {
+      chatDensity = value;
     },
   };
 }

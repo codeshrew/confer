@@ -43,6 +43,20 @@ describe('appState.drawer', () => {
   });
 });
 
+describe('appState.chatDensity', () => {
+  it('defaults to summary', () => {
+    expect(appState.chatDensity).toBe('summary');
+  });
+
+  it('flips to full and back via direct assignment', () => {
+    appState.chatDensity = 'full';
+    expect(appState.chatDensity).toBe('full');
+
+    appState.chatDensity = 'summary';
+    expect(appState.chatDensity).toBe('summary');
+  });
+});
+
 describe('hubDataCache', () => {
   function fixture(hub: string): { overview: Overview; messages: [] } {
     return {

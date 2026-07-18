@@ -22,6 +22,7 @@
     hub: string;
     notesOn: boolean;
     reqsOn: boolean;
+    density?: 'summary' | 'full';
     selectedMessageId?: string | null;
     onSelectMessage?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
@@ -36,6 +37,7 @@
     hub,
     notesOn,
     reqsOn,
+    density = 'full',
     selectedMessageId = null,
     onSelectMessage,
     onSelectTicket,
@@ -120,6 +122,7 @@
         selected={selectedMessageId === message.id}
         unseen={isUnseenByYou(message)}
         seenEntries={buildSeenEntries(message)}
+        {density}
         onSelect={onSelectMessage}
         onSelectTicket={onSelectTicket}
         {onOpenRefs}

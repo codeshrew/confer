@@ -43,6 +43,13 @@ test('opening a board row surfaces the RequestDetail lifecycle trail', async ({ 
 });
 
 test('a code-ref reverse-index hook opens the reverse-index panel', async ({ page }) => {
+  // Chat defaults to Summary density — expand this specific note to reveal
+  // its full body (and the code-ref card within it) before interacting with
+  // the revhook.
+  const summaryLine = page.getByText('bundle assembly wired, pinned to a3f1c9');
+  await expect(summaryLine).toBeVisible();
+  const noteRow = page.locator('.msg').filter({ has: summaryLine });
+  await noteRow.getByRole('button', { name: 'Expand message' }).click();
   await expect(page.getByText('Wired it — bundle assembly is here')).toBeVisible();
 
   // The revhook is the inner button carrying the "N conversations reference

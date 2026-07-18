@@ -8,12 +8,26 @@
     notesOn: boolean;
     reqsOn: boolean;
     agents: Agent[];
+    /** Chat density (Summary/Full segmented control) — omitted (undefined)
+     * hides the control entirely, e.g. while viewing the Board. */
+    chatDensity?: 'summary' | 'full';
     onStatusFilterChange?: (filter: StatusFilter) => void;
     onToggleNotes?: () => void;
     onToggleReqs?: () => void;
+    onChatDensityChange?: (density: 'summary' | 'full') => void;
   }
 
-  let { statusFilter, notesOn, reqsOn, agents, onStatusFilterChange, onToggleNotes, onToggleReqs }: Props = $props();
+  let {
+    statusFilter,
+    notesOn,
+    reqsOn,
+    agents,
+    chatDensity,
+    onStatusFilterChange,
+    onToggleNotes,
+    onToggleReqs,
+    onChatDensityChange,
+  }: Props = $props();
 
   const statuses: { key: StatusFilter; label: string; dot?: string }[] = [
     { key: 'all', label: 'All' },
@@ -43,6 +57,31 @@
   <span class="flabel">Type</span>
   <button type="button" class="chip" class:on={notesOn} onclick={() => onToggleNotes?.()}>Notes</button>
   <button type="button" class="chip" class:on={reqsOn} onclick={() => onToggleReqs?.()}>Requests</button>
+
+  {#if chatDensity}
+    <span class="divider"></span>
+    <span class="flabel">Density</span>
+    <div class="segctl" role="group" aria-label="Chat density" data-testid="density-toggle">
+      <button
+        type="button"
+        class="segbtn"
+        class:on={chatDensity === 'summary'}
+        aria-pressed={chatDensity === 'summary'}
+        onclick={() => onChatDensityChange?.('summary')}
+      >
+        Summary
+      </button>
+      <button
+        type="button"
+        class="segbtn"
+        class:on={chatDensity === 'full'}
+        aria-pressed={chatDensity === 'full'}
+        onclick={() => onChatDensityChange?.('full')}
+      >
+        Full
+      </button>
+    </div>
+  {/if}
 
   <span class="divider"></span>
   <span class="flabel">Who</span>
@@ -106,5 +145,31 @@
     background: var(--border-2);
     margin: 0 4px;
     flex: 0 0 auto;
+  }
+  .segctl {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
+    padding: 2px;
+    background: var(--panel-2);
+    flex: 0 0 auto;
+  }
+  .segbtn {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 550;
+    padding: 4px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .segbtn.on {
+    background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+    color: var(--text);
+  }
+  .segbtn:hover:not(.on) {
+    color: var(--text);
   }
 </style>

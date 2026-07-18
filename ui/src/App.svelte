@@ -255,9 +255,11 @@
       {notesOn}
       {reqsOn}
       agents={overview?.fleet ?? []}
+      chatDensity={appState.view === 'chat' ? appState.chatDensity : undefined}
       onStatusFilterChange={(f) => (statusFilter = f)}
       onToggleNotes={() => (notesOn = !notesOn)}
       onToggleReqs={() => (reqsOn = !reqsOn)}
+      onChatDensityChange={(d) => (appState.chatDensity = d)}
     />
   {/if}
 
@@ -332,6 +334,7 @@
             hub={appState.hub}
             {notesOn}
             {reqsOn}
+            density={appState.chatDensity}
             selectedMessageId={appState.selectedMessage?.id ?? null}
             onSelectMessage={selectMessage}
             onSelectTicket={selectTicket}
