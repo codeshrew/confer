@@ -55,6 +55,7 @@
     aria-label={menuOpen ? 'Close menu' : 'Open menu'}
     aria-expanded={menuOpen}
     onclick={() => onMenuToggle?.()}
+    data-testid="hamburger"
   >
     <span></span>
     <span></span>

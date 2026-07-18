@@ -180,4 +180,49 @@
     padding: 3px 6px;
     transform: rotate(-3deg);
   }
+
+  /* ── Phone (<768px): the desktop grid packs 6 columns (stripe / title /
+     topic / claim-handoff / age / stamp) side by side, several of them
+     fixed-width — together they need more room than a ~360-390px viewport
+     has. Below 768px it becomes a 3-column/3-row grid (stripe stays a full-
+     height rail; title+stamp share row 1, topic gets its own row, the
+     claim-handoff + age share the last row) so every cell wraps to a size
+     the phone actually has. ── */
+  @media (max-width: 767.98px) {
+    .brow {
+      grid-template-columns: 3px 1fr auto;
+      grid-template-areas:
+        'stripe title stamp'
+        'stripe topic topic'
+        'stripe hand age';
+      row-gap: 7px;
+      align-items: start;
+    }
+    .brow .bstripe {
+      grid-area: stripe;
+    }
+    .brow .btitle {
+      grid-area: title;
+      min-width: 0;
+    }
+    .brow .bt {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .brow .bstamp {
+      grid-area: stamp;
+      align-self: start;
+    }
+    .brow .btopic {
+      grid-area: topic;
+      justify-self: start;
+    }
+    .brow .bhand {
+      grid-area: hand;
+    }
+    .brow .bage {
+      grid-area: age;
+      justify-content: flex-start;
+    }
+  }
 </style>

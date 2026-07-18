@@ -54,7 +54,7 @@
   };
 </script>
 
-<div class="fleet-wrap">
+<div class="fleet-wrap" data-testid="fleet-view">
   <div class="board-head">
     <div class="board-topline">
       <h2>Fleet · {hubName}</h2>

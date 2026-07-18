@@ -114,8 +114,20 @@ body {
   height: 100%;
 }
 
+html {
+  /* Safety net: nothing in the app should ever force sideways scroll of the
+     document itself — off-canvas drawers (translateX slide-ins), wide
+     monospace content, etc. all clip/scroll inside their own containers.
+     This is a backstop, not a substitute for those containers doing their
+     job (see TicketCard/.track and CodeLens/.densefile for the actual
+     narrow-viewport fixes). */
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
+  width: 100%;
+  overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);

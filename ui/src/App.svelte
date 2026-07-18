@@ -406,6 +406,13 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* Grid items default to `min-width: auto`, which lets a descendant's
+       min-content size (e.g. an unwrapped ticket track, a long code line)
+       win over the 1fr track and blow the whole row out past the viewport
+       on phone. min-width: 0 makes `.center` actually shrink to the track
+       it's given, so its children's own overflow/wrap rules (TicketCard,
+       BoardRow, CodeLens, etc.) are what's left to decide, not this. */
+    min-width: 0;
     background: var(--bg);
   }
   .crumb {

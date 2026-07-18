@@ -120,7 +120,7 @@
       <div class="lane">
         <div class="lane-head">
           <span class="ld" style="background:{lane.color}"></span>
-          <span class="ln">{lane.label}</span>
+          <span class="ln" data-testid="lane-label">{lane.label}</span>
           <span class="lc">{lane.items.length}</span>
         </div>
         {#each lane.items as request (request.id)}

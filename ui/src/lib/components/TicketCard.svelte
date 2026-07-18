@@ -251,4 +251,48 @@
   .track .link.done {
     background: var(--done);
   }
+
+  /* ── Phone (<768px): the stub (torn ticket stub with serial/stamp) is a
+     tall 84px-wide left column at desktop widths — on a ~360-390px viewport
+     that plus the unwrapped 4-stage lifecycle track forces the card wider
+     than the screen. Below 768px the stub becomes a horizontal top banner
+     and the track wraps, so nothing here ever needs more width than the
+     viewport gives it. ── */
+  @media (max-width: 767.98px) {
+    .ticket {
+      flex-direction: column;
+    }
+    .ticket::before,
+    .ticket::after {
+      display: none;
+    }
+    .ticket .stub {
+      width: 100%;
+      flex-direction: row;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 12px;
+      border-right: 0;
+      border-bottom: 2px dashed color-mix(in srgb, var(--tk) 50%, var(--border-2));
+    }
+    .ticket .stub .serial {
+      margin-top: 0;
+    }
+    .ticket .stub .stamp {
+      margin-top: 0;
+      margin-left: auto;
+      transform: none;
+    }
+    .ticket .tmain {
+      padding: 11px 13px 12px;
+    }
+    .track {
+      flex-wrap: wrap;
+      row-gap: 8px;
+    }
+    .track .link {
+      width: 14px;
+      margin: 0 5px;
+    }
+  }
 </style>
