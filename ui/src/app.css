@@ -1,0 +1,151 @@
+/* ── confer serve — global design tokens ──────────────────────────────
+   Ported from design/serve-dashboard-v2-mockup.html (the design source of
+   truth). Dark is the primary palette (`:root`); light is opted into via
+   `:root[data-theme="light"]`. This preserves the mockup's exact
+   "dark-primary + light-via-data-theme" model — the app starts dark and
+   the theme toggle flips `data-theme` on <html>. */
+
+:root {
+  --bg: #0c0f14;
+  --panel: #12161d;
+  --panel-2: #171c25;
+  --panel-3: #1c222c;
+  --border: #232a35;
+  --border-2: #2c3542;
+  --text: #dbe3ec;
+  --muted: #8a97a8;
+  --faint: #5b6675;
+  --accent: #2dd4bf;
+
+  --done: #46c66b;
+  --claimed: #5aa2f7;
+  --blocked: #e0a83a;
+  --error: #f26d6d;
+  --open: #2dd4bf;
+  --deferred: #b79cf0;
+  --note: #8a97a8;
+
+  /* agent accents */
+  --ag-herald: #4ecab0;
+  --ag-reader: #d9b46a;
+  --ag-pipeline: #5aa2f7;
+  --ag-compositor: #7cc46a;
+  --ag-jarvis: #c58fd6;
+  --ag-orbit: #e0965a;
+
+  /* syntax-highlight tokens (dark) — see design/serve-dashboard-v2-mockup.html
+     for the tokenizer this pairs with in the mockup; production uses Shiki. */
+  --syn-keyword: #5aa2f7;
+  --syn-string: #8bcf8f;
+  --syn-comment: #6b7685;
+  --syn-number: #e0a83a;
+  --syn-function: #4ecab0;
+  --syn-type: #d9b46a;
+  --syn-punct: #8a97a8;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #f7f9fb;
+  --panel-3: #eef2f6;
+  --border: #e2e7ee;
+  --border-2: #d5dce5;
+  --text: #1b2230;
+  --muted: #5c6675;
+  --faint: #8b95a4;
+  --accent: #0d9488;
+
+  --done: #1f9d4d;
+  --claimed: #2f74d0;
+  --blocked: #b5760a;
+  --error: #d63b3b;
+  --open: #0d9488;
+  --deferred: #7c53c9;
+  --note: #7a8494;
+
+  --ag-herald: #188f78;
+  --ag-reader: #a67c1f;
+  --ag-pipeline: #2f74d0;
+  --ag-compositor: #3f8f34;
+  --ag-jarvis: #8a4bbf;
+  --ag-orbit: #bf6420;
+
+  --syn-keyword: #2f74d0;
+  --syn-string: #1f8f4d;
+  --syn-comment: #8b95a4;
+  --syn-number: #b5760a;
+  --syn-function: #188f78;
+  --syn-type: #a67c1f;
+  --syn-punct: #5c6675;
+
+  --shadow: 0 6px 20px rgba(20, 30, 50, 0.12);
+
+  color-scheme: light;
+}
+
+/* Only when the app hasn't recorded an explicit theme choice yet do we let
+   the OS preference nudge the *initial* paint before JS sets data-theme —
+   the dark palette above stays the values, this just avoids a flash for
+   light-OS users prior to hydration. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    color-scheme: light dark;
+  }
+}
+
+/* ── minimal reset ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
