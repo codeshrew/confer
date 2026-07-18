@@ -89,23 +89,37 @@
     const asMsgId = id.replace(/^req_/, 'msg_');
     const found = messages.find((m) => m.id === asMsgId);
     appState.selectedMessage = found ?? null;
+    // On tablet/phone the right rail is a drawer — a "thread" affordance
+    // (this one) is exactly what should surface it. No-op at desktop widths,
+    // where the right rail is always visible regardless of drawer state.
+    appState.drawer = 'right';
   }
 
   function selectBoardRow(id: string) {
     selectedRequestId = id;
     contextMode = 'request';
+    appState.drawer = 'right';
   }
 
   function openRefs(ref: CodeRef, hits: RefHit[]) {
     refContext = { repo: ref.repo, path: ref.path, range: ref.range };
     refHits = hits;
     contextMode = 'refs';
+    appState.drawer = 'right';
   }
 
   function openRefsFromCode(ctx: { repo: string; path: string; range: [number, number] | null }, hits: RefHit[]) {
     refContext = ctx;
     refHits = hits;
     contextMode = 'refs';
+    appState.drawer = 'right';
+  }
+
+  function selectTopic(slug: string) {
+    appState.topic = slug;
+    // Choosing a topic from the left drawer is "done with the menu" on
+    // tablet/phone — close it so the chat underneath is revealed.
+    appState.drawer = 'none';
   }
 
   const selectedRequest = $derived(overview?.board.requests.find((r) => r.id === selectedRequestId) ?? null);
@@ -118,9 +132,11 @@
     currentView={appState.view}
     {connStatus}
     theme={appState.theme}
+    menuOpen={appState.drawer === 'left'}
     onHubChange={(hubId) => (appState.hub = hubId)}
     onViewChange={(view) => (appState.view = view)}
     onThemeToggle={() => appState.toggleTheme()}
+    onMenuToggle={() => appState.toggleDrawer('left')}
   />
 
   {#if appState.view === 'chat' || appState.view === 'board'}
@@ -136,13 +152,35 @@
   {/if}
 
   <div class="main">
-    <LeftRail
-      hubName={appState.hub}
-      topics={overview?.topics ?? []}
-      currentTopic={appState.topic}
-      agents={overview?.fleet ?? []}
-      onTopicSelect={(slug) => (appState.topic = slug)}
-    />
+    <!-- Scrim: only rendered visually (via CSS) below 1024px, dims + blocks
+         clicks through to the tri-pane while a drawer is open, and closes
+         whichever drawer is open when tapped. -->
+    <div
+      class="scrim"
+      class:show={appState.drawer !== 'none'}
+      onclick={() => appState.closeDrawer()}
+      aria-hidden={appState.drawer === 'none'}
+      data-testid="drawer-scrim"
+    ></div>
+
+    <div class="rail-l-wrap" class:open={appState.drawer === 'left'} data-testid="left-drawer">
+      <button
+        type="button"
+        class="drawer-close"
+        aria-label="Close menu"
+        onclick={() => appState.closeDrawer()}
+        data-testid="left-drawer-close"
+      >
+        ✕
+      </button>
+      <LeftRail
+        hubName={appState.hub}
+        topics={overview?.topics ?? []}
+        currentTopic={appState.topic}
+        agents={overview?.fleet ?? []}
+        onTopicSelect={selectTopic}
+      />
+    </div>
 
     <div class="center">
       <div class="crumb">
@@ -160,6 +198,16 @@
         {:else}
           <span class="c strong">Code</span>
         {/if}
+        <button
+          type="button"
+          class="rail-r-toggle"
+          aria-label={appState.drawer === 'right' ? 'Close details panel' : 'Open details panel'}
+          aria-expanded={appState.drawer === 'right'}
+          onclick={() => appState.toggleDrawer('right')}
+          data-testid="right-drawer-toggle"
+        >
+          ⓘ
+        </button>
       </div>
 
       {#if appState.view === 'chat'}
@@ -191,8 +239,17 @@
       {/if}
     </div>
 
-    <div class="rail-r">
+    <div class="rail-r" class:open={appState.drawer === 'right'} data-testid="right-drawer">
       <div class="ctx-head">
+        <button
+          type="button"
+          class="drawer-close"
+          aria-label="Close details panel"
+          onclick={() => appState.closeDrawer()}
+          data-testid="right-drawer-close"
+        >
+          ✕
+        </button>
         {#if contextMode === 'request'}
           <div class="k">Request detail</div>
           <h2>{selectedRequest?.summary ?? selectedRequestId ?? 'Request'}</h2>
@@ -229,6 +286,121 @@
     display: grid;
     grid-template-columns: 248px 1fr 320px;
     min-height: 0;
+    position: relative;
+  }
+
+  /* ── Tablet (768–1023px): the tri-pane's desktop column layout is
+     unchanged above 1024px. Below it, the right rail (meta-thread / request
+     detail / reverse-index) becomes an off-canvas drawer; the left rail
+     (topics/fleet) stays put — only its width shrinks slightly. ── */
+  @media (max-width: 1023.98px) {
+    .main {
+      grid-template-columns: 220px 1fr;
+    }
+  }
+
+  /* ── Phone (<768px): single column. Both rails become off-canvas
+     drawers — left opened via the TopBar hamburger, right via the
+     in-content "details" toggle or a thread/board-row/ref tap. ── */
+  @media (max-width: 767.98px) {
+    .main {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .scrim {
+    display: none;
+  }
+  @media (max-width: 1023.98px) {
+    .scrim {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 6, 10, 0.55);
+      z-index: 35;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .scrim.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  /* Left rail wrapper: a no-op at desktop (`display: contents` keeps
+     LeftRail as the direct 248px/220px grid-column item it already was).
+     Below 1024px it becomes a fixed off-canvas panel sliding in from the
+     left, toggled by the TopBar hamburger. */
+  .rail-l-wrap {
+    display: contents;
+  }
+  @media (max-width: 1023.98px) {
+    .rail-l-wrap {
+      display: block;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 280px;
+      max-width: 82vw;
+      z-index: 40;
+      transform: translateX(-100%);
+      transition: transform 0.22s ease;
+      box-shadow: var(--shadow);
+    }
+    .rail-l-wrap.open {
+      transform: translateX(0);
+    }
+    .rail-l-wrap :global(.rail-l) {
+      height: 100%;
+    }
+  }
+
+  .drawer-close {
+    display: none;
+  }
+  @media (max-width: 1023.98px) {
+    .drawer-close {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--border-2);
+      background: var(--panel-2);
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 1;
+    }
+    .rail-l-wrap .drawer-close {
+      top: 8px;
+      right: 8px;
+    }
+  }
+
+  .rail-r-toggle {
+    display: none;
+  }
+  @media (max-width: 1023.98px) {
+    .rail-r-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-left: auto;
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--border-2);
+      background: var(--panel-2);
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 15px;
+      flex: 0 0 auto;
+    }
   }
   .center {
     display: flex;
@@ -272,10 +444,37 @@
     flex-direction: column;
     min-height: 0;
   }
+  /* Below 1024px the right rail leaves the grid flow and becomes a fixed
+     slide-over panel from the right, toggled by the ⓘ crumb button or by
+     selecting a request/ref (see selectTicket/selectBoardRow/openRefs*). */
+  @media (max-width: 1023.98px) {
+    .rail-r {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 360px;
+      max-width: 88vw;
+      z-index: 40;
+      border-left: 1px solid var(--border-2);
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      box-shadow: var(--shadow);
+    }
+    .rail-r.open {
+      transform: translateX(0);
+    }
+  }
   .ctx-head {
+    position: relative;
     padding: 14px 16px 12px;
     border-bottom: 1px solid var(--border);
     flex: 0 0 auto;
+  }
+  @media (max-width: 1023.98px) {
+    .ctx-head {
+      padding-right: 56px;
+    }
   }
   .ctx-head .k {
     font: 700 10px/1 var(--mono);
@@ -302,5 +501,17 @@
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
+  }
+
+  @media (max-width: 767.98px) {
+    .crumb {
+      flex-wrap: wrap;
+      row-gap: 6px;
+      padding: 10px 14px;
+    }
+    .crumb .meta {
+      margin-left: 0;
+      flex-basis: 100%;
+    }
   }
 </style>

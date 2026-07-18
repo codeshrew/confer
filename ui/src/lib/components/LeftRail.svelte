@@ -247,4 +247,11 @@
   .fleet .agent.stale .hb::before {
     background: var(--blocked);
   }
+
+  @media (max-width: 767.98px) {
+    .topic,
+    .fleet .agent {
+      min-height: 40px;
+    }
+  }
 </style>

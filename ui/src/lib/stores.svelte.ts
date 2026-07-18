@@ -6,12 +6,18 @@ import type { Message } from './types';
 export type View = 'chat' | 'board' | 'fleet' | 'code';
 export type Theme = 'dark' | 'light';
 
+// Which off-canvas drawer is open on tablet/phone widths (≤1023px). Only one
+// may be open at a time — opening one implicitly closes the other. Desktop
+// (≥1024px) ignores this entirely; the tri-pane there is always fully visible.
+export type Drawer = 'none' | 'left' | 'right';
+
 function createAppState() {
   let hub = $state('agent-coord');
   let view = $state<View>('chat');
   let topic = $state<string | null>('reader');
   let selectedMessage = $state<Message | null>(null);
   let theme = $state<Theme>('dark');
+  let drawer = $state<Drawer>('none');
 
   return {
     get hub() {
@@ -49,6 +55,19 @@ function createAppState() {
     },
     toggleTheme() {
       this.theme = this.theme === 'dark' ? 'light' : 'dark';
+    },
+    get drawer() {
+      return drawer;
+    },
+    set drawer(value: Drawer) {
+      drawer = value;
+    },
+    /** Opens `which` drawer, closing any other — or closes it if it's already open. */
+    toggleDrawer(which: Exclude<Drawer, 'none'>) {
+      drawer = drawer === which ? 'none' : which;
+    },
+    closeDrawer() {
+      drawer = 'none';
     },
   };
 }

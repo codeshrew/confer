@@ -39,6 +39,28 @@ describe('TopBar', () => {
     expect(onViewChange).toHaveBeenCalledWith('board');
   });
 
+  it('renders a hamburger button that fires onMenuToggle when tapped', async () => {
+    const user = userEvent.setup();
+    const onMenuToggle = vi.fn();
+    render(TopBar, { hubs, currentHub: 'agent-coord', currentView: 'chat', onMenuToggle });
+
+    await user.click(screen.getByRole('button', { name: /open menu/i }));
+
+    expect(onMenuToggle).toHaveBeenCalledOnce();
+  });
+
+  it('reflects menuOpen in the hamburger label/aria-expanded state', () => {
+    const { rerender } = render(TopBar, { hubs, currentHub: 'agent-coord', currentView: 'chat', menuOpen: false });
+
+    const closedBtn = screen.getByRole('button', { name: /open menu/i });
+    expect(closedBtn).toHaveAttribute('aria-expanded', 'false');
+
+    rerender({ hubs, currentHub: 'agent-coord', currentView: 'chat', menuOpen: true });
+
+    const openBtn = screen.getByRole('button', { name: /close menu/i });
+    expect(openBtn).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('calls onThemeToggle and reflects the flipped data-theme on <html>', async () => {
     const user = userEvent.setup();
     document.documentElement.setAttribute('data-theme', 'dark');

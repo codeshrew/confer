@@ -10,9 +10,13 @@
     currentView: View;
     connStatus?: ConnStatus;
     theme?: 'dark' | 'light';
+    /** Whether the off-canvas left-rail drawer is currently open (tablet/phone only). */
+    menuOpen?: boolean;
     onHubChange?: (hubId: string) => void;
     onViewChange?: (view: View) => void;
     onThemeToggle?: () => void;
+    /** Hamburger tap — toggles the left-rail drawer. Only rendered/visible below 1024px. */
+    onMenuToggle?: () => void;
   }
 
   let {
@@ -21,9 +25,11 @@
     currentView,
     connStatus = 'live',
     theme = 'dark',
+    menuOpen = false,
     onHubChange,
     onViewChange,
     onThemeToggle,
+    onMenuToggle,
   }: Props = $props();
 
   const CONN_LABEL: Record<ConnStatus, string> = {
@@ -42,6 +48,19 @@
 </script>
 
 <div class="topbar">
+  <button
+    type="button"
+    class="hamburger"
+    class:open={menuOpen}
+    aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+    aria-expanded={menuOpen}
+    onclick={() => onMenuToggle?.()}
+  >
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
+
   <div class="brand">
     <span class="glyph">c</span>
     <span>confer</span>
@@ -276,5 +295,79 @@
 
   .icon-btn:hover {
     color: var(--text);
+  }
+
+  /* Hamburger — hidden on desktop (≥1024px), where the left rail is always
+     visible; surfaces at tablet/phone widths to open the off-canvas drawer. */
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    border-radius: 8px;
+  }
+
+  .hamburger span {
+    display: block;
+    width: 16px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--muted);
+    transition: transform 0.18s ease, opacity 0.18s ease;
+  }
+
+  .hamburger.open span:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+  }
+  .hamburger.open span:nth-child(2) {
+    opacity: 0;
+  }
+  .hamburger.open span:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+  }
+
+  @media (max-width: 1023.98px) {
+    .hamburger {
+      display: flex;
+    }
+  }
+
+  @media (max-width: 767.98px) {
+    .topbar {
+      flex-wrap: wrap;
+      height: auto;
+      min-height: 52px;
+      padding: 8px 10px;
+      gap: 8px 10px;
+    }
+    .hubs {
+      order: 3;
+      width: 100%;
+      margin-left: 0;
+      overflow-x: auto;
+    }
+    .live {
+      display: none;
+    }
+    .spacer {
+      display: none;
+    }
+    .seg {
+      margin-left: auto;
+    }
+    .hamburger,
+    .icon-btn {
+      width: 40px;
+      height: 40px;
+    }
+    .seg button {
+      min-height: 40px;
+    }
   }
 </style>

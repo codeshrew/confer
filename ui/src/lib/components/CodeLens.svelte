@@ -302,4 +302,35 @@
   .cc {
     color: var(--text);
   }
+
+  /* On phone, stack the file tree above the code instead of side-by-side —
+     200px off a ~360px viewport leaves the code view uncomfortably narrow.
+     The file tree becomes a horizontally-scrolling strip of chips so it
+     never forces the page to scroll sideways. */
+  @media (max-width: 767.98px) {
+    .codepage {
+      flex-direction: column;
+    }
+    .filetree {
+      width: 100%;
+      max-height: none;
+      display: flex;
+      flex-direction: row;
+      gap: 6px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+      padding: 8px;
+    }
+    .ft-group {
+      display: none;
+    }
+    .ftitem {
+      width: auto;
+      flex: 0 0 auto;
+      white-space: nowrap;
+      min-height: 40px;
+    }
+  }
 </style>
