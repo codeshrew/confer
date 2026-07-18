@@ -1,6 +1,6 @@
 <script lang="ts">
   // The message feed for the current topic. Ports `.stream` from
-  // design/serve-dashboard-v2-mockup.html: a daybreak divider, notes/tickets/
+  // design/serve-dashboard-v2-mockup.html: per-day dividers, notes/tickets/
   // syslines in order, a "NEW · since you last looked" divider, and an
   // empty-state for topics with nothing filed yet.
   //
@@ -9,10 +9,19 @@
   // deterministically (see buildSeenEntries/NEW_CUTOFF) rather than sourced
   // from real state. If confer serve's backend grows a real seen-by
   // projection, this is the seam to wire it in.
+  //
+  // PAGINATION: `messages` is App.svelte's windowed per-(hub,topic) page —
+  // most-recent CHAT_PAGE_SIZE on load, grown backward as the reader scrolls
+  // up (see loadOlder below and App.svelte's loadOlderChatMessages). This
+  // component owns the scroll-position bookkeeping (measure scrollHeight
+  // before/after a prepend so the view doesn't jump) and the initial
+  // scroll-to-bottom / stay-at-bottom-on-new-message behavior; the actual
+  // fetching lives in the parent (onLoadOlder).
+  import { tick } from 'svelte';
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import MessageComponent from './Message.svelte';
   import type { SeenEntry } from './SeenIndicator.svelte';
-  import { formatClock } from '../format';
+  import { formatClock, formatDayDivider, groupByDay } from '../format';
 
   interface Props {
     messages: MessageT[];
@@ -24,6 +33,15 @@
     reqsOn: boolean;
     density?: 'summary' | 'full';
     selectedMessageId?: string | null;
+    /** Whether an older page exists past what's currently loaded. */
+    hasMore?: boolean;
+    /** A fetch for an older page is already in flight. */
+    loadingOlder?: boolean;
+    /** Fetches and prepends the next older page; resolves with how many
+     * messages were prepended (0 if none were available, or already
+     * loading). Omitted entirely disables scroll-load (e.g. in tests that
+     * don't care about pagination). */
+    onLoadOlder?: () => Promise<number>;
     onSelectMessage?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
@@ -39,6 +57,9 @@
     reqsOn,
     density = 'full',
     selectedMessageId = null,
+    hasMore = false,
+    loadingOlder = false,
+    onLoadOlder,
     onSelectMessage,
     onSelectTicket,
     onOpenRefs,
@@ -61,6 +82,8 @@
       .filter((m) => (bucket(m) === 'note' ? notesOn : reqsOn))
       .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
   );
+
+  const dayGroups = $derived(groupByDay(topicMessages));
 
   // Demo "since you last looked" cutoff — see the CONTRACT GAP note above.
   const NEW_CUTOFF = new Date('2026-07-17T14:53:00Z').getTime();
@@ -96,9 +119,78 @@
   }
 
   const firstUnseenId = $derived(topicMessages.find((m) => isUnseenByYou(m))?.id ?? null);
+
+  // --- scroll behavior -------------------------------------------------
+  let streamEl: HTMLDivElement | undefined = $state();
+  // Whether the view should auto-follow new content at the bottom — true on
+  // a fresh hub/topic load and while the reader hasn't scrolled away from
+  // the bottom; false once they've scrolled up to read history (so a live
+  // SSE-appended message doesn't yank them back down), and naturally false
+  // while they're scrolled to the TOP loading older pages.
+  let stickToBottom = $state(true);
+  let lastKey: string | null = null;
+  let loadingOlderNow = $state(false);
+
+  $effect(() => {
+    // A hub or topic switch is a fresh stream — reset to "follow the
+    // bottom" regardless of where the reader had scrolled to previously.
+    const key = `${hub} ${topic ?? ''}`;
+    if (key !== lastKey) {
+      lastKey = key;
+      stickToBottom = true;
+    }
+  });
+
+  $effect(() => {
+    // Re-run whenever the rendered stream changes (initial load, SSE
+    // append, or an older-page prepend). Only actually forces scroll when
+    // `stickToBottom` — a prepend happens while the reader is scrolled up
+    // (so this is a no-op then; the prepend's own scroll-compensation in
+    // loadOlder handles that case instead).
+    void topicMessages;
+    if (stickToBottom && streamEl) {
+      const el = streamEl;
+      void tick().then(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
+  });
+
+  const NEAR_TOP_PX = 60;
+  const NEAR_BOTTOM_PX = 40;
+
+  async function loadOlder() {
+    if (!onLoadOlder || loadingOlderNow || loadingOlder || !hasMore || !streamEl) return;
+    const el = streamEl;
+    const prevScrollHeight = el.scrollHeight;
+    const prevScrollTop = el.scrollTop;
+    loadingOlderNow = true;
+    try {
+      const added = await onLoadOlder();
+      if (added > 0) {
+        await tick();
+        if (streamEl) {
+          const newScrollHeight = streamEl.scrollHeight;
+          streamEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+        }
+      }
+    } finally {
+      loadingOlderNow = false;
+    }
+  }
+
+  function handleScroll() {
+    if (!streamEl) return;
+    const el = streamEl;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottom = distanceFromBottom < NEAR_BOTTOM_PX;
+    if (el.scrollTop < NEAR_TOP_PX) void loadOlder();
+  }
+
+  const showLoadingOlder = $derived(loadingOlder || loadingOlderNow);
 </script>
 
-<div class="stream">
+<div class="stream" bind:this={streamEl} onscroll={handleScroll}>
   {#if topicMessages.length === 0}
     <div class="emptystate">
       <div class="es-glyph">#</div>
@@ -109,24 +201,35 @@
       </div>
     </div>
   {:else}
-    <div class="daybreak">Today</div>
-    {#each topicMessages as message (message.id)}
-      {#if message.id === firstUnseenId}
-        <div class="newmark"><span class="t">NEW · SINCE YOU LAST LOOKED</span></div>
-      {/if}
-      <MessageComponent
-        {message}
-        {hub}
-        fromAgent={agentsById.get(message.from)}
-        request={message.type === 'request' ? findRequest(message) : null}
-        selected={selectedMessageId === message.id}
-        unseen={isUnseenByYou(message)}
-        seenEntries={buildSeenEntries(message)}
-        {density}
-        onSelect={onSelectMessage}
-        onSelectTicket={onSelectTicket}
-        {onOpenRefs}
-      />
+    {#if hasMore}
+      <div class="older-affordance">
+        {#if showLoadingOlder}
+          <span class="loading-older">loading older…</span>
+        {:else}
+          <button type="button" class="load-older-btn" onclick={() => void loadOlder()}> Load older messages </button>
+        {/if}
+      </div>
+    {/if}
+    {#each dayGroups as group (group.day)}
+      <div class="daybreak">{formatDayDivider(group.day)}</div>
+      {#each group.messages as message (message.id)}
+        {#if message.id === firstUnseenId}
+          <div class="newmark"><span class="t">NEW · SINCE YOU LAST LOOKED</span></div>
+        {/if}
+        <MessageComponent
+          {message}
+          {hub}
+          fromAgent={agentsById.get(message.from)}
+          request={message.type === 'request' ? findRequest(message) : null}
+          selected={selectedMessageId === message.id}
+          unseen={isUnseenByYou(message)}
+          seenEntries={buildSeenEntries(message)}
+          {density}
+          onSelect={onSelectMessage}
+          onSelectTicket={onSelectTicket}
+          {onOpenRefs}
+        />
+      {/each}
     {/each}
   {/if}
 </div>
@@ -136,6 +239,30 @@
     overflow-y: auto;
     flex: 1;
     padding: 18px 20px 40px;
+  }
+  .older-affordance {
+    display: flex;
+    justify-content: center;
+    margin: 0 0 14px;
+  }
+  .loading-older {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .load-older-btn {
+    font: 600 11px/1 var(--mono);
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .load-older-btn:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
   .daybreak {
     display: flex;

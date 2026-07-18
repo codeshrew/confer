@@ -53,6 +53,50 @@ export type HubDataCache = ReturnType<typeof createHubDataCache>;
 
 export const hubDataCache: HubDataCache = createHubDataCache();
 
+// --- per-(hub,topic) chat window cache ------------------------------------
+// ChatStream no longer renders off the (unpaginated, whole-hub) HubData.messages
+// above — it renders a windowed page, fetched most-recent-first and grown
+// backward as the reader scrolls up (see App.svelte's loadChatWindow /
+// loadOlderChatMessages). This cache lets switching back to a hub+topic
+// already visited this session restore that window instantly (same
+// "instant hub-switch" contract as hubDataCache), rather than re-fetching
+// page 1 and losing however far back the reader had scrolled.
+export interface ChatWindow {
+  /** Loaded messages, oldest first (chronological) — the pages fetched so far. */
+  messages: Message[];
+  /** False once a page came back shorter than the page size — nothing older left. */
+  hasMore: boolean;
+}
+
+function chatKey(hubId: string, topic: string): string {
+  return `${hubId} ${topic}`;
+}
+
+function createChatWindowCache() {
+  const entries = new Map<string, ChatWindow>();
+  return {
+    get(hubId: string, topic: string): ChatWindow | undefined {
+      return entries.get(chatKey(hubId, topic));
+    },
+    set(hubId: string, topic: string, data: ChatWindow): void {
+      entries.set(chatKey(hubId, topic), data);
+    },
+    has(hubId: string, topic: string): boolean {
+      return entries.has(chatKey(hubId, topic));
+    },
+    clear(): void {
+      entries.clear();
+    },
+    get size(): number {
+      return entries.size;
+    },
+  };
+}
+
+export type ChatWindowCache = ReturnType<typeof createChatWindowCache>;
+
+export const chatWindowCache: ChatWindowCache = createChatWindowCache();
+
 export type View = 'chat' | 'board' | 'fleet' | 'code' | 'repos';
 export type Theme = 'dark' | 'light';
 

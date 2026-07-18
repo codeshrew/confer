@@ -69,4 +69,27 @@ describe('TicketCard', () => {
 
     expect(onSelect).toHaveBeenCalledWith('req_01JQ8f2');
   });
+
+  it('stops propagation on click — a ticket is nested inside Message.svelte\'s own clickable row, so a ticket click must not also bubble up to it', async () => {
+    // Full end-to-end regression coverage lives in App.test.ts ("selecting
+    // a plain note after a ticket switches the sidebar OFF Request
+    // detail"), which caught this exact bug via the real Message.svelte
+    // nesting. Here: a listener on `document` stands in for that outer
+    // ancestor — if the ticket's click reaches it, propagation wasn't
+    // stopped.
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onDocumentClick = vi.fn();
+    render(TicketCard, { request: doneRequest, onSelect });
+    document.addEventListener('click', onDocumentClick);
+
+    try {
+      await user.click(screen.getByText(doneRequest.summary));
+    } finally {
+      document.removeEventListener('click', onDocumentClick);
+    }
+
+    expect(onSelect).toHaveBeenCalledWith('req_01JQ8f2');
+    expect(onDocumentClick).not.toHaveBeenCalled();
+  });
 });

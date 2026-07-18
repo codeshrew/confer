@@ -102,4 +102,25 @@ describe('CodeRefCard', () => {
 
     expect(onRevHook).toHaveBeenCalledWith(ref, hits);
   });
+
+  it('stops the revhook click from bubbling — CodeRefCard is nested inside Message.svelte\'s own clickable row, and opening the reverse index must not also fire that row\'s onSelect', async () => {
+    vi.mocked(api.getCode).mockResolvedValue(smallSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue(hits);
+    const onRevHook = vi.fn();
+    const onDocumentClick = vi.fn();
+
+    render(CodeRefCard, { ref, hub: 'agent-coord', onRevHook });
+    document.addEventListener('click', onDocumentClick);
+
+    try {
+      await waitFor(() => expect(screen.getByTestId('revhook')).toBeInTheDocument());
+      const user = userEvent.setup();
+      await user.click(screen.getByTestId('revhook'));
+    } finally {
+      document.removeEventListener('click', onDocumentClick);
+    }
+
+    expect(onRevHook).toHaveBeenCalledWith(ref, hits);
+    expect(onDocumentClick).not.toHaveBeenCalled();
+  });
 });

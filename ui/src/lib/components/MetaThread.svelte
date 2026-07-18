@@ -8,19 +8,65 @@
   // span" stat can't be reproduced from the thread alone — an optional
   // `messages` prop is accepted to recover `ts` by `msgId` lookup; without it
   // the span stat is omitted.
+  //
+  // CONTRACT GAP (body): `ThreadNode` also carries no message BODY, only
+  // `summary` — /api/thread doesn't return it. We recover the full body the
+  // same way we recover `ts` above: by looking the node's `msgId` up in the
+  // (optional) `messages` prop. But `messages` is now App.svelte's WINDOWED
+  // per-topic chat page (see ChatStream's own pagination notes), not every
+  // message ever posted — an older node's message may simply not be loaded.
+  // When that happens we fall back to `summary` (graceful degradation, not a
+  // bug). If bodies need to be reliably available here, the clean fix is
+  // having the backend's `/api/thread` include the body per node directly.
+  import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
 
   interface Props {
     thread: ThreadNode[];
     agents: Agent[];
     messages?: MessageT[];
+    /** `'summary'` (default) shows each node's summary line, collapsed, with
+     * a chevron to expand the full rendered body when it's loaded (see the
+     * CONTRACT GAP note above); `'full'` shows the body by default. */
+    density?: 'summary' | 'full';
     onSelectNode?: (msgId: string) => void;
   }
 
-  let { thread, agents, messages = [], onSelectNode }: Props = $props();
+  let { thread, agents, messages = [], density = 'summary', onSelectNode }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
   const messagesById = $derived(new Map(messages.map((m) => [m.id, m])));
+
+  // Per-node expand state, independent of every other node and of the
+  // global `density` toggle — mirrors Message.svelte's own `expanded`
+  // pattern (keyed by msgId here since this is a list, not a single node).
+  let expandedIds = $state(new Set<string>());
+  function toggleExpanded(msgId: string) {
+    const next = new Set(expandedIds);
+    if (next.has(msgId)) next.delete(msgId);
+    else next.add(msgId);
+    expandedIds = next;
+  }
+
+  // renderMarkdown sanitizes with DOMPurify — message bodies are untrusted,
+  // peer-authored content (see markdown.ts's own header note) — same
+  // sanitize path Message.svelte uses.
+  function renderedBodyFor(msgId: string): string | null {
+    const body = messagesById.get(msgId)?.body;
+    return body ? renderMarkdown(body) : null;
+  }
+
+  // A Svelte action instead of a per-row $effect: {#each} rows don't have
+  // their own component instance to hang bind:this/$effect off of, but an
+  // action naturally runs once per rendered element and re-runs on update.
+  function highlightBody(el: HTMLElement) {
+    void highlightRenderedCodeBlocks(el);
+    return {
+      update() {
+        void highlightRenderedCodeBlocks(el);
+      },
+    };
+  }
 
   const TOPIC_PALETTE = ['var(--accent)', '#8b8bf0', 'var(--ag-jarvis)', 'var(--ag-orbit)', 'var(--ag-compositor)'];
 
@@ -108,22 +154,56 @@
 
   {#each rows as row (row.node.msgId)}
     {@const agent = agentsById.get(row.node.from)}
+    {@const renderedBody = renderedBodyFor(row.node.msgId)}
+    {@const expanded = density === 'full' || expandedIds.has(row.node.msgId)}
     <div class="gn">
       <div class="rail">
         <span class="seg top" style="background:{row.topColor}"></span>
         <span class="cd" style="background:{agent?.color ?? 'var(--muted)'};box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px {colorFor(topicOf(row.node))}"></span>
         <span class="seg bot" style="background:{row.botColor}"></span>
       </div>
-      <button type="button" class="gcard" onclick={() => onSelectNode?.(row.node.msgId)}>
+      <div
+        class="gcard"
+        role="button"
+        tabindex="0"
+        onclick={() => onSelectNode?.(row.node.msgId)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') onSelectNode?.(row.node.msgId);
+        }}
+      >
         <div class="grow">
           <span class="gwho" style="color:{agent?.color ?? 'var(--muted)'}">{agent?.display ?? row.node.from}</span>
           <span class="gbadge {BADGE_CLASS[row.node.type]}">{row.node.type}</span>
           <span class="gtp" class:cross={row.hop !== null}>#{topicOf(row.node)}</span>
         </div>
-        <div class="gtx">{row.node.summary}</div>
+        <div class="gtx-row">
+          {#if renderedBody}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <button
+              type="button"
+              class="node-expand-chevron"
+              class:open={expanded}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse message' : 'Expand message'}
+              onclick={(e) => {
+                e.stopPropagation();
+                toggleExpanded(row.node.msgId);
+              }}
+            >
+              ▸
+            </button>
+          {/if}
+          <div class="gtx">{row.node.summary}</div>
+        </div>
+        {#if renderedBody && expanded}
+          <div class="gbody prose md" use:highlightBody>
+            {@html renderedBody}
+          </div>
+        {/if}
         {#if row.hop}<div class="hop {row.hop.cls}">{row.hop.label}</div>{/if}
         <div class="gid">{row.node.msgId}</div>
-      </button>
+      </div>
     </div>
   {/each}
 </div>
@@ -269,10 +349,53 @@
     color: var(--done);
     background: color-mix(in srgb, var(--done) 15%, transparent);
   }
+  .gcard :global(.gtx-row) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
   .gcard :global(.gtx) {
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.45;
+  }
+  /* Same real, obvious tap-target treatment as Message.svelte's own
+     `.expand-chevron` — ≥24×24px with a hover/focus background, not a bare
+     unstyled glyph. */
+  .gcard :global(.node-expand-chevron) {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    margin: -3px 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    padding: 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transform: rotate(0deg);
+    transition:
+      transform 0.12s ease,
+      background 0.12s ease,
+      color 0.12s ease;
+  }
+  .gcard :global(.node-expand-chevron.open) {
+    transform: rotate(90deg);
+  }
+  .gcard :global(.node-expand-chevron:hover),
+  .gcard :global(.node-expand-chevron:focus-visible) {
+    color: var(--text);
+    background: var(--panel-2);
+  }
+  .gcard :global(.gbody) {
+    margin: 6px 0 0;
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.5;
   }
   .gcard :global(.gid) {
     font: 500 10px/1 var(--mono);

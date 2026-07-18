@@ -138,6 +138,18 @@ export interface Repo {
   rootSha: string | null;
 }
 
+/** A distinct code file referenced (via `--ref`) by messages in a hub — the
+ * Code view's file tree hydrates from these instead of a hardcoded fixture.
+ * `mapped` reuses `/api/code`'s own clone resolution, so the file tree can
+ * show the mapped/unmapped dot without a failed `getCode` round-trip. */
+export interface CodeFile {
+  repo: string;
+  path: string;
+  refCount: number;
+  mapped: boolean;
+  lastTs: string;
+}
+
 export type ServerEvent =
   | { event: 'message'; hub: string; topic: string | null }
   | { event: 'presence'; hub: string }

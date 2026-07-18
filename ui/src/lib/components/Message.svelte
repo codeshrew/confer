@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
-  import { formatClock } from '../format';
+  import { formatClock, formatIso8601 } from '../format';
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
@@ -89,7 +89,7 @@
   <div class="sysline" data-type={message.type}>
     <span class="tick">↳</span>
     <span><b style="color:{fromColor}">{fromDisplay}</b> {message.summary}</span>
-    <span class="ts">{formatClock(message.ts)} · {message.type.toUpperCase()}</span>
+    <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)} · {message.type.toUpperCase()}</span>
   </div>
 {:else}
   <div
@@ -110,7 +110,7 @@
       <div class="head">
         <span class="who" style="color:{fromColor}">{fromDisplay}</span>
         {#if message.host}<span class="role">{message.host}</span>{/if}
-        <span class="ts">{formatClock(message.ts)}</span>
+        <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)}</span>
         <SeenIndicator entries={seenEntries} />
       </div>
 
@@ -118,7 +118,31 @@
         <TicketCard {request} onSelect={onSelectTicket} />
       {:else}
         {#if showSummaryLine}
-          <div class="summary-line" class:clickable={density === 'summary'}>
+          <!-- Intentionally not its own tab stop: the outer `.msg` row (role="button",
+               tabindex, Enter/Space -> selectMessage) already makes this fully keyboard-
+               reachable. This div's onclick is a mouse-only convenience — clicking the
+               summary text also expands the body, matching what `.clickable` promises —
+               layered on TOP of that existing keyboard path, not a replacement for it. -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="summary-line"
+            class:clickable={density === 'summary'}
+            onclick={
+              density === 'summary'
+                ? () => {
+                    // No stopPropagation here — this is a DIFFERENT action
+                    // from the chevron's own toggle (which does stop
+                    // propagation, to avoid a double-toggle when the click
+                    // lands on the chevron itself). Letting this bubble to
+                    // the outer `.msg` row means clicking the summary text
+                    // both expands AND selects the message — the row stays
+                    // clickable, exactly as `.clickable` promises.
+                    expanded = !expanded;
+                  }
+                : undefined
+            }
+          >
             {#if density === 'summary'}
               <button
                 type="button"
@@ -265,30 +289,47 @@
   }
   .summary-line {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 6px;
     font-size: 13px;
     font-weight: 650;
     color: var(--text);
     margin-bottom: 3px;
   }
+  .summary-line.clickable {
+    cursor: pointer;
+  }
+  /* A real, obvious tap target — not just a bare 10px glyph. ≥24×24px
+     (accessibility + phone) via padding, with a hover/focus background so it
+     reads as interactive at a glance, not just on close inspection. */
   .expand-chevron {
     flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    margin: -3px 0;
     border: 0;
+    border-radius: 6px;
     background: transparent;
     padding: 0;
-    color: var(--faint);
-    font-size: 10px;
+    color: var(--muted);
+    font-size: 14px;
     line-height: 1;
     cursor: pointer;
     transform: rotate(0deg);
-    transition: transform 0.12s ease;
+    transition:
+      transform 0.12s ease,
+      background 0.12s ease,
+      color 0.12s ease;
   }
   .expand-chevron.open {
     transform: rotate(90deg);
   }
-  .expand-chevron:hover {
+  .expand-chevron:hover,
+  .expand-chevron:focus-visible {
     color: var(--text);
+    background: var(--panel-2);
   }
   .text {
     font-size: 13.5px;
@@ -312,14 +353,18 @@
   }
   .show-more {
     margin-top: 4px;
+    margin-left: -6px;
     border: 0;
+    border-radius: 6px;
     background: transparent;
     color: var(--accent);
     font: 600 11.5px/1 var(--mono);
-    padding: 0;
+    padding: 6px;
     cursor: pointer;
   }
-  .show-more:hover {
+  .show-more:hover,
+  .show-more:focus-visible {
+    background: var(--panel-2);
     text-decoration: underline;
   }
   /* Mention/inline-code look, and the rest of the `.prose`/`.md` markdown

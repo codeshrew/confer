@@ -24,6 +24,25 @@ function node(msgId: string, from: string, topic: string, summary = 'x'): Thread
   return { msgId, from, type: 'note', topic, summary, refs: [] };
 }
 
+function message(id: string, from: string, topic: string, summary: string, body: string): Message {
+  return {
+    id,
+    from,
+    type: 'note',
+    ts: '2026-07-17T14:00:00Z',
+    host: null,
+    to: [],
+    cc: [],
+    topic,
+    summary,
+    body,
+    of: null,
+    replyTo: null,
+    supersedes: null,
+    refs: [],
+  };
+}
+
 const reader = agent('reader', 'Reader', 'var(--ag-reader)');
 const pipeline = agent('pipeline', 'Pipeline', 'var(--ag-pipeline)');
 
@@ -174,6 +193,68 @@ describe('MetaThread', () => {
     await user.click(screen.getByText('m2'));
 
     expect(onSelectNode).toHaveBeenCalledWith('m2');
+  });
+
+  describe('full-body rendering (density + expand)', () => {
+    it('shows only the summary by default (summary density), with a chevron to expand', () => {
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const messages = [message('m1', 'reader', 'reader', 'Short summary', '**Full** rendered body text.')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages });
+
+      expect(screen.getByText('Short summary')).toBeInTheDocument();
+      expect(container.querySelector('.gbody')).not.toBeInTheDocument();
+      expect(container.querySelector('.node-expand-chevron')).toBeInTheDocument();
+    });
+
+    it('expands to the full sanitized/rendered body on chevron click, and collapses again on a second click', async () => {
+      const user = userEvent.setup();
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const messages = [message('m1', 'reader', 'reader', 'Short summary', '**Full** rendered body text.')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages });
+
+      const chevron = container.querySelector('.node-expand-chevron') as HTMLButtonElement;
+      await user.click(chevron);
+
+      const body = container.querySelector('.gbody');
+      expect(body).toBeInTheDocument();
+      expect(body?.querySelector('strong')?.textContent).toBe('Full');
+
+      await user.click(chevron);
+      expect(container.querySelector('.gbody')).not.toBeInTheDocument();
+    });
+
+    it('clicking the chevron does not also fire onSelectNode (no double-action)', async () => {
+      const user = userEvent.setup();
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const messages = [message('m1', 'reader', 'reader', 'Short summary', 'Full body.')];
+      const onSelectNode = vi.fn();
+      const { container } = render(MetaThread, { thread, agents: [reader], messages, onSelectNode });
+
+      const chevron = container.querySelector('.node-expand-chevron') as HTMLButtonElement;
+      await user.click(chevron);
+
+      expect(onSelectNode).not.toHaveBeenCalled();
+    });
+
+    it('falls back to summary-only, no chevron, when the node\'s message is not in the loaded window', () => {
+      // Simulates the pagination CONTRACT GAP: an older thread node whose
+      // message page has scrolled out of App.svelte's windowed `messages`.
+      const thread = [node('m1', 'reader', 'reader', 'Only a summary — body not loaded')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages: [] });
+
+      expect(screen.getByText('Only a summary — body not loaded')).toBeInTheDocument();
+      expect(container.querySelector('.node-expand-chevron')).not.toBeInTheDocument();
+      expect(container.querySelector('.gbody')).not.toBeInTheDocument();
+    });
+
+    it('in full density, the body is shown by default with no click needed', () => {
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const messages = [message('m1', 'reader', 'reader', 'Short summary', 'Body shown by default.')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages, density: 'full' });
+
+      expect(container.querySelector('.gbody')).toBeInTheDocument();
+      expect(container.textContent).toContain('Body shown by default.');
+    });
   });
 
   it('renders an empty thread without throwing (no nodes, no legend, zero counts)', () => {

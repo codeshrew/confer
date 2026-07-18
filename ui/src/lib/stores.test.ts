@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { appState, hubDataCache } from './stores.svelte';
-import type { Overview } from './types';
+import { appState, chatWindowCache, hubDataCache } from './stores.svelte';
+import type { Message, Overview } from './types';
 
 describe('appState.drawer', () => {
   it('starts closed', () => {
@@ -125,5 +125,53 @@ describe('hubDataCache', () => {
 
     expect(hubDataCache.size).toBe(0);
     expect(hubDataCache.has('hub-x')).toBe(false);
+  });
+});
+
+describe('chatWindowCache', () => {
+  function msg(id: string, ts: string): Message {
+    return {
+      id,
+      from: 'reader',
+      type: 'note',
+      ts,
+      host: null,
+      to: [],
+      cc: [],
+      topic: 'reader',
+      summary: id,
+      body: id,
+      of: null,
+      replyTo: null,
+      supersedes: null,
+      refs: [],
+    };
+  }
+
+  it('is empty for a (hub, topic) that has never been set', () => {
+    expect(chatWindowCache.get('never-seen', 'general')).toBeUndefined();
+    expect(chatWindowCache.has('never-seen', 'general')).toBe(false);
+  });
+
+  it('set() then get() returns the same window, keyed by BOTH hub and topic', () => {
+    const window = { messages: [msg('m1', '2026-07-17T10:00:00Z')], hasMore: true };
+    chatWindowCache.set('confer-lab', 'reader', window);
+
+    expect(chatWindowCache.get('confer-lab', 'reader')).toBe(window);
+    // Same hub, different topic — no bleed-through.
+    expect(chatWindowCache.get('confer-lab', 'studio')).toBeUndefined();
+    // Different hub, same topic slug — also no bleed-through.
+    expect(chatWindowCache.get('agent-coord', 'reader')).toBeUndefined();
+  });
+
+  it('clear() empties every entry', () => {
+    chatWindowCache.set('hub-x', 'general', { messages: [], hasMore: false });
+    chatWindowCache.set('hub-y', 'general', { messages: [], hasMore: false });
+    expect(chatWindowCache.size).toBeGreaterThanOrEqual(2);
+
+    chatWindowCache.clear();
+
+    expect(chatWindowCache.size).toBe(0);
+    expect(chatWindowCache.has('hub-x', 'general')).toBe(false);
   });
 });

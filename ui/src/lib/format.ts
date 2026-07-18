@@ -43,6 +43,61 @@ export function formatClock(ts: string): string {
   return `${hh}:${mm}`;
 }
 
+/** Render an ISO timestamp's calendar date (UTC) as `YYYY-MM-DD`. */
+export function formatIsoDate(ts: string): string {
+  const d = new Date(ts);
+  const yyyy = String(d.getUTCFullYear()).padStart(4, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Render the full ISO8601 instant (UTC, seconds precision, `Z`-suffixed) for
+ * a message timestamp — the hover/tap-away detail behind the compact
+ * `formatClock` label and the day divider.
+ */
+export function formatIso8601(ts: string): string {
+  const d = new Date(ts);
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * The day-divider label for a calendar day: "Today"/"Yesterday" (plus the
+ * ISO date alongside, so it's never ambiguous) for the two most recent days,
+ * else just the ISO date. Both the divider's day and "now" are compared as
+ * UTC calendar days (matching `formatIsoDate`'s UTC convention) so the
+ * divider lines up with the date it's grouping, regardless of the viewer's
+ * own timezone.
+ */
+export function formatDayDivider(dayIso: string, nowMs: number = Date.now()): string {
+  const today = formatIsoDate(new Date(nowMs).toISOString());
+  if (dayIso === today) return `Today · ${dayIso}`;
+  const yesterday = formatIsoDate(new Date(nowMs - 24 * 60 * 60 * 1000).toISOString());
+  if (dayIso === yesterday) return `Yesterday · ${dayIso}`;
+  return dayIso;
+}
+
+/**
+ * Groups a chronologically-sorted (ascending) message stream into per-day
+ * buckets, keyed by each message's UTC calendar day (`formatIsoDate`). A new
+ * bucket starts whenever the day changes going down the stream — the
+ * ChatStream divider renders one per bucket, in order.
+ */
+export function groupByDay<T extends { ts: string }>(messages: T[]): { day: string; messages: T[] }[] {
+  const groups: { day: string; messages: T[] }[] = [];
+  for (const message of messages) {
+    const day = formatIsoDate(message.ts);
+    const last = groups[groups.length - 1];
+    if (last && last.day === day) {
+      last.messages.push(message);
+    } else {
+      groups.push({ day, messages: [message] });
+    }
+  }
+  return groups;
+}
+
 /**
  * The board's age-sparkbar color — ported from the mockup's `ageCol`:
  * stale or >=24h -> blocked (warm/red), >=2h -> claimed (blue), else accent.

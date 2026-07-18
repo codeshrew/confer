@@ -96,6 +96,20 @@ describe('httpApi URL construction (forced via ?live)', () => {
     expect(fetchSpy).toHaveBeenLastCalledWith('/api/messages?hub=agent-coord&topic=reader');
   });
 
+  it('getMessages passes limit and before through when given, omits them entirely otherwise', async () => {
+    const api = await freshApiForcedLive();
+    await api.getMessages('agent-coord', 'reader', { limit: 50 });
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/messages?hub=agent-coord&topic=reader&limit=50');
+
+    await api.getMessages('agent-coord', 'reader', { limit: 50, before: 'msg_01JQ001' });
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      '/api/messages?hub=agent-coord&topic=reader&limit=50&before=msg_01JQ001'
+    );
+
+    await api.getMessages('agent-coord', 'reader', {});
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/messages?hub=agent-coord&topic=reader');
+  });
+
   it('getThread includes both hub and id', async () => {
     const api = await freshApiForcedLive();
     await api.getThread('agent-coord', 'msg_01JQ8f2');
@@ -131,6 +145,12 @@ describe('httpApi URL construction (forced via ?live)', () => {
     const api = await freshApiForcedLive();
     await api.getRepos('agent-coord');
     expect(fetchSpy).toHaveBeenLastCalledWith('/api/repos?hub=agent-coord');
+  });
+
+  it('getCodeFiles hits /api/codefiles with the hub', async () => {
+    const api = await freshApiForcedLive();
+    await api.getCodeFiles('agent-coord');
+    expect(fetchSpy).toHaveBeenLastCalledWith('/api/codefiles?hub=agent-coord');
   });
 });
 

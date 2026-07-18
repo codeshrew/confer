@@ -79,8 +79,21 @@
     return highlighted.find((h) => h.n === n);
   }
 
-  function revHook() {
+  function revHook(e: MouseEvent) {
+    // Nested inside Message.svelte's own clickable `.msg` row (onclick ->
+    // selectMessage, which resets the sidebar's contextMode to the
+    // meta-thread pane) — stop propagation so opening the reverse index
+    // doesn't get immediately stomped back to the meta-thread pane by the
+    // bubbled selectMessage call.
+    e.stopPropagation();
     onRevHook?.(ref, refHits);
+  }
+
+  function toggleFromClick(e: MouseEvent) {
+    // Same nesting concern as revHook above — this is an in-card expand/
+    // collapse, not "select this message".
+    e.stopPropagation();
+    toggle();
   }
 </script>
 
@@ -92,7 +105,7 @@
     {#if rangeLabel}<span class="lines">{rangeLabel}</span>{/if}
     <span class="stale-badge stale-{staleness}" data-testid="staleness-badge">{STALENESS_LABEL[staleness] ?? staleness}</span>
     {#if lines.length > 0}
-      <button type="button" class="ref-toggle" onclick={toggle} data-testid="ref-toggle">
+      <button type="button" class="ref-toggle" onclick={toggleFromClick} data-testid="ref-toggle">
         <span class="lbl">{collapsed ? 'Expand' : 'Collapse'}</span>
         <span class="chev">{collapsed ? '▾' : '▴'}</span>
       </button>
@@ -111,7 +124,18 @@
     />
   {:else}
     {#if collapsed && peekLine}
-      <div class="code-peek" onclick={toggle} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && toggle()}>
+      <div
+        class="code-peek"
+        onclick={toggleFromClick}
+        role="button"
+        tabindex="0"
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.stopPropagation();
+            toggle();
+          }
+        }}
+      >
         <span class="peek-ln mono">{peekLine.n}</span>
         <span class="peek-code mono">{peekLine.text}</span>
         <span class="peek-more">{lines.length} lines · expand</span>

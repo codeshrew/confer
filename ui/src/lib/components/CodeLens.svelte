@@ -6,10 +6,12 @@
   // (heat via color-mix), and the "not cloned here" empty state for files
   // confer can't read from a local clone.
   //
-  // CONTRACT GAP: there is no "list files in a repo" endpoint yet, so the
-  // file tree is a small local catalog stand-in (same scope as the
-  // mockup's `CODEFILES`) rather than driven from a real mapped-clone tree.
-  import type { RefHit } from '../types';
+  // The file tree hydrates from `/api/codefiles?hub=` — the distinct files
+  // THIS hub's messages actually reference via `--ref` — instead of the
+  // hardcoded fixture this component used to ship with (which rendered the
+  // same fake wealdlore paths on every hub, regardless of what that hub
+  // actually talked about).
+  import type { CodeFile, RefHit } from '../types';
   import { api } from '../api';
   import { highlightSnippetLines, resolveLang, type HighlightedLine } from '../highlight';
   import EmptyState from './EmptyState.svelte';
@@ -22,31 +24,60 @@
 
   let { hub, onOpenRefs }: Props = $props();
 
-  interface FileEntry {
-    key: string;
-    repo: string;
-    path: string;
-    mapped: boolean;
+  function fileKey(f: { repo: string; path: string }): string {
+    return `${f.repo} ${f.path}`;
   }
 
-  const FILES: FileEntry[] = [
-    { key: 'PlateBundle.swift', repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', mapped: true },
-    { key: 'plates.py', repo: 'wealdlore', path: 'pipeline/plates.py', mapped: true },
-    { key: 'citations.py', repo: 'wealdlore', path: 'studio-markup/citations.py', mapped: false },
-  ];
+  /** The file tree shows just the basename (matches the prior fixture's
+   * short `key` labels, and what the e2e specs click by accessible name) —
+   * the full path is always visible in the codetool breadcrumb once a file
+   * is selected. */
+  function basename(path: string): string {
+    return path.split('/').pop() || path;
+  }
 
-  let activeKey = $state(FILES[0]!.key);
+  let codeFiles = $state<CodeFile[]>([]);
+  let filesLoading = $state(true);
+  let activeKey = $state<string | null>(null);
+
   let loading = $state(false);
   let lines = $state<{ n: number; text: string }[]>([]);
   let lang = $state<string | null>(null);
   let highlighted = $state<HighlightedLine[]>([]);
   let hitsByLine = $state<Map<number, RefHit[]>>(new Map());
 
-  const active = $derived(FILES.find((f) => f.key === activeKey) ?? FILES[0]!);
+  const active = $derived(codeFiles.find((f) => fileKey(f) === activeKey) ?? null);
+
+  // Group by repo, preserving the backend's own order (refCount desc, path
+  // asc) within and across groups — files may span more than one repo.
+  const groups = $derived.by((): { repo: string; files: CodeFile[] }[] => {
+    const byRepo = new Map<string, CodeFile[]>();
+    for (const f of codeFiles) {
+      const list = byRepo.get(f.repo) ?? [];
+      list.push(f);
+      byRepo.set(f.repo, list);
+    }
+    return [...byRepo.entries()].map(([repo, files]) => ({ repo, files }));
+  });
+
+  async function loadFiles() {
+    filesLoading = true;
+    activeKey = null;
+    codeFiles = [];
+    try {
+      const files = await api.getCodeFiles(hub);
+      codeFiles = files;
+      activeKey = files[0] ? fileKey(files[0]) : null;
+    } catch (err) {
+      console.error('confer serve: failed to load code files', hub, err);
+    } finally {
+      filesLoading = false;
+    }
+  }
 
   async function loadFile() {
     const f = active;
-    if (!f.mapped) {
+    if (!f || !f.mapped) {
       lines = [];
       hitsByLine = new Map();
       loading = false;
@@ -79,6 +110,13 @@
   }
 
   $effect(() => {
+    // Reset selection and re-fetch the file tree whenever the hub changes —
+    // a file from the PREVIOUS hub must not linger selected.
+    void hub;
+    void loadFiles();
+  });
+
+  $effect(() => {
     void active;
     void hub;
     void loadFile();
@@ -96,6 +134,7 @@
   }
 
   function clickLine(n: number) {
+    if (!active) return;
     const hits = hitsByLine.get(n);
     if (!hits || hits.length === 0) return;
     onOpenRefs?.({ repo: active.repo, path: active.path, range: [n, n] }, hits);
@@ -103,69 +142,92 @@
 </script>
 
 <div class="code-wrap" data-testid="code-view">
-  <div class="codetool">
-    <span class="ct-crumb">◆ {active.repo}</span>
-    <span class="ct-sep">›</span>
-    <span class="ct-crumb">{active.path}</span>
-    <span class="ct-hint">conversation-density gutter · click a hot line to see who discussed it</span>
-  </div>
-  <div class="codepage">
-    <div class="filetree">
-      <div class="ft-group">{FILES[0]!.repo}</div>
-      {#each FILES as f (f.key)}
-        <button type="button" class="ftitem" class:active={f.key === activeKey} onclick={() => (activeKey = f.key)}>
-          <span class="fdot" style="background:{f.mapped ? 'var(--done)' : 'var(--faint)'}"></span>
-          {f.key}
-        </button>
-      {/each}
+  {#if filesLoading}
+    <div class="codetool"><span class="ct-hint">Loading files…</span></div>
+    <div class="codepage">
+      <div class="filetree"><Skeleton rows={4} /></div>
+      <div class="densitywrap"><Skeleton rows={6} /></div>
     </div>
-    <div class="densitywrap">
-      {#if loading}
-        <Skeleton rows={4} />
-      {:else if !active.mapped}
-        <div class="clonestub">
-          <EmptyState
-            glyph="◇"
-            title="No clone mapped for this repo"
-            body={`confer can only show code it can read from a local clone. Map a clone of ${active.repo} to see ${active.path} with its conversation-density gutter.`}
-            actionLabel="＋ map a clone to see the code"
-            disabled
-          />
-        </div>
-      {:else if lines.length === 0}
-        <div class="clonestub">
-          <EmptyState glyph="◇" title="No code returned" body="confer's index has no content for this file at HEAD." />
-        </div>
-      {:else}
-        <div class="densefile">
-          <div class="code" data-lang={lang}>
-            {#each lines as line (line.n)}
-              {@const refCount = hitsByLine.get(line.n)?.length ?? 0}
-              <div class="cl">
-                {#if refCount > 0}
-                  <button
-                    type="button"
-                    class="dens hit"
-                    style={heatStyle(line.n)}
-                    title={`${refCount} conversation${refCount === 1 ? '' : 's'} reference this line`}
-                    onclick={() => clickLine(line.n)}
-                  >{refCount}</button>
-                {:else}
-                  <span class="dens">·</span>
-                {/if}
-                <span class="ln">{line.n}</span>
-                <span class="cc">
-                  {#each highlightedFor(line.n)?.tokens ?? [{ text: line.text, style: '' }] as tok, i (i)}
-                    <span class="shiki-tok" style={tok.style}>{tok.text}</span>
-                  {/each}
-                </span>
-              </div>
-            {/each}
+  {:else if codeFiles.length === 0}
+    <div class="clonestub">
+      <EmptyState
+        glyph="◇"
+        title="No code referenced in this hub yet"
+        body="Messages here haven't pinned any `--ref`s — once someone posts a note or request that references a line range, it'll show up here, browsable with its conversation-density gutter."
+      />
+    </div>
+  {:else if active}
+    <div class="codetool">
+      <span class="ct-crumb">◆ {active.repo}</span>
+      <span class="ct-sep">›</span>
+      <span class="ct-crumb">{active.path}</span>
+      <span class="ct-hint">conversation-density gutter · click a hot line to see who discussed it</span>
+    </div>
+    <div class="codepage">
+      <div class="filetree">
+        {#each groups as group (group.repo)}
+          <div class="ft-group">{group.repo}</div>
+          {#each group.files as f (fileKey(f))}
+            <button
+              type="button"
+              class="ftitem"
+              class:active={fileKey(f) === activeKey}
+              onclick={() => (activeKey = fileKey(f))}
+            >
+              <span class="fdot" style="background:{f.mapped ? 'var(--done)' : 'var(--faint)'}"></span>
+              {basename(f.path)}
+            </button>
+          {/each}
+        {/each}
+      </div>
+      <div class="densitywrap">
+        {#if loading}
+          <Skeleton rows={4} />
+        {:else if !active.mapped}
+          <div class="clonestub">
+            <EmptyState
+              glyph="◇"
+              title="No clone mapped for this repo"
+              body={`confer can only show code it can read from a local clone. Map a clone of ${active.repo} to see ${active.path} with its conversation-density gutter.`}
+              actionLabel="＋ map a clone to see the code"
+              disabled
+            />
           </div>
-        </div>
-      {/if}
+        {:else if lines.length === 0}
+          <div class="clonestub">
+            <EmptyState glyph="◇" title="No code returned" body="confer's index has no content for this file at HEAD." />
+          </div>
+        {:else}
+          <div class="densefile">
+            <div class="code" data-lang={lang}>
+              {#each lines as line (line.n)}
+                {@const refCount = hitsByLine.get(line.n)?.length ?? 0}
+                <div class="cl">
+                  {#if refCount > 0}
+                    <button
+                      type="button"
+                      class="dens hit"
+                      style={heatStyle(line.n)}
+                      title={`${refCount} conversation${refCount === 1 ? '' : 's'} reference this line`}
+                      onclick={() => clickLine(line.n)}
+                    >{refCount}</button>
+                  {:else}
+                    <span class="dens">·</span>
+                  {/if}
+                  <span class="ln">{line.n}</span>
+                  <span class="cc">
+                    {#each highlightedFor(line.n)?.tokens ?? [{ text: line.text, style: '' }] as tok, i (i)}
+                      <span class="shiki-tok" style={tok.style}>{tok.text}</span>
+                    {/each}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>

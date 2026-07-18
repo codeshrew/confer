@@ -8,8 +8,10 @@
 // `mockApi` implements the same interface as `./api.ts`'s ConferApi so dev
 // mode (or `?mock`) can run the whole dashboard with no backend.
 
+import type { MessagesOpts } from './api';
 import type {
   Agent,
+  CodeFile,
   CodeRef,
   Hub,
   Message,
@@ -508,6 +510,17 @@ const mockSnippet: Snippet = {
   ],
 };
 
+// Mirrors the two code refs already threaded through mockMessages/mockRefHits
+// (plateBundleRef/restoreChainRef), plus a THIRD, deliberately unmapped file
+// (citations.py — no local clone, same "access-restricted, no clone mapped"
+// story wealdlore already tells in mockRepos) so dev/tests exercise both the
+// mapped and unmapped dot/empty-state without a backend.
+export const mockCodeFiles: CodeFile[] = [
+  { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', refCount: 2, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
+  { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 1, mapped: true, lastTs: '2026-07-17T14:52:00Z' },
+  { repo: 'wealdlore', path: 'studio-markup/citations.py', refCount: 1, mapped: false, lastTs: '2026-07-10T09:00:00Z' },
+];
+
 function delay<T>(value: T, ms = 40): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
@@ -520,8 +533,18 @@ export const mockApi = {
     const found = mockHubs.find((h) => h.id === hub) ?? mockHubs[0]!;
     return delay({ ...mockOverview, hub: found });
   },
-  async getMessages(_hub: string, topic?: string): Promise<Message[]> {
-    const msgs = topic ? mockMessages.filter((m) => m.topic === topic) : mockMessages;
+  async getMessages(_hub: string, topic?: string, opts?: MessagesOpts): Promise<Message[]> {
+    // Mirrors the real backend's /api/messages semantics (src/api.rs's
+    // `messages()`): sort chronologically, filter by topic, then `before`
+    // (strictly older than that id), then `limit` (keep the most-recent
+    // `limit` of what's left). Ids are ULIDs — ascending string sort ==
+    // chronological, so `<` string-compares work the same as on the server.
+    let msgs = [...mockMessages].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (topic) msgs = msgs.filter((m) => m.topic === topic);
+    if (opts?.before) msgs = msgs.filter((m) => m.id < opts.before!);
+    if (opts?.limit !== undefined && msgs.length > opts.limit) {
+      msgs = msgs.slice(msgs.length - opts.limit);
+    }
     return delay(msgs);
   },
   async getThread(_hub: string, _id: string): Promise<ThreadNode[]> {
@@ -535,6 +558,9 @@ export const mockApi = {
   },
   async getRepos(_hub: string): Promise<Repo[]> {
     return delay(mockRepos);
+  },
+  async getCodeFiles(_hub: string): Promise<CodeFile[]> {
+    return delay(mockCodeFiles);
   },
   subscribeEvents(
     _hub: string,

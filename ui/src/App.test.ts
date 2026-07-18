@@ -68,3 +68,26 @@ describe('App — responsive drawer structure', () => {
     expect(screen.getByTestId('right-drawer')).not.toHaveClass('open');
   });
 });
+
+describe('App — right-rail context mode', () => {
+  it('selecting a plain note after a ticket switches the sidebar OFF "Request detail" — not stuck showing the previous ticket', async () => {
+    appState.drawer = 'none';
+    const user = userEvent.setup();
+    render(App);
+
+    // First: a ticket — the mock fixture's filed request card.
+    await user.click(
+      await screen.findByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader')
+    );
+    expect(screen.getByText('Request detail')).toBeInTheDocument();
+
+    // Then: a plain note (Jarvis's "canaried 0.7.3", same #reader topic).
+    await user.click(await screen.findByText(/canaried 0.7.3/));
+
+    // The sidebar must have moved off "Request detail" — it's now the
+    // meta-thread/reference-graph pane for the note just clicked, not stuck
+    // showing the earlier ticket.
+    expect(screen.queryByText('Request detail')).not.toBeInTheDocument();
+    expect(screen.getByText('Meta-thread')).toBeInTheDocument();
+  });
+});

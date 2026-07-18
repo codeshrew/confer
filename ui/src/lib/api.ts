@@ -17,7 +17,7 @@
 // (`VITE_LIVE=1 npm run dev`). `?mock` always wins over `?live` if both are
 // somehow present, and always wins outside dev too.
 
-import type { Hub, Message, Overview, RefHit, Repo, ServerEvent, Snippet, ThreadNode } from './types';
+import type { CodeFile, Hub, Message, Overview, RefHit, Repo, ServerEvent, Snippet, ThreadNode } from './types';
 import { mockApi } from './mock';
 
 const BASE_URL = '';
@@ -40,14 +40,30 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Pagination for `getMessages`. Without `limit`, the full (back-compat)
+ * list is returned. With `limit`, the most-recent `limit` messages (of the
+ * hub/topic) come back, in chronological order. `before=<id>` (a ULID —
+ * lexicographic order == chronological) restricts to messages strictly
+ * older than it, so a client pages backward by repeating with
+ * `before=<oldest-id-seen-so-far>`.
+ */
+export interface MessagesOpts {
+  limit?: number;
+  before?: string;
+}
+
 export interface ConferApi {
   getHubs(): Promise<Hub[]>;
   getOverview(hub: string): Promise<Overview>;
-  getMessages(hub: string, topic?: string): Promise<Message[]>;
+  getMessages(hub: string, topic?: string, opts?: MessagesOpts): Promise<Message[]>;
   getThread(hub: string, id: string): Promise<ThreadNode[]>;
   getRefs(hub: string, target: string, allHubs?: boolean): Promise<RefHit[]>;
   getCode(hub: string, repo: string, path: string, sha: string, range?: string): Promise<Snippet>;
   getRepos(hub: string): Promise<Repo[]>;
+  /** Distinct files this hub's messages reference via `--ref`, sorted
+   * refCount desc then path asc — hydrates the Code view's file tree. */
+  getCodeFiles(hub: string): Promise<CodeFile[]>;
   /**
    * Opens a live-update channel scoped to `hub`. `onEvent` gets each parsed
    * `message`/`presence`/`ping` event; `onStatus` reports the connection's
@@ -67,9 +83,11 @@ const httpApi: ConferApi = {
     return getJson<Overview>(`/api/overview?${qs}`);
   },
 
-  async getMessages(hub, topic) {
+  async getMessages(hub, topic, opts) {
     const qs = new URLSearchParams({ hub });
     if (topic) qs.set('topic', topic);
+    if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts?.before) qs.set('before', opts.before);
     return getJson<Message[]>(`/api/messages?${qs}`);
   },
 
@@ -93,6 +111,11 @@ const httpApi: ConferApi = {
   async getRepos(hub) {
     const qs = new URLSearchParams({ hub });
     return getJson<Repo[]>(`/api/repos?${qs}`);
+  },
+
+  async getCodeFiles(hub) {
+    const qs = new URLSearchParams({ hub });
+    return getJson<CodeFile[]>(`/api/codefiles?${qs}`);
   },
 
   subscribeEvents(hub, onEvent, onStatus) {

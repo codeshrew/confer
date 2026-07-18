@@ -161,6 +161,27 @@ describe('Message', () => {
       expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
     });
 
+    it('clicking anywhere on the summary line (not just the chevron) also expands the body', async () => {
+      const user = userEvent.setup();
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      await user.click(screen.getByText('Shipping confer 0.7.3'));
+      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+    });
+
+    it('clicking the chevron toggles exactly once, not twice (no double-toggle from event bubbling to the summary line)', async () => {
+      const user = userEvent.setup();
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      const chevron = container.querySelector('.expand-chevron') as HTMLButtonElement;
+      await user.click(chevron);
+
+      // A double-toggle (chevron handler + bubbled summary-line handler both
+      // firing) would net out to "still collapsed" — assert it actually
+      // expanded.
+      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+    });
+
     it('expanding one message does not affect another (independent per-message state)', async () => {
       const user = userEvent.setup();
       const other: MessageT = { ...noteMessage, id: 'msg_01JQ009', summary: 'Another note', body: 'A separate body.' };

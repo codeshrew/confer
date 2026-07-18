@@ -66,9 +66,21 @@
   class:sel={selected}
   role="button"
   tabindex="0"
-  onclick={() => onSelect?.(request.id)}
+  onclick={(e) => {
+    // Nested inside Message.svelte's own `.msg` row (also role="button",
+    // also onclick — it calls selectMessage, a DIFFERENT action from
+    // "open this ticket's request detail"). Stop propagation so a ticket
+    // click fires exactly one of the two, not both — letting it bubble
+    // would have selectMessage's contextMode reset stomp over the
+    // request-detail mode this click just set.
+    e.stopPropagation();
+    onSelect?.(request.id);
+  }}
   onkeydown={(e) => {
-    if (e.key === 'Enter' || e.key === ' ') onSelect?.(request.id);
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.stopPropagation();
+      onSelect?.(request.id);
+    }
   }}
 >
   <div class="stub">

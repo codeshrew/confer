@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { ageColorVar, agePct, formatAge, formatAgeFromSecs, formatClock, isStaleAge } from './format';
+import {
+  ageColorVar,
+  agePct,
+  formatAge,
+  formatAgeFromSecs,
+  formatClock,
+  formatDayDivider,
+  formatIso8601,
+  formatIsoDate,
+  groupByDay,
+  isStaleAge,
+} from './format';
 
 describe('formatAge', () => {
   it('renders "—" for a null timestamp', () => {
@@ -80,6 +91,76 @@ describe('formatClock', () => {
     expect(formatClock('2026-07-17T09:05:00Z')).toBe('09:05');
     expect(formatClock('2026-07-17T23:59:00Z')).toBe('23:59');
     expect(formatClock('2026-07-17T00:00:00Z')).toBe('00:00');
+  });
+});
+
+describe('formatIsoDate', () => {
+  it('renders UTC YYYY-MM-DD, zero-padded', () => {
+    expect(formatIsoDate('2026-07-17T09:05:00Z')).toBe('2026-07-17');
+    expect(formatIsoDate('2026-01-05T23:59:00Z')).toBe('2026-01-05');
+  });
+
+  it('a late-UTC timestamp stays on its own UTC day, not the viewer local day', () => {
+    // 23:59 UTC on the 17th is still the 17th in UTC terms, regardless of
+    // what local-timezone `Date` methods would say.
+    expect(formatIsoDate('2026-07-17T23:59:59Z')).toBe('2026-07-17');
+  });
+});
+
+describe('formatIso8601', () => {
+  it('renders the full instant, seconds precision, Z-suffixed', () => {
+    expect(formatIso8601('2026-07-17T09:05:00Z')).toBe('2026-07-17T09:05:00Z');
+  });
+
+  it('drops sub-second precision if the source timestamp carried milliseconds', () => {
+    expect(formatIso8601('2026-07-17T09:05:00.123Z')).toBe('2026-07-17T09:05:00Z');
+  });
+});
+
+describe('formatDayDivider', () => {
+  const now = new Date('2026-07-17T15:00:00Z').getTime();
+
+  it('labels the current UTC day "Today", alongside its ISO date', () => {
+    expect(formatDayDivider('2026-07-17', now)).toBe('Today · 2026-07-17');
+  });
+
+  it('labels the previous UTC day "Yesterday", alongside its ISO date', () => {
+    expect(formatDayDivider('2026-07-16', now)).toBe('Yesterday · 2026-07-16');
+  });
+
+  it('renders just the ISO date for anything older than yesterday', () => {
+    expect(formatDayDivider('2026-07-15', now)).toBe('2026-07-15');
+    expect(formatDayDivider('2026-06-01', now)).toBe('2026-06-01');
+  });
+});
+
+describe('groupByDay', () => {
+  it('buckets messages by UTC calendar day, preserving order within a day', () => {
+    const messages = [
+      { id: 'a', ts: '2026-07-16T10:00:00Z' },
+      { id: 'b', ts: '2026-07-16T11:00:00Z' },
+      { id: 'c', ts: '2026-07-17T09:00:00Z' },
+    ];
+    const groups = groupByDay(messages);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toEqual({ day: '2026-07-16', messages: [messages[0], messages[1]] });
+    expect(groups[1]).toEqual({ day: '2026-07-17', messages: [messages[2]] });
+  });
+
+  it('starts a new bucket every time the day changes, even if it repeats later', () => {
+    // Same day appearing twice, non-contiguously, still yields two buckets —
+    // grouping walks the stream in order, it does not sort/merge by day.
+    const messages = [
+      { id: 'a', ts: '2026-07-16T10:00:00Z' },
+      { id: 'b', ts: '2026-07-17T09:00:00Z' },
+      { id: 'c', ts: '2026-07-16T23:00:00Z' },
+    ];
+    const groups = groupByDay(messages);
+    expect(groups.map((g) => g.day)).toEqual(['2026-07-16', '2026-07-17', '2026-07-16']);
+  });
+
+  it('returns an empty array for no messages', () => {
+    expect(groupByDay([])).toEqual([]);
   });
 });
 

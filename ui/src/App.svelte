@@ -13,7 +13,7 @@
   import RequestDetail from './lib/components/RequestDetail.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import { api } from './lib/api';
-  import { appState, hubDataCache } from './lib/stores.svelte';
+  import { appState, chatWindowCache, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
   import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
 
@@ -22,6 +22,86 @@
   let messages = $state<Message[]>([]);
   let thread = $state<ThreadNode[]>([]);
   let connStatus = $state<ConnStatus>('loading');
+
+  // --- ChatStream's windowed message page ---------------------------------
+  // Distinct from `messages` above (the full, unpaginated hub fetch still
+  // used by RequestDetail/MetaThread's cross-topic trail reconstruction —
+  // see their own CONTRACT GAP notes). ChatStream instead renders this
+  // per-(hub,topic) window: most-recent CHAT_PAGE_SIZE on load, grown
+  // backward on scroll-up (loadOlderChatMessages), cached across hub/topic
+  // switches by chatWindowCache so revisiting one already loaded this
+  // session is instant.
+  const CHAT_PAGE_SIZE = 50;
+  let chatMessages = $state<Message[]>([]);
+  let chatHasMore = $state(false);
+  let chatLoadingOlder = $state(false);
+
+  async function loadChatWindow(hubId: string, topic: string) {
+    const cached = chatWindowCache.get(hubId, topic);
+    if (cached) {
+      chatMessages = cached.messages;
+      chatHasMore = cached.hasMore;
+      return;
+    }
+    try {
+      const page = await api.getMessages(hubId, topic, { limit: CHAT_PAGE_SIZE });
+      // Still the current hub/topic once the fetch resolves? A quick
+      // hub/topic switch mid-flight must not stomp the newer selection's
+      // (possibly already-cached) window with this now-stale one.
+      if (appState.hub !== hubId || appState.topic !== topic) return;
+      const hasMore = page.length === CHAT_PAGE_SIZE;
+      chatWindowCache.set(hubId, topic, { messages: page, hasMore });
+      chatMessages = page;
+      chatHasMore = hasMore;
+    } catch (err) {
+      console.error('confer serve: failed to load chat window', hubId, topic, err);
+    }
+  }
+
+  /** Scroll-load: fetch the next older page and prepend it. Returns the
+   * number of messages prepended (0 if there was nothing older, or a fetch
+   * was already in flight) so ChatStream knows whether to keep listening
+   * for more scroll-up. */
+  async function loadOlderChatMessages(): Promise<number> {
+    if (chatLoadingOlder || !chatHasMore) return 0;
+    const hubId = appState.hub;
+    const topic = appState.topic;
+    const oldest = chatMessages[0];
+    if (!hubId || !topic || !oldest) return 0;
+    chatLoadingOlder = true;
+    try {
+      const older = await api.getMessages(hubId, topic, { limit: CHAT_PAGE_SIZE, before: oldest.id });
+      if (appState.hub !== hubId || appState.topic !== topic) return 0;
+      const hasMore = older.length === CHAT_PAGE_SIZE;
+      chatMessages = [...older, ...chatMessages];
+      chatHasMore = hasMore;
+      chatWindowCache.set(hubId, topic, { messages: chatMessages, hasMore });
+      return older.length;
+    } catch (err) {
+      console.error('confer serve: failed to load older chat messages', hubId, topic, err);
+      return 0;
+    } finally {
+      chatLoadingOlder = false;
+    }
+  }
+
+  /** SSE landed a `message` event for the topic currently on screen — fetch
+   * just the newest page and append whatever isn't already loaded, instead
+   * of invalidating/re-fetching the whole window (which would both be
+   * wasteful on a large hub and reset the reader's scroll position). */
+  async function appendNewestChatMessages(hubId: string, topic: string) {
+    try {
+      const page = await api.getMessages(hubId, topic, { limit: CHAT_PAGE_SIZE });
+      if (appState.hub !== hubId || appState.topic !== topic) return;
+      const known = new Set(chatMessages.map((m) => m.id));
+      const fresh = page.filter((m) => !known.has(m.id));
+      if (fresh.length === 0) return;
+      chatMessages = [...chatMessages, ...fresh];
+      chatWindowCache.set(hubId, topic, { messages: chatMessages, hasMore: chatHasMore });
+    } catch (err) {
+      console.error('confer serve: failed to append newest chat messages', hubId, topic, err);
+    }
+  }
 
   let statusFilter = $state<StatusFilter>('all');
   let notesOn = $state(true);
@@ -147,6 +227,17 @@
   });
 
   $effect(() => {
+    // Load (or restore from cache) the ChatStream's windowed page whenever
+    // the current hub OR topic changes — a topic switch alone (no hub
+    // change) must also refetch, since the window is scoped per-topic.
+    // Guarded on both being resolved: topic starts null until loadHub's
+    // applyHubData picks a default (see selectDefaultTopic).
+    const hubId = appState.hub;
+    const topic = appState.topic;
+    if (hubId && topic) void loadChatWindow(hubId, topic);
+  });
+
+  $effect(() => {
     // (Re)connect the SSE channel whenever the selected hub changes. The
     // indicator starts 'loading' (see connStatus's initial state) and only
     // becomes 'reconnecting' on a genuine transport error from the source
@@ -160,9 +251,20 @@
         if (event.hub !== appState.hub) return;
         // A real message/presence event means the hub-data cache entry is
         // now stale — drop it so loadHub does a real fetch instead of
-        // replaying the (now outdated) cached snapshot.
+        // replaying the (now outdated) cached snapshot. This still refetches
+        // the FULL messages list (unpaginated) that RequestDetail/MetaThread
+        // rely on for cross-topic trail reconstruction.
         hubDataCache.invalidate(event.hub);
         void loadHub(appState.hub);
+        // The ChatStream window, in contrast, must NOT redo a full refetch
+        // here — that would both hammer a large hub's history on every tick
+        // and reset whatever the reader has scrolled back to. If the event
+        // is for the topic currently on screen, just fetch the newest page
+        // and append what's missing.
+        const currentTopicId = appState.topic;
+        if (event.event === 'message' && currentTopicId && event.topic === currentTopicId) {
+          void appendNewestChatMessages(appState.hub, currentTopicId);
+        }
       },
       (status) => {
         connStatus = status;
@@ -187,6 +289,12 @@
   function selectMessage(id: string) {
     const found = messages.find((m) => m.id === id);
     appState.selectedMessage = found ?? null;
+    // A plain note/thread click is the meta-thread pane, not "Request
+    // detail" — without this, clicking a ticket first (which sets
+    // contextMode = 'request') then a plain note left the sidebar stuck
+    // showing the PREVIOUS ticket's "Request detail" heading and content
+    // over the newly-selected note's own thread.
+    contextMode = 'meta';
     loadThread(id);
   }
 
@@ -327,7 +435,10 @@
       <div class="view-pane" class:active={appState.view === 'chat'}>
         {#if chatMounted}
           <ChatStream
-            {messages}
+            messages={chatMessages}
+            hasMore={chatHasMore}
+            loadingOlder={chatLoadingOlder}
+            onLoadOlder={loadOlderChatMessages}
             requests={overview?.board.requests ?? []}
             agents={overview?.fleet ?? []}
             topic={appState.topic}
@@ -398,7 +509,7 @@
         {:else if contextMode === 'refs'}
           <ReverseIndexPanel hits={refHits} repo={refContext?.repo ?? null} path={refContext?.path ?? null} range={refContext?.range ?? null} />
         {:else}
-          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} />
+          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} />
         {/if}
       </div>
       <div class="foothint">↩ discovered via reply-hashes — no extra state, pure projection</div>
