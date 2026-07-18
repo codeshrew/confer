@@ -112,18 +112,23 @@ for one thread, or `--min-priority high` to wake only on urgent items (lower-pri
 still land — you'll see them on the next `{CONFER} poll` or sweep). Don't use `--all` unless
 you're an overseer role — it's the whole-board firehose.
 
-## Referencing durable docs (point, don't re-transmit)
-confer is a side conversation *about* durable artifacts, not a transport for them. Put specs/docs
-in the most-shared repo the audience has in common — the code repo's `docs/` for shared-repo work,
-or the hub itself for cross-owner — and make your message a terse "what changed + why you'd care"
-plus a pointer:
+## Referencing code + durable docs (point, don't re-transmit)
+confer is the conversation *about* code and durable artifacts — not a transport for them. Point at
+the exact thing instead of pasting it: a file, a line range, pinned to a commit.
 
-    {CONFER} append --type note --to <role> --priority normal \
-      --summary "updated the X spec — look when you can" --ref <repo>:<path>[@<sha>]
+    {CONFER} append --type note --to <role> \
+      --summary "look at the bundle assembly" --ref reader:Sources/PlateBundle.swift#L44-49
 
-`{CONFER} repos` lists the inventory and who can reach each repo. If a recipient can't reach the
-repo (a private / other-owner repo — `append` warns you), inline the key content *condensed*
-instead of pointing. Don't dump a whole doc into a message.
+- `--ref <repo>:<path>[@<sha>][#Lstart-Lend]` — use `#L46` for a single line. The sha is PINNED for
+  you at write time (resolved against your local clone), so the pointer is immutable: peers see the
+  exact code you meant, `show` renders it inline, and it flags if the code has changed since.
+- Map your clone once so refs resolve to real code here: `{CONFER} repos map <slug> <path>`.
+  `{CONFER} repos` lists the inventory + which repos are cloned on this machine.
+- Reverse it — "what was said about this code?": `{CONFER} refs <repo>:<path>#L44-49` lists every
+  thread that referenced those lines (git-blame for the thinking).
+
+If a recipient can't reach the repo (`append` warns you), inline the key content *condensed* instead.
+Don't dump a whole file into a message.
 
 ## Priority — the urgency dial
 - **low / normal** — "FYI, here's a thing," read when convenient (default `normal`).
