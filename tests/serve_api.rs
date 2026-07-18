@@ -271,10 +271,227 @@ fn overview_has_topic_board_and_fleet_shapes() {
     let fleet = v["fleet"].as_array().expect("fleet array");
     assert!(!fleet.is_empty());
     let agent = &fleet[0];
-    for key in ["id", "display", "desc", "expectedHost", "lastTs", "lastHost", "live", "verified", "color", "abbr", "wip"] {
+    // design/47 §4.2 items 3/4/6: `liveness`/`hbAgeSecs`/`trust` are ADDITIVE alongside the
+    // existing `live` bool and `verified` enum — old consumers keep working.
+    for key in ["id", "display", "desc", "expectedHost", "lastTs", "lastHost", "live", "liveness", "hbAgeSecs", "verified", "trust", "color", "abbr", "wip"] {
         assert!(agent.get(key).is_some(), "missing agent.{key} in {agent}");
     }
     assert!(matches!(agent["verified"].as_str(), Some("signed" | "first-sight" | "unverified")));
+    assert!(matches!(agent["trust"].as_str(), Some("signed" | "first-sight" | "mismatch" | "unverified")));
+    assert!(matches!(agent["liveness"].as_str(), Some("live" | "stale" | "down")));
+    // No presence ever published for the seeded agents in this test → no beat → `down` +
+    // no age, and `live` derives false from it (liveness === "live").
+    assert_eq!(agent["liveness"], "down");
+    assert_eq!(agent["live"], false);
+    assert!(agent["hbAgeSecs"].is_null());
+}
+
+/// Force-pushes a raw presence beat straight onto `refs/presence/<role>` (bypassing
+/// `confer`'s own `watch`), the same low-level technique `tests/cli.rs`'s presence-trust
+/// tests use — lets a test dictate an exact `last_seen`/signed-ness that a real watcher's
+/// timing can't reliably produce. `sign_key` present → sign the beat commit with that SSH
+/// key (`commit-tree -S`, as `presence::publish` does for a real agent); `None` → an
+/// unsigned commit (the "forged/legacy" beat shape).
+fn push_beat(dir: &Path, role: &str, ts: &str, sign_key: Option<&Path>) {
+    let mk = match sign_key {
+        Some(key) => format!(
+            "git -c gpg.format=ssh -c user.signingkey='{}' -c gpg.ssh.program=ssh-keygen commit-tree $t -S -m beat",
+            key.display()
+        ),
+        None => "git commit-tree $t -m beat".to_string(),
+    };
+    let o = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{dir}' && printf '{{\"role\":\"{role}\",\"last_seen\":\"{ts}\",\"poll_secs\":10}}' > pres.json && \
+             b=$(git hash-object -w pres.json) && \
+             t=$(printf '100644 blob %s\\tpresence.json\\n' \"$b\" | git mktree) && \
+             c=$({mk}) && \
+             git update-ref refs/presence/{role} $c && \
+             git push --force origin refs/presence/{role}:refs/presence/{role} && rm -f pres.json",
+            dir = dir.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "push_beat({role}, sign={}): {}", sign_key.is_some(), String::from_utf8_lossy(&o.stderr));
+}
+
+/// Generates an ed25519 keypair under `dir/<name>`, returns the private key path.
+fn keygen(dir: &Path, name: &str) -> PathBuf {
+    let key = dir.join(name);
+    let st = Command::new("ssh-keygen").args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", name, "-q"]).status().unwrap();
+    assert!(st.success(), "ssh-keygen failed for {name}");
+    key
+}
+
+#[test]
+fn overview_three_state_liveness_and_heartbeat_age() {
+    // design/47 §4.2 items 3+6: three roles, each with exactly one SIGNED beat at a
+    // different age, exercise all three `presence::Live` states end-to-end through
+    // `/api/overview`'s `liveness`/`hbAgeSecs`/`live` fields.
+    let hub = new_hub();
+    let keydir = tmp("key");
+
+    // Each role joins from its OWN clone (`join` sets that clone's local git identity/
+    // signing config), but all push cards + beats to the same bare remote, so any clone's
+    // `.dir` can be used afterward to read/write shared refs (presence, messages).
+    let alpha = hub.clone("alpha");
+    let beta = hub.clone("beta");
+    let gamma = hub.clone("gamma");
+    for (c, role) in [(&alpha, "alpha"), (&beta, "beta"), (&gamma, "gamma")] {
+        let key = keygen(&keydir, role);
+        assert!(ok(&c.confer(&["join", "--role", role, "--signing-key", key.to_str().unwrap()])));
+    }
+    // A note (from alpha's now-joined clone) so all three roles show up in the
+    // roster/agents union regardless of presence.
+    assert!(ok(&alpha.append(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "hi"])));
+
+    let now = chrono::Utc::now();
+    let ts = |secs_ago: i64| (now - chrono::Duration::seconds(secs_ago)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    push_beat(&alpha.dir, "alpha", &ts(30), Some(&keydir.join("alpha"))); // well within the live window
+    push_beat(&alpha.dir, "beta", &ts(1200), Some(&keydir.join("beta"))); // 20 min ago → stale
+    push_beat(&alpha.dir, "gamma", &ts(2400), Some(&keydir.join("gamma"))); // 40 min ago → down
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/overview");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let fleet = v["fleet"].as_array().expect("fleet array");
+    let find = |id: &str| fleet.iter().find(|a| a["id"] == id).unwrap_or_else(|| panic!("no {id} in {fleet:?}"));
+
+    let a = find("alpha");
+    assert_eq!(a["liveness"], "live", "alpha: {a}");
+    assert_eq!(a["live"], true, "alpha: {a}");
+    assert!(a["hbAgeSecs"].as_i64().unwrap() < 120, "alpha hbAgeSecs should be small: {a}");
+
+    let b = find("beta");
+    assert_eq!(b["liveness"], "stale", "beta: {b}");
+    assert_eq!(b["live"], false, "beta: {b}");
+    let b_age = b["hbAgeSecs"].as_i64().unwrap();
+    assert!((1100..1400).contains(&b_age), "beta hbAgeSecs ~1200: {b}");
+
+    let g = find("gamma");
+    assert_eq!(g["liveness"], "down", "gamma: {g}");
+    assert_eq!(g["live"], false, "gamma: {g}");
+    let g_age = g["hbAgeSecs"].as_i64().unwrap();
+    assert!(g_age > 1800, "gamma hbAgeSecs should be well past the stale window: {g}");
+}
+
+#[test]
+fn overview_forged_heartbeat_does_not_render_live() {
+    // design/47 §4.2 items 3+6, the trust hole: the health path used to read UNVERIFIED
+    // presence (`presence::load_all`), so a forged/replayed heartbeat rendered `live: true`.
+    // Here alpha signs a real beat first (pinning its key + recording it as a
+    // presence-signer), then a FRESHER but UNSIGNED beat is pushed — a downgrade that
+    // `presence::load_verified` must reject (`BeatTrust::Untrusted`). Even though the forged
+    // beat's own timestamp is recent enough to look "live", `/api/overview` must NOT report
+    // the agent as live from it.
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    let keydir = tmp("key");
+    let key = keygen(&keydir, "alpha");
+    assert!(ok(&alpha.confer(&["join", "--role", "alpha", "--signing-key", key.to_str().unwrap()])));
+    assert!(ok(&alpha.append(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "hi"])));
+
+    let now = chrono::Utc::now();
+    let ts = |secs_ago: i64| (now - chrono::Duration::seconds(secs_ago)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    push_beat(&alpha.dir, "alpha", &ts(60), Some(&key)); // a real signed beat: pins the key, ever_signed=true
+    push_beat(&alpha.dir, "alpha", &ts(5), None); // a forged, unsigned "fresher" beat — must be rejected
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/overview");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let fleet = v["fleet"].as_array().expect("fleet array");
+    let a = fleet.iter().find(|a| a["id"] == "alpha").unwrap_or_else(|| panic!("no alpha in {fleet:?}"));
+    assert_eq!(a["live"], false, "a forged/rejected beat must not render live:true: {a}");
+    assert_eq!(a["liveness"], "down", "a forged beat is treated as no trustworthy beat at all: {a}");
+    assert!(a["hbAgeSecs"].is_null(), "no trustworthy age to report from a rejected beat: {a}");
+}
+
+#[test]
+fn overview_trust_field_distinguishes_signed_first_sight_mismatch_and_unverified() {
+    // design/47 §4.2 item 2: `verified` folds `mismatch` into `unverified` for the closed
+    // legacy enum; the additive `trust` field must expose the real state.
+    //
+    // The keyring (pin/confirmed store) lives under `$HOME/.confer` and `join` self-confirms
+    // the identity it just created (a human running `join` IS the out-of-band confirmation
+    // for itself) — so from alpha's OWN home, alpha's key is `signed`, never `first-sight`.
+    // `first-sight` is a genuinely different-observer state: a separate machine/home seeing
+    // alpha's key for the first time, before ITS operator has confirmed it. So this test uses
+    // two distinct `$HOME`s (this rig's `Hub::clone` shares one home across roles by default,
+    // modeling "one machine hosts several role clones" — realistic, but not what first-sight
+    // needs) to model that.
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    let keydir = tmp("key");
+    let key1 = keygen(&keydir, "alpha1");
+    assert!(ok(&alpha.confer(&["join", "--role", "alpha", "--signing-key", key1.to_str().unwrap()])));
+    assert!(ok(&alpha.append(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "hi"])));
+    // beta never joins with a key → stays `unverified` throughout (posted from alpha's clone
+    // with an explicit `--from beta`; `card_trust` checks the ROSTER's published key for the
+    // `from` role, not who actually signed the underlying commit, so this is enough to put
+    // "beta" into the agents union as an unsigned role).
+    assert!(ok(&alpha.confer(&["append", "--from", "beta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2"])));
+
+    let get_agent = |server: &Server, id: &str| -> serde_json::Value {
+        let (status, body) = http_get(&server.addr, "/api/overview");
+        assert_eq!(status, 200, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        v["fleet"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap_or_else(|| panic!("no {id} in {v}")).clone()
+    };
+
+    // 1) alpha's OWN view of itself: self-confirmed at join → signed.
+    let self_server = start_server(&alpha);
+    let a_self = get_agent(&self_server, "alpha");
+    assert_eq!(a_self["trust"], "signed", "{a_self}");
+    assert_eq!(a_self["verified"], "signed", "{a_self}");
+    let b_self = get_agent(&self_server, "beta");
+    assert_eq!(b_self["trust"], "unverified", "{b_self}");
+    assert_eq!(b_self["verified"], "unverified", "{b_self}");
+    drop(self_server);
+
+    // 2) a fresh OBSERVER machine (its own $HOME, never confirmed anything) seeing alpha's
+    // card for the first time: TOFU-pins it right here → first-sight (signed, not yet vouched
+    // for by THIS machine's operator).
+    let mut observer = hub.clone("observer");
+    let observer_home = tmp("observer-home");
+    std::fs::create_dir_all(observer_home.join(".confer")).unwrap();
+    observer.home = observer_home;
+    let obs_server = start_server(&observer);
+    let a_obs = get_agent(&obs_server, "alpha");
+    assert_eq!(a_obs["trust"], "first-sight", "{a_obs}");
+    assert_eq!(a_obs["verified"], "first-sight", "{a_obs}");
+    drop(obs_server);
+
+    // 3) A hub writer rewrites alpha's published pubkey in the card → the loud MISMATCH
+    // alarm — detected by ANY observer that had already pinned the old key, including
+    // alpha's own machine. `verified` (the closed legacy enum) folds it into "unverified";
+    // `trust` must not. A freshly-started server picks up the rewritten card (roster is
+    // cached per `serve` process, refreshed only periodically; restarting forces a fresh
+    // fold rather than waiting out that refresh interval).
+    let key2 = keygen(&keydir, "alpha2");
+    let newpub = std::fs::read_to_string(format!("{}.pub", key2.display())).unwrap();
+    let card = alpha.dir.join("roles/alpha.md");
+    let txt = std::fs::read_to_string(&card).unwrap();
+    let mut out_lines = Vec::new();
+    for line in txt.lines() {
+        if line.starts_with("pubkey:") {
+            out_lines.push(format!("pubkey: {}", newpub.trim()));
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    std::fs::write(&card, out_lines.join("\n") + "\n").unwrap();
+    git(&alpha.dir, &["add", "roles/alpha.md"]);
+    git(&alpha.dir, &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "swap alpha's key"]);
+    assert!(git(&alpha.dir, &["push", "-q", "origin", "HEAD"]).status.success());
+
+    let mismatch_server = start_server(&alpha);
+    let a3 = get_agent(&mismatch_server, "alpha");
+    assert_eq!(a3["trust"], "mismatch", "{a3} — the loud impersonation alarm must not be folded away");
+    assert_eq!(a3["verified"], "unverified", "{a3} — the closed legacy enum keeps folding mismatch into unverified");
+    drop(mismatch_server);
 }
 
 #[test]
@@ -379,7 +596,10 @@ fn refs_reverse_lookup_returns_ref_hits() {
     assert_eq!(hit["requestStatus"], "CLAIMED");
     assert_eq!(hit["hub"].as_str().unwrap(), expected_hub_id, "refhit.hub must match /api/hubs's id for this hub");
     assert!(!hit["hub"].as_str().unwrap().is_empty());
-    assert!(hit["hubPrivate"].is_boolean(), "refhit.hubPrivate must be a bool: {hit}");
+    // design/47 §4.2 item 4: no cheap synchronous hub-visibility signal exists (the real
+    // check is a live network probe, wrong to run per-request), so `hubPrivate` reports
+    // the honest "unknown" (`null`) rather than a misleading hardcoded `false`.
+    assert!(hit["hubPrivate"].is_null(), "refhit.hubPrivate must be null (unknown) pending a cheap sync signal: {hit}");
 
     // A file nothing references comes back empty, not an error.
     let (status2, body2) = http_get(&server.addr, "/api/refs?target=mylib:other.rs");

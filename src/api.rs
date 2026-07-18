@@ -266,7 +266,8 @@ fn agent_wip(board: &projection::Board, id: &str) -> Vec<Value> {
 /// `verify::Trust::status_str()` carries a 4th value (`mismatch`, a loud impersonation
 /// alarm) that the frontend's `verified` vocabulary doesn't have a slot for (spec: only
 /// signed|first-sight|unverified). Folding it into "unverified" keeps the JSON's a
-/// closed enum for the consumer; the mismatch itself is still visible via `doctor`/`who`.
+/// closed enum for the consumer; the mismatch itself is still visible via `doctor`/`who`,
+/// and — additively — via the richer `trust` field below (design/47 §4.2 item 4).
 fn verified_of(status_str: &str) -> &'static str {
     match status_str {
         "verified" => "signed",
@@ -275,12 +276,50 @@ fn verified_of(status_str: &str) -> &'static str {
     }
 }
 
-fn agent_row_json(board: &projection::Board, a: &projection::AgentRow, verified: &'static str, now: chrono::DateTime<Utc>) -> Value {
-    let live = a
-        .presence
-        .as_ref()
-        .map(|p| presence::liveness(p, now) == presence::Live::Up)
-        .unwrap_or(false);
+/// The richer, non-folded trust vocabulary for a card's signing state: distinguishes the
+/// loud `mismatch` (impersonation alarm) from a merely `unverified` card, which `verified`
+/// above collapses together for its closed enum. Additive alongside `verified` — a
+/// consumer that only understands signed/first-sight/unverified keeps working; one that
+/// wants to alarm on impersonation reads `trust` instead.
+fn trust_of(status_str: &str) -> &'static str {
+    match status_str {
+        "verified" => "signed",
+        "first-sight" => "first-sight",
+        "mismatch" => "mismatch",
+        _ => "unverified",
+    }
+}
+
+/// Three-state liveness + heartbeat age from a **verified** beat (design/47 §4.2, items 3
+/// and 6). A beat whose trust is `Untrusted` (forged signature, or a replayed/suppressed
+/// timestamp) must not drive liveness at all — it's as if no beat was seen. A `Signed` or
+/// advisory `Unsigned` beat (pre-signing fleet, or a role with no pinned key yet) still
+/// counts, same as the CLI's `fleet`/`who` audits (`BeatTrust::ok()`).
+fn beat_liveness(beat: Option<&presence::Beat>, now: chrono::DateTime<Utc>) -> (&'static str, Option<i64>, bool) {
+    let Some(p) = beat.filter(|b| b.trust.ok()).map(|b| &b.p) else {
+        return ("down", None, false);
+    };
+    let live = presence::liveness(p, now);
+    let hb_age_secs = chrono::DateTime::parse_from_rfc3339(&p.last_seen)
+        .ok()
+        .map(|seen| (now - seen.with_timezone(&Utc)).num_seconds());
+    let liveness_str = match live {
+        presence::Live::Up => "live",
+        presence::Live::Stale => "stale",
+        presence::Live::Down => "down",
+    };
+    (liveness_str, hb_age_secs, live == presence::Live::Up)
+}
+
+fn agent_row_json(
+    board: &projection::Board,
+    a: &projection::AgentRow,
+    verified: &'static str,
+    trust: &'static str,
+    beat: Option<&presence::Beat>,
+    now: chrono::DateTime<Utc>,
+) -> Value {
+    let (liveness, hb_age_secs, live) = beat_liveness(beat, now);
     json!({
         "id": a.id,
         "display": sanitize_term(&a.display, false),
@@ -289,7 +328,10 @@ fn agent_row_json(board: &projection::Board, a: &projection::AgentRow, verified:
         "lastTs": a.last_ts,
         "lastHost": a.last_host,
         "live": live,
+        "liveness": liveness,
+        "hbAgeSecs": hb_age_secs,
         "verified": verified,
+        "trust": trust,
         "color": color_of(&a.id),
         "abbr": abbr_of(&a.display),
         "wip": agent_wip(board, &a.id),
@@ -381,11 +423,29 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
 
     let hub_key = config::hub_key(dir);
     let mut vcache = verify::Cache::default();
+    // The health/trust path uses VERIFIED presence (design/47 §4.2 items 3 + 6): `fleet`/
+    // `require --bump` already gate liveness decisions on `load_verified`, but this JSON
+    // path used to read the raw, unverified `AgentRow.presence` (`presence::load_all` via
+    // `Snapshot::load`) — a forged or replayed heartbeat rendered `live: true`. No network
+    // fetch here (`fetch=false`), matching the existing non-fetch discipline of this
+    // request path (`presence_map` above) — a live worker already keeps `refs/presence/*`
+    // fresh; a request handler must stay a cheap local read.
+    let beats: HashMap<String, presence::Beat> = presence::load_verified(dir, &hub_key, ros, false)
+        .into_iter()
+        .map(|b| (b.p.role.clone(), b))
+        .collect();
     let fleet_json: Vec<Value> = agent_rows
         .iter()
         .map(|a| {
-            let trust = verify::card_trust(dir, &hub_key, ros, &mut vcache, &a.id);
-            agent_row_json(board, a, verified_of(trust.status_str()), now)
+            let card_trust = verify::card_trust(dir, &hub_key, ros, &mut vcache, &a.id);
+            agent_row_json(
+                board,
+                a,
+                verified_of(card_trust.status_str()),
+                trust_of(card_trust.status_str()),
+                beats.get(&a.id),
+                now,
+            )
         })
         .collect();
 
@@ -638,11 +698,18 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
                 "threadRoot": h.thread_root,
                 "requestStatus": h.request_status,
                 "hub": this_hub_id,
-                // No per-hub "private" (non-anonymous-read) fact is cached anywhere the
-                // server can read synchronously — `doctor`'s PUBLIC check is a live network
-                // probe, not stored state — so this defaults to `false` pending a real
-                // per-hub visibility source.
-                "hubPrivate": false,
+                // design/47 §4.2 item 4: no per-hub "private" (non-anonymous-read) fact is
+                // cached anywhere a `serve` handler can read synchronously — `doctor`'s
+                // PUBLIC check (`remote_visibility` in doctor.rs) is a live network probe
+                // (a git ls-remote-shaped call), which is wrong to run per-request from a
+                // read-only HTTP handler (unbounded latency, and it'd hit the remote on
+                // every dashboard poll). Rather than a hardcoded `false` — which reads as
+                // "checked: this hub is private" and would misrepresent an actually-public
+                // hub as safe — report the honest "unknown" until a cheap synchronous
+                // signal exists (e.g. `doctor` persisting its last verdict for `serve` to
+                // read). Phase-2 item per design/47; the Overview's hub-public alarm can't
+                // fire from this field yet.
+                "hubPrivate": Value::Null,
             }));
         }
     }
