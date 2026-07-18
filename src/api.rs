@@ -412,15 +412,28 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
 /// derived from a mapped clone at read time when a full-hex `sha` has no stored
 /// date) via `clone_cache` (keyed by repo, so a busy response doesn't resolve the
 /// same clone repeatedly).
-fn coderef_json(r: &CodeRef, repo_inv: &repos::Repos, clone_cache: &mut HashMap<String, Option<PathBuf>>) -> Value {
+fn coderef_json(
+    r: &CodeRef,
+    repo_inv: &repos::Repos,
+    clone_cache: &mut HashMap<String, Option<PathBuf>>,
+    staleness_cache: &mut HashMap<StalenessKey, refcode::Staleness>,
+) -> Value {
     let clone = clone_cache.entry(r.repo.clone()).or_insert_with(|| refcode::clone_for(repo_inv, &r.repo)).clone();
     let commit_date = refcode::enrich_commit_date(clone.as_deref(), &r.sha, r.commit_date.as_deref());
+    // Compute staleness the same way /api/refs does (reachability addendum), memoized +
+    // capped per request so a message page carrying many refs never git-spawns unbounded
+    // (previously omitted entirely, so the chat-stream card defaulted to "unknown").
+    let key: StalenessKey = (r.repo.clone(), r.sha.clone(), r.path.clone(), r.base_ref.clone(), r.fork_point.clone());
+    let (staleness, _) = memoized_staleness(staleness_cache, MAX_STALENESS_COMPUTATIONS, key, || {
+        refcode::staleness_ex(clone.as_deref(), &r.sha, &r.path, r.content_hash.as_deref(), r.base_ref.as_deref(), r.fork_point.as_deref())
+    });
     json!({
         "repo": r.repo,
         "path": r.path,
         "sha": r.sha,
         "range": r.range,
         "contentHash": r.content_hash,
+        "staleness": staleness.label(),
         "refName": r.ref_name,
         "refType": r.ref_type,
         "commitDate": commit_date,
@@ -431,7 +444,12 @@ fn coderef_json(r: &CodeRef, repo_inv: &repos::Repos, clone_cache: &mut HashMap<
     })
 }
 
-fn message_json(m: &Message, repo_inv: &repos::Repos, clone_cache: &mut HashMap<String, Option<PathBuf>>) -> Value {
+fn message_json(
+    m: &Message,
+    repo_inv: &repos::Repos,
+    clone_cache: &mut HashMap<String, Option<PathBuf>>,
+    staleness_cache: &mut HashMap<StalenessKey, refcode::Staleness>,
+) -> Value {
     json!({
         "id": m.front.id,
         "from": m.front.from,
@@ -446,7 +464,7 @@ fn message_json(m: &Message, repo_inv: &repos::Repos, clone_cache: &mut HashMap<
         "of": m.front.of,
         "replyTo": m.front.reply_to,
         "supersedes": m.front.supersedes,
-        "refs": m.front.refs.iter().map(|r| coderef_json(r, repo_inv, clone_cache)).collect::<Vec<_>>(),
+        "refs": m.front.refs.iter().map(|r| coderef_json(r, repo_inv, clone_cache, staleness_cache)).collect::<Vec<_>>(),
     })
 }
 
@@ -476,9 +494,10 @@ fn messages(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
     }
     let repo_inv = repos::load(dir);
     let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
+    let mut staleness_cache: HashMap<StalenessKey, refcode::Staleness> = HashMap::new();
     ApiResponse::ok(json!(msgs
         .iter()
-        .map(|m| message_json(m, &repo_inv, &mut clone_cache))
+        .map(|m| message_json(m, &repo_inv, &mut clone_cache, &mut staleness_cache))
         .collect::<Vec<_>>()))
 }
 
@@ -499,6 +518,7 @@ fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMa
     thread.sort_by(|a, b| a.front.id.cmp(&b.front.id));
     let repo_inv = repos::load(dir);
     let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
+    let mut staleness_cache: HashMap<StalenessKey, refcode::Staleness> = HashMap::new();
     let out: Vec<Value> = thread
         .iter()
         .map(|m| {
@@ -508,7 +528,7 @@ fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMa
                 "type": m.front.msg_type,
                 "topic": m.front.topic,
                 "summary": m.summary_line(),
-                "refs": m.front.refs.iter().map(|r| coderef_json(r, &repo_inv, &mut clone_cache)).collect::<Vec<_>>(),
+                "refs": m.front.refs.iter().map(|r| coderef_json(r, &repo_inv, &mut clone_cache, &mut staleness_cache)).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -524,6 +544,10 @@ fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMa
 /// ever true on the computations that got refused, so callers OR it across the whole
 /// loop.
 type StalenessKey = (String, String, String, Option<String>, Option<String>);
+/// Cap on distinct git-backed staleness computations per request — shared by `refs()` and
+/// the message serializers (`coderef_json`) — beyond which staleness reports `Unknown`
+/// rather than spawning unbounded git processes on a busy response.
+const MAX_STALENESS_COMPUTATIONS: usize = 100;
 fn memoized_staleness(
     cache: &mut HashMap<StalenessKey, refcode::Staleness>,
     cap: usize,
@@ -566,7 +590,6 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
     // they're distinct) and cap the number of DISTINCT computations so a request can
     // never spawn unbounded git processes; anything beyond the cap reports "unknown"
     // rather than silently doing more work.
-    const MAX_STALENESS_COMPUTATIONS: usize = 100;
     let mut out = Vec::new();
     let mut truncated = false;
     for hub in &hubs {
