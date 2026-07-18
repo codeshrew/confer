@@ -15,12 +15,38 @@ export type RefType = 'branch' | 'tag' | 'detached';
 export type RequestStatus = 'OPEN' | 'CLAIMED' | 'BLOCKED' | 'DONE' | 'ERROR' | 'SUPERSEDED';
 export type MsgType = 'note' | 'request' | 'claim' | 'done' | 'error' | 'blocked' | 'defer' | 'supersede';
 
+// design/48 §2-3 — the server's OWN trust classification for a hub
+// (`confer trust own|shared|foreign`, local-only `~/.confer/tiers.json`,
+// never client/peer-derived) and its git-sync freshness, both projected onto
+// `/api/hubs` + `/api/overview` (src/api.rs's `hub_json`). `null` means the
+// server genuinely doesn't know — `tier: null` is "never classified" (NOT
+// the same as "own"/trusted), and `sync: null` (or any field inside it) is
+// "unknown" (NOT a calm all-clear). A frontend consumer must render both
+// honestly rather than defaulting a null into a reassuring value (redesign
+// law #3 — see ui/REDESIGN.md).
+export type HubTier = 'own' | 'shared' | 'foreign';
+
+export interface HubSync {
+  /** Age (seconds) since the hub's clone last successfully fetched — null =
+   * unknown (no FETCH_HEAD mtime on record yet). */
+  lastFetchedSecs: number | null;
+  /** Commits behind the tracked upstream — null = no upstream tracking. */
+  behind: number | null;
+  /** Local unpushed/uncommitted changes — null = unknown (not yet probed). */
+  pending: number | null;
+  /** Whether the last background sweep could reach the hub — null = not
+   * probed yet (pre-first-sweep). */
+  reachable: boolean | null;
+}
+
 export interface Hub {
   id: string;
   label: string;
   name: string;
   current: boolean;
   agentCount: number;
+  tier?: HubTier | null;
+  sync?: HubSync | null;
 }
 
 export interface Topic {

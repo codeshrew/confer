@@ -8,7 +8,7 @@
 // the result to `aggregateAttention` below. Phase 2 repoints that same
 // caller at a real `/api/attention` endpoint; this module's shape is written
 // to make that swap a no-op for Overview.svelte.
-import type { Agent, Hub, Liveness, Overview, RequestRow, Trust } from './types';
+import type { Agent, Hub, HubSync, HubTier, Liveness, Overview, RequestRow, Trust } from './types';
 
 export type Severity = 'critical' | 'attention' | 'info' | 'nominal';
 
@@ -121,12 +121,16 @@ export interface DomainWorkItem {
   ageSecs: number;
 }
 
-/** One hub, as a place on the map — real per-hub agents + work, no
- * synthesized trust-tier or sync-freshness (the backend doesn't project
- * either yet over the web API; see `ui/REDESIGN.md`'s Backend gaps). */
+/** One hub, as a place on the map — real per-hub agents + work, plus the
+ * server's own trust tier + sync freshness (design/48 §2-3, `Hub.tier`/
+ * `Hub.sync`). Both carried through UNCHANGED (including `null`) — this
+ * layer doesn't get to decide "unclassified" means "home" or "unknown"
+ * means "fine"; that's Overview.svelte's rendering job, done honestly. */
 export interface HubDomain {
   hub: string;
   label: string;
+  tier: HubTier | null;
+  sync: HubSync | null;
   agents: DomainAgent[];
   workInFlight: DomainWorkItem[];
 }
@@ -486,6 +490,8 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
   const domains: HubDomain[] = hubOverviews.map(({ hub, overview }) => ({
     hub: hub.id,
     label: hub.label,
+    tier: hub.tier ?? null,
+    sync: hub.sync ?? null,
     agents: overview.fleet.map((a) => ({
       id: a.id,
       display: a.display,

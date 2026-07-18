@@ -33,6 +33,8 @@ const EMPTY: Attention = {
     {
       hub: 'agent-coord',
       label: 'agent-coord',
+      tier: 'own',
+      sync: { lastFetchedSecs: 12, behind: 0, pending: 0, reachable: true },
       agents: [
         {
           id: 'reader',
@@ -88,6 +90,10 @@ const BUSY: Attention = {
     {
       hub: 'agent-coord',
       label: 'agent-coord',
+      tier: 'shared',
+      // Genuinely behind — the field-level warn case (not the whole-sync-
+      // unknown case DOWN below exercises).
+      sync: { lastFetchedSecs: 940, behind: 2, pending: 0, reachable: true },
       agents: [
         {
           id: 'jarvis',
@@ -145,6 +151,10 @@ const DOWN: Attention = {
     {
       hub: 'jarvis-orbit',
       label: 'jarvis-orbit',
+      // Never classified AND never synced — the two "unknown, not calm"
+      // cases this fixture exists to exercise.
+      tier: null,
+      sync: null,
       agents: [
         {
           id: 'work-orbit',
@@ -262,5 +272,44 @@ describe('Overview', () => {
     render(Overview);
 
     expect(screen.getByTestId('skeleton')).toBeInTheDocument();
+  });
+
+  it('a "shared" hub gets the home tier label and frame, and shows a real behind-count warning', async () => {
+    vi.mocked(getAttention).mockResolvedValue(BUSY);
+    render(Overview);
+
+    const domain = await screen.findByTestId('ov-domain');
+    expect(within(domain).getByTestId('ov-tier')).toHaveTextContent('shared');
+    expect(domain.className).toContain('ov-domain-home');
+
+    const sync = within(domain).getByTestId('ov-dsync');
+    expect(sync).toHaveTextContent('2 behind');
+    expect(sync.className).toContain('ov-dsync-warn');
+  });
+
+  it('an "own" hub with a fully healthy sync shows no warning', async () => {
+    vi.mocked(getAttention).mockResolvedValue(EMPTY);
+    render(Overview);
+
+    const domain = await screen.findByTestId('ov-domain');
+    expect(within(domain).getByTestId('ov-tier')).toHaveTextContent('own');
+
+    const sync = within(domain).getByTestId('ov-dsync');
+    expect(sync).toHaveTextContent(/synced 0m ago/);
+    expect(sync.className).not.toContain('ov-dsync-warn');
+  });
+
+  it('a null tier renders "unclassified" (never defaulted to home or foreign) and null sync renders "sync unknown"', async () => {
+    vi.mocked(getAttention).mockResolvedValue(DOWN);
+    render(Overview);
+
+    const domain = await screen.findByTestId('ov-domain');
+    expect(within(domain).getByTestId('ov-tier')).toHaveTextContent('unclassified');
+    expect(domain.className).not.toContain('ov-domain-home');
+    expect(domain.className).not.toContain('ov-domain-foreign');
+
+    const sync = within(domain).getByTestId('ov-dsync');
+    expect(sync).toHaveTextContent('sync unknown');
+    expect(sync.className).toContain('ov-dsync-warn');
   });
 });

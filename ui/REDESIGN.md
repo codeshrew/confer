@@ -63,30 +63,31 @@ per-hub sync-health projection, seen-by projection, shadow-repo surfacing.
 
 ---
 
-## Backend gaps (found while building piece 1)
+## Backend gaps (found while building piece 1, resolved 2026-07-18)
 
-The mockup (`redesign-mockups/01-overview.html`) shows two things the web API doesn't project
-today. Piece 1 degrades both honestly rather than fabricating them — see the "what this view does
-NOT render, and why" comment at the top of `Overview.svelte`:
+The mockup (`redesign-mockups/01-overview.html`) showed two things the web API didn't project when
+piece 1 first shipped. Both are now RESOLVED — Herald landed them at `071e027` (request MRCKY3):
+per-hub trust tier + git-sync freshness on `/api/hubs` and `/api/overview` (design/48 §2-3). Kept
+here for history; see `types.ts`'s `Hub.tier`/`Hub.sync` for the shipped shape.
 
-- **Per-hub trust tier (home vs. foreign).** `confer trust own|shared|foreign` exists
-  (`src/tiers.rs`) but is stored LOCAL-only (`~/.confer/tiers.json`, by design — a peer can't
-  declare itself trusted) and never serialized by `/api/hubs` (`src/api.rs`'s `hubs()`/`hub_json`).
-  Overview currently renders every domain card with one neutral frame instead of the mockup's
-  solid-teal-home / dashed-magenta-foreign split. `app.css` already carries the token pair
-  (`--home-frame`/`--foreign-frame`, derived from `--accent`/`--deferred`) for whenever this lands —
-  the fix is projecting the *server's own* configured tier for the hub it's serving (not the
-  client's, which doesn't have `~/.confer` and shouldn't infer trust from anything scriptable by a
-  peer) onto `Hub`/`/api/hubs`.
-- **Per-hub sync-freshness.** The mockup's "confer-lab synced 12s ago" line needs a timestamp for
-  when the hub's git clone last actually fetched/updated — no such field exists anywhere in
-  `types.ts`'s `Hub`/`Overview`. What Overview shows instead is the DASHBOARD's own poll age
-  ("dashboard refreshed Ns ago") — a different, less useful fact (poll age, not sync age), labeled
-  honestly so it can't read as a false "all clear". Fixing this for real needs the server to expose
-  its last successful `git fetch`/pull time per hub.
+- **Per-hub trust tier (home vs. foreign).** `confer trust own|shared|foreign` (`src/tiers.rs`) is
+  still stored LOCAL-only (`~/.confer/tiers.json`, by design — a peer can't declare itself trusted),
+  but the SERVER's own configured tier for the hub it's serving is now projected as `Hub.tier: 'own'
+  | 'shared' | 'foreign' | null`. Overview renders `own`/`shared` with the solid home frame,
+  `foreign` with the dashed foreign frame, and `null` (never classified) with a distinct neutral
+  frame — not folded into "home" just because it isn't explicitly foreign.
+- **Per-hub sync-freshness.** `Hub.sync: { lastFetchedSecs, behind, pending, reachable } | null` —
+  every field independently nullable, straight from Herald's comment on `hub_json`: "a null is
+  'unknown', never a fabricated zero/true — so a stale hub can't render as a calm all-clear." Each
+  domain card now shows a real per-hub sync line; the DASHBOARD's own poll age ("dashboard polled Ns
+  ago" in the masthead) is kept as a separate, clearly-labeled fact — it answers "did the browser
+  last ask recently", not "is this hub's picture current".
 
-Piece 2 (hub navigation/scale) will likely want the trust-tier signal too — worth landing the
-`/api/hubs` field before or alongside that piece rather than re-discovering this gap.
+Law #3 enforcement in the render, not just the fetch: `sync === null` → "sync unknown" (no other
+line shown); any individual null field inside a present `sync` → that field's own "… unknown" text,
+never silently dropped or defaulted; `reachable === false` or `behind > 0` → amber warn styling
+(can't read as healthy). `tier === null` → "unclassified" label, neutral frame, never defaulted to
+"home".
 
 ---
 

@@ -25,10 +25,40 @@ import type {
   Topic,
 } from './types';
 
+// design/48 §2-3 — real per-hub tier + sync fixtures, one of each shape so
+// the dashboard's honest-degradation paths actually get exercised in dev
+// mode (not just the all-fields-present happy path): agent-coord is a
+// healthy `own` hub; confer-lab is `shared` but genuinely behind (the
+// warn-styling case); jarvis-orbit is `foreign` with an unprobed `pending`
+// (the field-level "unknown", not the whole-`sync`-null, case).
 export const mockHubs: Hub[] = [
-  { id: 'agent-coord', label: 'agent-coord', name: 'agent-coord', current: true, agentCount: 6 },
-  { id: 'confer-lab', label: 'confer-lab', name: 'confer-lab', current: false, agentCount: 2 },
-  { id: 'jarvis-orbit', label: 'jarvis-orbit', name: 'jarvis-orbit', current: false, agentCount: 1 },
+  {
+    id: 'agent-coord',
+    label: 'agent-coord',
+    name: 'agent-coord',
+    current: true,
+    agentCount: 6,
+    tier: 'own',
+    sync: { lastFetchedSecs: 12, behind: 0, pending: 0, reachable: true },
+  },
+  {
+    id: 'confer-lab',
+    label: 'confer-lab',
+    name: 'confer-lab',
+    current: false,
+    agentCount: 2,
+    tier: 'shared',
+    sync: { lastFetchedSecs: 940, behind: 2, pending: 0, reachable: true },
+  },
+  {
+    id: 'jarvis-orbit',
+    label: 'jarvis-orbit',
+    name: 'jarvis-orbit',
+    current: false,
+    agentCount: 1,
+    tier: 'foreign',
+    sync: { lastFetchedSecs: 65, behind: 0, pending: null, reachable: true },
+  },
 ];
 
 // Mirrors the real fleet's hub `repos/*.md` inventory: three repos cloned
@@ -558,7 +588,17 @@ function isClearScenario(): boolean {
   return new URLSearchParams(window.location.search).has('clear');
 }
 
-const mockClearHubs: Hub[] = [{ id: 'jarvis-orbit', label: 'jarvis-orbit', name: 'jarvis-orbit', current: true, agentCount: 1 }];
+const mockClearHubs: Hub[] = [
+  {
+    id: 'jarvis-orbit',
+    label: 'jarvis-orbit',
+    name: 'jarvis-orbit',
+    current: true,
+    agentCount: 1,
+    tier: 'own',
+    sync: { lastFetchedSecs: 8, behind: 0, pending: 0, reachable: true },
+  },
+];
 
 const mockThread: ThreadNode[] = [
   { msgId: 'msg_01JQ8f2', from: 'pipeline', type: 'request', topic: 'reader', summary: 'Filed the plate-bundle ticket', refs: [] },

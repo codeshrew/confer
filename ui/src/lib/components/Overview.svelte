@@ -15,18 +15,20 @@
   // on the Attention shape (now including the `domains` projection the map
   // renders from), so that swap needs no changes here.
   //
-  // What this view does NOT render, and why (ui/REDESIGN.md law #3 — never
-  // fabricate state): the mockup's home/foreign trust-tier framing and
-  // per-hub "synced Ns ago" freshness both need signals the web API doesn't
-  // project yet (`confer trust` is LOCAL-only, see src/tiers.rs; there's no
-  // per-hub sync timestamp at all). Domain cards render with one neutral
-  // frame, and the masthead's age line is honestly labeled as the
-  // DASHBOARD's own poll age, not a hub sync fact. See "Backend gaps" in
-  // ui/REDESIGN.md.
+  // Trust-tier framing + per-hub sync freshness (design/48 §2-3, `Hub.tier`/
+  // `Hub.sync`, shipped 2026-07-18 — previously a noted "Backend gap", now
+  // resolved) drive the domain cards' frame + sync line below. Both are
+  // honest-nullable at the source (server-side `null` = "don't know", never
+  // a fabricated calm value — src/api.rs's `hub_json`), and this component
+  // keeps that contract: `tier: null` renders NEUTRAL (not "home" —
+  // unclassified isn't the same as trusted), and ANY null inside `sync`
+  // renders as an explicit "unknown"/warn state, never a calm all-clear
+  // (redesign law #3, ui/REDESIGN.md).
   import { onDestroy, onMount } from 'svelte';
   import { getAttention } from '../api';
   import { bySeverityThenAge } from '../attention';
-  import type { Attention, AttentionItem, DomainWorkItem, Severity } from '../attention';
+  import type { Attention, AttentionItem, DomainWorkItem, HubDomain, Severity } from '../attention';
+  import type { HubTier } from '../types';
   import { formatAgeFromSecs } from '../format';
   import AgentNode from './AgentNode.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
@@ -127,6 +129,70 @@
     if (w.claimants.length > 0) return w.claimants.join(', ');
     return `unclaimed ${formatAgeFromSecs(w.ageSecs)}`;
   }
+
+  /** `own`/`shared` are both YOUR fleet (the mockup's "home" framing —
+   * co-owned is still a hub you set up, not an outside party); `foreign` is
+   * someone else's invite. `null` (never classified) is deliberately its
+   * OWN bucket, not folded into either — an unclassified hub hasn't earned
+   * the "home" solid frame just because it isn't explicitly foreign. */
+  function tierFrame(tier: HubTier | null): 'home' | 'foreign' | 'neutral' {
+    if (tier === 'own' || tier === 'shared') return 'home';
+    if (tier === 'foreign') return 'foreign';
+    return 'neutral';
+  }
+
+  function tierLabel(tier: HubTier | null): string {
+    return tier ?? 'unclassified';
+  }
+
+  interface SyncState {
+    text: string;
+    /** Elevated (amber) styling — a genuinely bad or wholly-missing signal:
+     * unreachable, behind, or the freshness/reachability facts needed to
+     * call a hub "current" are missing outright. */
+    warn: boolean;
+  }
+
+  /** Per-hub sync freshness, rendered field-by-field so one unknown piece
+   * doesn't blank out the pieces that ARE known. Every null is labeled
+   * explicitly ("… unknown") rather than silently dropped or defaulted —
+   * law #3 — but not every null carries the same weight: missing
+   * freshness/reachability/behind-count undermines the whole point of this
+   * line (`warn`), while a null local-only `pending` is shown plainly
+   * without the alarm styling. A fully-absent `sync` (hub never probed) is
+   * the loudest case: "sync unknown", nothing else to show. */
+  function syncState(sync: HubDomain['sync']): SyncState {
+    if (!sync) return { text: 'sync unknown', warn: true };
+    const parts: string[] = [];
+    let warn = false;
+
+    if (sync.lastFetchedSecs !== null) parts.push(`synced ${formatAgeFromSecs(sync.lastFetchedSecs)} ago`);
+    else {
+      parts.push('fetch time unknown');
+      warn = true;
+    }
+
+    if (sync.reachable === false) {
+      parts.push('unreachable');
+      warn = true;
+    } else if (sync.reachable === null) {
+      parts.push('reachability unknown');
+      warn = true;
+    }
+
+    if (sync.behind === null) {
+      parts.push('behind-count unknown');
+      warn = true;
+    } else if (sync.behind > 0) {
+      parts.push(`${sync.behind} behind`);
+      warn = true;
+    }
+
+    if (sync.pending === null) parts.push('pending unknown');
+    else if (sync.pending > 0) parts.push(`${sync.pending} pending`);
+
+    return { text: parts.join(' · '), warn };
+  }
 </script>
 
 <div class="ov-wrap" data-testid="overview-view">
@@ -136,14 +202,16 @@
         <span class="ov-mark">c</span>
         <h2>confer · fleet</h2>
       </div>
-      <!-- Honest label: this is the DASHBOARD's own poll age, not a
-           per-hub git-sync fact (that signal doesn't exist yet — see the
-           file-top comment / ui/REDESIGN.md Backend gaps). -->
+      <!-- The DASHBOARD's own poll age — a different fact from each domain
+           card's per-hub git-sync freshness below (that's the real signal
+           for "is this hub's picture current"; this is just "did the
+           browser last ask recently"). Both are real, neither substitutes
+           for the other. -->
       <span class="ov-refresh" data-testid="ov-updated">
         {#if loading && !attention}
           loading…
         {:else if updatedAgo}
-          dashboard refreshed {updatedAgo} ago
+          dashboard polled {updatedAgo} ago
         {/if}
       </span>
     </div>
@@ -171,10 +239,20 @@
   {:else if attention}
     <div class="ov-map" data-testid="ov-map">
       {#each attention.domains as domain (domain.hub)}
-        <section class="ov-domain" aria-label={`hub ${domain.label}`} data-testid="ov-domain">
+        <section
+          class="ov-domain ov-domain-{tierFrame(domain.tier)}"
+          aria-label={`hub ${domain.label} — ${tierLabel(domain.tier)}`}
+          data-testid="ov-domain"
+        >
           <div class="ov-dhead">
-            <button type="button" class="ov-dname" onclick={() => onDrillHub?.(domain.hub)}>{domain.label}</button>
-            <span class="ov-dmeta">{domain.agents.length} agent{domain.agents.length === 1 ? '' : 's'}</span>
+            <div class="ov-dtitle">
+              <span class="ov-tier ov-tier-{tierFrame(domain.tier)}" data-testid="ov-tier">{tierLabel(domain.tier)}</span>
+              <button type="button" class="ov-dname" onclick={() => onDrillHub?.(domain.hub)}>{domain.label}</button>
+              <span class="ov-dmeta">{domain.agents.length} agent{domain.agents.length === 1 ? '' : 's'}</span>
+            </div>
+            <span class="ov-dsync" class:ov-dsync-warn={syncState(domain.sync).warn} data-testid="ov-dsync">
+              <span class="ov-dsync-pip"></span>{syncState(domain.sync).text}
+            </span>
           </div>
           {#if domain.agents.length === 0}
             <div class="ov-dclear">no agents seen yet</div>
@@ -344,6 +422,18 @@
     background: var(--panel);
     border: 1.5px solid var(--border-2);
   }
+  /* Trust-domain framing (design/48, real `Hub.tier`) — own/shared reads as
+     YOUR fleet (solid home frame + faint glow); foreign reads as someone
+     else's hub (dashed frame); unclassified stays visually neutral — see
+     tierFrame()'s doc comment for why "unknown" isn't folded into "home". */
+  .ov-domain-home {
+    border: 1.5px solid var(--home-frame);
+    box-shadow: inset 0 0 0 40px var(--home-glow);
+  }
+  .ov-domain-foreign {
+    border: 1.5px dashed var(--foreign-frame);
+    box-shadow: inset 0 0 0 40px var(--foreign-glow);
+  }
   .ov-dhead {
     display: flex;
     align-items: baseline;
@@ -351,6 +441,51 @@
     gap: 10px;
     margin-bottom: 12px;
     flex-wrap: wrap;
+  }
+  .ov-dtitle {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-wrap: wrap;
+  }
+  .ov-tier {
+    font: 700 9.5px/1 var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 5px;
+    border: 1px solid var(--border-2);
+    color: var(--faint);
+  }
+  .ov-tier-home {
+    color: var(--home-frame);
+    background: color-mix(in srgb, var(--home-frame) 14%, transparent);
+    border-color: color-mix(in srgb, var(--home-frame) 40%, transparent);
+  }
+  .ov-tier-foreign {
+    color: var(--foreign-frame);
+    background: color-mix(in srgb, var(--foreign-frame) 14%, transparent);
+    border-color: color-mix(in srgb, var(--foreign-frame) 40%, transparent);
+  }
+  .ov-dsync {
+    font-size: 10.5px;
+    color: var(--faint);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ov-dsync-pip {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--done);
+    flex: 0 0 auto;
+  }
+  .ov-dsync-warn {
+    color: var(--blocked);
+  }
+  .ov-dsync-warn .ov-dsync-pip {
+    background: var(--blocked);
   }
   .ov-dname {
     font-family: var(--mono);
