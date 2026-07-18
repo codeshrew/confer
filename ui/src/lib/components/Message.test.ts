@@ -150,15 +150,19 @@ describe('Message', () => {
       const user = userEvent.setup();
       const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
 
-      const chevron = container.querySelector('.expand-chevron') as HTMLButtonElement;
+      const chevron = container.querySelector('.expand-toggle') as HTMLButtonElement;
       expect(chevron).toBeInTheDocument();
+      // A readable label, not a bare unlabeled glyph.
+      expect(chevron.textContent).toContain('Show more');
 
       await user.click(chevron);
       expect(container.querySelector('.text-wrap')).toBeInTheDocument();
       expect(container.querySelector('.mention')?.textContent).toBe('@all');
+      expect(chevron.textContent).toContain('Show less');
 
       await user.click(chevron);
       expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
+      expect(chevron.textContent).toContain('Show more');
     });
 
     it('clicking anywhere on the summary line (not just the chevron) also expands the body', async () => {
@@ -173,7 +177,7 @@ describe('Message', () => {
       const user = userEvent.setup();
       const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
 
-      const chevron = container.querySelector('.expand-chevron') as HTMLButtonElement;
+      const chevron = container.querySelector('.expand-toggle') as HTMLButtonElement;
       await user.click(chevron);
 
       // A double-toggle (chevron handler + bubbled summary-line handler both
@@ -189,7 +193,7 @@ describe('Message', () => {
       const { container: c1 } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
       const { container: c2 } = render(Message, { message: other, fromAgent: herald, seenEntries: [], density: 'summary' });
 
-      await user.click(c1.querySelector('.expand-chevron') as HTMLButtonElement);
+      await user.click(c1.querySelector('.expand-toggle') as HTMLButtonElement);
 
       expect(c1.querySelector('.text-wrap')).toBeInTheDocument();
       expect(c2.querySelector('.text-wrap')).not.toBeInTheDocument();
@@ -198,7 +202,7 @@ describe('Message', () => {
     it('in full density, no chevron is shown and the body is always visible', () => {
       const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'full' });
 
-      expect(container.querySelector('.expand-chevron')).not.toBeInTheDocument();
+      expect(container.querySelector('.expand-toggle')).not.toBeInTheDocument();
       expect(container.querySelector('.text-wrap')).toBeInTheDocument();
     });
   });

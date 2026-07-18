@@ -47,7 +47,14 @@ function mentionPlugin(md: MarkdownIt): void {
 const md: MarkdownIt = new MarkdownIt({
   html: false, // raw HTML in message source is escaped, never parsed as markup
   linkify: true,
-  breaks: false,
+  // Agent-authored notes are typically written with SINGLE `\n` line breaks,
+  // not blank-line-separated paragraphs (they're closer to plain-text memos
+  // than authored Markdown). markdown-it's default (`breaks: false`)
+  // collapses a single newline into a plain space, so a structured note
+  // renders as one run-on block. `breaks: true` turns a single `\n` into a
+  // real `<br>` while a blank line still starts a new `<p>` — both intended
+  // structures survive.
+  breaks: true,
 });
 md.use(mentionPlugin);
 

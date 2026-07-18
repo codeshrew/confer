@@ -203,7 +203,7 @@ describe('MetaThread', () => {
 
       expect(screen.getByText('Short summary')).toBeInTheDocument();
       expect(container.querySelector('.gbody')).not.toBeInTheDocument();
-      expect(container.querySelector('.node-expand-chevron')).toBeInTheDocument();
+      expect(container.querySelector('.node-expand-toggle')).toBeInTheDocument();
     });
 
     it('expands to the full sanitized/rendered body on chevron click, and collapses again on a second click', async () => {
@@ -212,7 +212,7 @@ describe('MetaThread', () => {
       const messages = [message('m1', 'reader', 'reader', 'Short summary', '**Full** rendered body text.')];
       const { container } = render(MetaThread, { thread, agents: [reader], messages });
 
-      const chevron = container.querySelector('.node-expand-chevron') as HTMLButtonElement;
+      const chevron = container.querySelector('.node-expand-toggle') as HTMLButtonElement;
       await user.click(chevron);
 
       const body = container.querySelector('.gbody');
@@ -230,7 +230,7 @@ describe('MetaThread', () => {
       const onSelectNode = vi.fn();
       const { container } = render(MetaThread, { thread, agents: [reader], messages, onSelectNode });
 
-      const chevron = container.querySelector('.node-expand-chevron') as HTMLButtonElement;
+      const chevron = container.querySelector('.node-expand-toggle') as HTMLButtonElement;
       await user.click(chevron);
 
       expect(onSelectNode).not.toHaveBeenCalled();
@@ -243,7 +243,7 @@ describe('MetaThread', () => {
       const { container } = render(MetaThread, { thread, agents: [reader], messages: [] });
 
       expect(screen.getByText('Only a summary — body not loaded')).toBeInTheDocument();
-      expect(container.querySelector('.node-expand-chevron')).not.toBeInTheDocument();
+      expect(container.querySelector('.node-expand-toggle')).not.toBeInTheDocument();
       expect(container.querySelector('.gbody')).not.toBeInTheDocument();
     });
 

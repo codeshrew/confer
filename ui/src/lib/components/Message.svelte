@@ -143,10 +143,11 @@
                 : undefined
             }
           >
+            <span class="lead">{message.summary}</span>
             {#if density === 'summary'}
               <button
                 type="button"
-                class="expand-chevron"
+                class="expand-toggle"
                 class:open={showBody}
                 aria-expanded={showBody}
                 aria-label={showBody ? 'Collapse message' : 'Expand message'}
@@ -155,10 +156,12 @@
                   expanded = !expanded;
                 }}
               >
-                ▸
+                <span>{showBody ? 'Show less' : 'Show more'}</span>
+                <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                  <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
               </button>
             {/if}
-            <span>{message.summary}</span>
           </div>
         {/if}
         {#if showBody}
@@ -171,13 +174,19 @@
           {#if isLong}
             <button
               type="button"
-              class="show-more"
+              class="expand-toggle block"
+              class:open={expanded}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse message' : 'Expand message'}
               onclick={(e) => {
                 e.stopPropagation();
                 expanded = !expanded;
               }}
             >
-              {expanded ? '▴ Show less' : '▾ Show more'}
+              <span>{expanded ? 'Show less' : 'Show more'}</span>
+              <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
             </button>
           {/if}
         {/if}
@@ -290,46 +299,66 @@
   .summary-line {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-size: 13px;
-    font-weight: 650;
     color: var(--text);
-    margin-bottom: 3px;
+    margin-bottom: 4px;
+  }
+  .summary-line .lead {
+    /* The one-line summary is the "lead" — a distinct, semibold hook.
+       Everything below it (the expanded body) reads as normal-weight prose;
+       see `.prose.md`'s own font-weight rule. Keeping the weight jump only
+       on this one line is what makes summary vs. body read as two tiers
+       instead of one undifferentiated bold wall. */
+    font-weight: 650;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .summary-line.clickable {
     cursor: pointer;
   }
-  /* A real, obvious tap target — not just a bare 10px glyph. ≥24×24px
-     (accessibility + phone) via padding, with a hover/focus background so it
-     reads as interactive at a glance, not just on close inspection. */
-  .expand-chevron {
+  /* The expand/collapse control — a real, unmistakably-interactive pill with
+     a text label ("Show more"/"Show less") plus a chevron, not a bare
+     unlabeled glyph. Shared look for the inline (summary-line) and block
+     (below a clamped full-density body) placements; `.block` only changes
+     layout, not the pill's own visual language, so the same affordance shows
+     up consistently everywhere a note can be expanded (chat, metathread). */
+  .expand-toggle {
     flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    margin: -3px 0;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    padding: 0;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    transform: rotate(0deg);
-    transition:
-      transform 0.12s ease,
-      background 0.12s ease,
-      color 0.12s ease;
-  }
-  .expand-chevron.open {
-    transform: rotate(90deg);
-  }
-  .expand-chevron:hover,
-  .expand-chevron:focus-visible {
-    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
     background: var(--panel-2);
+    padding: 3px 9px 3px 10px;
+    color: var(--muted);
+    font: 600 11px/1.2 var(--mono);
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .expand-toggle .chev {
+    transform: rotate(0deg);
+    transition: transform 0.15s ease;
+  }
+  .expand-toggle.open .chev {
+    transform: rotate(180deg);
+  }
+  .expand-toggle:hover,
+  .expand-toggle:focus-visible {
+    color: var(--text);
+    background: var(--panel-3);
+    border-color: var(--accent);
+  }
+  .expand-toggle.block {
+    margin: 6px 0 0;
   }
   .text {
     font-size: 13.5px;
@@ -350,22 +379,6 @@
     height: 56px;
     background: linear-gradient(to bottom, transparent, var(--bg) 88%);
     pointer-events: none;
-  }
-  .show-more {
-    margin-top: 4px;
-    margin-left: -6px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--accent);
-    font: 600 11.5px/1 var(--mono);
-    padding: 6px;
-    cursor: pointer;
-  }
-  .show-more:hover,
-  .show-more:focus-visible {
-    background: var(--panel-2);
-    text-decoration: underline;
   }
   /* Mention/inline-code look, and the rest of the `.prose`/`.md` markdown
      typography (headings, lists, pre/code, blockquotes, links, tables), are

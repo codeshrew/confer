@@ -186,9 +186,17 @@ button {
    in their own container instead of the page. */
 .prose.md {
   font-size: 13.5px;
+  /* Normal-weight body prose — NOT the summary line's semibold lead. This is
+     the single most load-bearing rule in this block: without an explicit
+     weight here, a note that's heavy on `**bold**` sub-headers (a common
+     agent-memo style) reads as "shouting" once every line runs together. */
+  font-weight: 400;
   line-height: 1.6;
   color: var(--text);
   overflow-wrap: anywhere;
+  /* Comfortable reading measure — only bites when the surrounding column is
+     wider than this, so it never fights the panel/rail layout widths. */
+  max-width: 72ch;
 }
 .prose.md > :first-child {
   margin-top: 0;
@@ -196,8 +204,13 @@ button {
 .prose.md > :last-child {
   margin-bottom: 0;
 }
+.prose.md br {
+  content: '';
+  display: block;
+  margin-top: 0.45em;
+}
 .prose.md p {
-  margin: 0 0 0.6em;
+  margin: 0 0 0.7em;
 }
 .prose.md h1,
 .prose.md h2,

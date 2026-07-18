@@ -61,6 +61,17 @@ describe('renderMarkdown', () => {
     expect(html).toContain('fn main() {}');
   });
 
+  it('turns a single newline into a real line break (agent notes are typically single-\\n structured, not blank-line paragraphs)', () => {
+    const html = renderMarkdown('First point.\nSecond point.\nThird point.');
+    expect(html).toContain('First point.<br>\nSecond point.<br>\nThird point.');
+  });
+
+  it('still starts a new paragraph on a blank line, distinct from a single-newline break', () => {
+    const html = renderMarkdown('Paragraph one.\n\nParagraph two.');
+    expect(html).toContain('<p>Paragraph one.</p>');
+    expect(html).toContain('<p>Paragraph two.</p>');
+  });
+
   it('renders inline code with the .mono class, matching the prior plain-text rendering', () => {
     const html = renderMarkdown('run `confer serve --port 8422` now');
     expect(html).toContain('<code class="mono">confer serve --port 8422</code>');

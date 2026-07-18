@@ -177,12 +177,11 @@
           <span class="gtp" class:cross={row.hop !== null}>#{topicOf(row.node)}</span>
         </div>
         <div class="gtx-row">
+          <div class="gtx">{row.node.summary}</div>
           {#if renderedBody}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <button
               type="button"
-              class="node-expand-chevron"
+              class="node-expand-toggle"
               class:open={expanded}
               aria-expanded={expanded}
               aria-label={expanded ? 'Collapse message' : 'Expand message'}
@@ -191,10 +190,12 @@
                 toggleExpanded(row.node.msgId);
               }}
             >
-              ▸
+              <span>{expanded ? 'Show less' : 'Show more'}</span>
+              <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
             </button>
           {/if}
-          <div class="gtx">{row.node.summary}</div>
         </div>
         {#if renderedBody && expanded}
           <div class="gbody prose md" use:highlightBody>
@@ -352,50 +353,60 @@
   .gcard :global(.gtx-row) {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
   }
   .gcard :global(.gtx) {
+    min-width: 0;
+    flex: 1 1 auto;
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.45;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  /* Same real, obvious tap-target treatment as Message.svelte's own
-     `.expand-chevron` — ≥24×24px with a hover/focus background, not a bare
-     unstyled glyph. */
-  .gcard :global(.node-expand-chevron) {
+  /* Same unified expand/collapse pill as Message.svelte's `.expand-toggle` —
+     a text label ("Show more"/"Show less") plus a chevron that flips, not a
+     bare unlabeled glyph. Duplicated (not shared via app.css) because this
+     is real component markup, not `{@html}` content — but it's the same
+     visual language everywhere a note/node can be expanded. */
+  .gcard :global(.node-expand-toggle) {
     flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    margin: -3px 0;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    padding: 0;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    transform: rotate(0deg);
-    transition:
-      transform 0.12s ease,
-      background 0.12s ease,
-      color 0.12s ease;
-  }
-  .gcard :global(.node-expand-chevron.open) {
-    transform: rotate(90deg);
-  }
-  .gcard :global(.node-expand-chevron:hover),
-  .gcard :global(.node-expand-chevron:focus-visible) {
-    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
     background: var(--panel-2);
+    padding: 3px 9px 3px 10px;
+    color: var(--muted);
+    font: 600 11px/1.2 var(--mono);
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .gcard :global(.node-expand-toggle .chev) {
+    transform: rotate(0deg);
+    transition: transform 0.15s ease;
+  }
+  .gcard :global(.node-expand-toggle.open .chev) {
+    transform: rotate(180deg);
+  }
+  .gcard :global(.node-expand-toggle:hover),
+  .gcard :global(.node-expand-toggle:focus-visible) {
+    color: var(--text);
+    background: var(--panel-3);
+    border-color: var(--accent);
   }
   .gcard :global(.gbody) {
-    margin: 6px 0 0;
+    margin: 8px 0 0;
     font-size: 12.5px;
     color: var(--text);
-    line-height: 1.5;
+    line-height: 1.55;
+    font-weight: 400;
   }
   .gcard :global(.gid) {
     font: 500 10px/1 var(--mono);
