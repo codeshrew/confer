@@ -15,6 +15,7 @@ import type {
   Message,
   Overview,
   RefHit,
+  Repo,
   RequestRow,
   ServerEvent,
   Snippet,
@@ -26,6 +27,56 @@ export const mockHubs: Hub[] = [
   { id: 'agent-coord', label: 'agent-coord', name: 'agent-coord', current: true, agentCount: 6 },
   { id: 'confer-lab', label: 'confer-lab', name: 'confer-lab', current: false, agentCount: 2 },
   { id: 'jarvis-orbit', label: 'jarvis-orbit', name: 'jarvis-orbit', current: false, agentCount: 1 },
+];
+
+// Mirrors the real fleet's hub `repos/*.md` inventory: three repos cloned
+// on this machine (git-conversations/book-business/agent-coord), one not
+// (wealdlore — access-restricted to reader/gitconv, no local clone mapped).
+export const mockRepos: Repo[] = [
+  {
+    slug: 'agent-coord',
+    role: 'hub',
+    url: 'git@github.com:codeshrew/agent-coord.git',
+    access: [],
+    docs: 'shared/',
+    owner: 'sk',
+    cloned: true,
+    clonePath: '/Users/sk/git/agent-coord-studio-markup',
+    rootSha: null,
+  },
+  {
+    slug: 'book-business',
+    role: 'code',
+    url: 'https://github.com/codeshrew/book-business.git',
+    access: [],
+    docs: 'docs/',
+    owner: 'sk',
+    cloned: true,
+    clonePath: '/Users/sk/git/book-business',
+    rootSha: null,
+  },
+  {
+    slug: 'git-conversations',
+    role: 'tooling',
+    url: 'git@github.com:codeshrew/git-conversations.git',
+    access: [],
+    docs: 'design/',
+    owner: 'sk',
+    cloned: true,
+    clonePath: '/Users/sk/git/git-conversations',
+    rootSha: null,
+  },
+  {
+    slug: 'wealdlore',
+    role: 'code',
+    url: 'git@github.com:codeshrew/wealdlore.git',
+    access: ['reader', 'gitconv'],
+    docs: 'docs/',
+    owner: 'sk',
+    cloned: false,
+    clonePath: null,
+    rootSha: null,
+  },
 ];
 
 export const mockTopics: Topic[] = [
@@ -481,6 +532,9 @@ export const mockApi = {
   },
   async getCode(_hub: string, _repo: string, _path: string, _sha: string, _range?: string): Promise<Snippet> {
     return delay(mockSnippet);
+  },
+  async getRepos(_hub: string): Promise<Repo[]> {
+    return delay(mockRepos);
   },
   subscribeEvents(
     _hub: string,

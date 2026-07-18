@@ -8,6 +8,7 @@
   import Board from './lib/components/Board.svelte';
   import Fleet from './lib/components/Fleet.svelte';
   import CodeLens from './lib/components/CodeLens.svelte';
+  import Repos from './lib/components/Repos.svelte';
   import MetaThread from './lib/components/MetaThread.svelte';
   import RequestDetail from './lib/components/RequestDetail.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
@@ -43,6 +44,7 @@
   let boardMounted = $state(false);
   let fleetMounted = $state(false);
   let codeMounted = $state(false);
+  let reposMounted = $state(false);
 
   $effect(() => {
     switch (appState.view) {
@@ -57,6 +59,9 @@
         break;
       case 'code':
         codeMounted = true;
+        break;
+      case 'repos':
+        reposMounted = true;
         break;
     }
   });
@@ -300,8 +305,10 @@
           <span class="c strong">Board</span>
         {:else if appState.view === 'fleet'}
           <span class="c strong">Fleet</span>
-        {:else}
+        {:else if appState.view === 'code'}
           <span class="c strong">Code</span>
+        {:else}
+          <span class="c strong">Repos</span>
         {/if}
         <button
           type="button"
@@ -351,6 +358,11 @@
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
           <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} />
+        {/if}
+      </div>
+      <div class="view-pane" class:active={appState.view === 'repos'}>
+        {#if reposMounted}
+          <Repos hub={appState.hub} />
         {/if}
       </div>
     </div>
@@ -531,11 +543,11 @@
     min-width: 0;
     background: var(--bg);
   }
-  /* One wrapper per Chat/Board/Fleet/Code pane. Only the active view's
+  /* One wrapper per Chat/Board/Fleet/Code/Repos pane. Only the active view's
      wrapper participates in layout (display:flex, matching what `.center`'s
      direct child used to be); the rest are `display:none` — kept mounted
-     (see chatMounted/boardMounted/fleetMounted/codeMounted above) but out
-     of the flow entirely, not just visually hidden, so they can't be
+     (see chatMounted/boardMounted/fleetMounted/codeMounted/reposMounted
+     above) but out of the flow entirely, not just visually hidden, so they can't be
      tabbed/clicked into and don't affect layout. */
   .view-pane {
     display: none;

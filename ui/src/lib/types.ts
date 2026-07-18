@@ -126,6 +126,18 @@ export interface Overview {
   fleet: Agent[];
 }
 
+export interface Repo {
+  slug: string;
+  role: string;
+  url: string | null;
+  access: string[];
+  docs: string | null;
+  owner: string | null;
+  cloned: boolean;
+  clonePath: string | null;
+  rootSha: string | null;
+}
+
 export type ServerEvent =
   | { event: 'message'; hub: string; topic: string | null }
   | { event: 'presence'; hub: string }

@@ -38,12 +38,13 @@
     loading: 'loading…',
   };
 
-  const views: View[] = ['chat', 'board', 'fleet', 'code'];
+  const views: View[] = ['chat', 'board', 'fleet', 'code', 'repos'];
   const viewLabel: Record<View, string> = {
     chat: 'Chat',
     board: 'Board',
     fleet: 'Fleet',
     code: 'Code',
+    repos: 'Repos',
   };
 </script>
 

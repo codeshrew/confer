@@ -17,7 +17,7 @@
 // (`VITE_LIVE=1 npm run dev`). `?mock` always wins over `?live` if both are
 // somehow present, and always wins outside dev too.
 
-import type { Hub, Message, Overview, RefHit, ServerEvent, Snippet, ThreadNode } from './types';
+import type { Hub, Message, Overview, RefHit, Repo, ServerEvent, Snippet, ThreadNode } from './types';
 import { mockApi } from './mock';
 
 const BASE_URL = '';
@@ -47,6 +47,7 @@ export interface ConferApi {
   getThread(hub: string, id: string): Promise<ThreadNode[]>;
   getRefs(hub: string, target: string, allHubs?: boolean): Promise<RefHit[]>;
   getCode(hub: string, repo: string, path: string, sha: string, range?: string): Promise<Snippet>;
+  getRepos(hub: string): Promise<Repo[]>;
   /**
    * Opens a live-update channel scoped to `hub`. `onEvent` gets each parsed
    * `message`/`presence`/`ping` event; `onStatus` reports the connection's
@@ -87,6 +88,11 @@ const httpApi: ConferApi = {
     const qs = new URLSearchParams({ hub, repo, path, sha });
     if (range) qs.set('range', range);
     return getJson<Snippet>(`/api/code?${qs}`);
+  },
+
+  async getRepos(hub) {
+    const qs = new URLSearchParams({ hub });
+    return getJson<Repo[]>(`/api/repos?${qs}`);
   },
 
   subscribeEvents(hub, onEvent, onStatus) {

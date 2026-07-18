@@ -53,7 +53,7 @@ export type HubDataCache = ReturnType<typeof createHubDataCache>;
 
 export const hubDataCache: HubDataCache = createHubDataCache();
 
-export type View = 'chat' | 'board' | 'fleet' | 'code';
+export type View = 'chat' | 'board' | 'fleet' | 'code' | 'repos';
 export type Theme = 'dark' | 'light';
 
 // Which off-canvas drawer is open on tablet/phone widths (≤1023px). Only one
