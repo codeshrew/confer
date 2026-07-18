@@ -6,6 +6,7 @@
   import type { RefHit } from '../types';
   import { formatAge } from '../format';
   import EmptyState from './EmptyState.svelte';
+  import Icon from './Icon.svelte';
 
   interface Props {
     hits: RefHit[];
@@ -15,9 +16,13 @@
     range?: [number, number] | null;
     loading?: boolean;
     onSelectHit?: (hit: RefHit) => void;
+    /** Fired when the "↩ whole file" chip is clicked — only rendered when
+     * `range` narrows this panel to a specific line range (a hot-line click
+     * in CodeLens). Returns the panel to the file's full hit list. */
+    onWholeFile?: () => void;
   }
 
-  let { hits, repo = null, path = null, range = null, loading = false, onSelectHit }: Props = $props();
+  let { hits, repo = null, path = null, range = null, loading = false, onSelectHit, onWholeFile }: Props = $props();
 
   const hubCount = $derived(new Set(hits.map((h) => h.hub)).size);
   const rangeLabel = $derived(range ? ` L${range[0]}–${range[1]}` : '');
@@ -38,6 +43,13 @@
       {repo} · <span class="tp">{path.split('/').pop()}</span>{rangeLabel} · {hits.length} ref{hits.length === 1 ? '' : 's'} · {hubCount}
       hub{hubCount === 1 ? '' : 's'}
     </div>
+  {/if}
+
+  {#if range}
+    <button type="button" class="whole-file-chip" onclick={() => onWholeFile?.()}>
+      <Icon name="corner-down-left" size={12} />
+      <span>whole file</span>
+    </button>
   {/if}
 
   {#if loading}
@@ -88,6 +100,22 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     padding: 2px 6px;
     border-radius: 5px;
+  }
+  .whole-file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    font: 600 11px/1 var(--mono);
+    padding: 5px 10px;
+    border-radius: 999px;
+    margin-bottom: 14px;
+  }
+  .whole-file-chip:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
   .cvitem {
     display: block;

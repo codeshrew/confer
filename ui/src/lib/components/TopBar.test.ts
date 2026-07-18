@@ -61,6 +61,12 @@ describe('TopBar', () => {
     expect(openBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('hides the hamburger entirely when showMenu is false (Repos view: no left rail to open)', () => {
+    render(TopBar, { hubs, currentHub: 'agent-coord', currentView: 'repos', showMenu: false });
+
+    expect(screen.queryByTestId('hamburger')).not.toBeInTheDocument();
+  });
+
   it('calls onThemeToggle and reflects the flipped data-theme on <html>', async () => {
     const user = userEvent.setup();
     document.documentElement.setAttribute('data-theme', 'dark');

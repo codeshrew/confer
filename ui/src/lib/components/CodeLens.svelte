@@ -16,6 +16,8 @@
   import { highlightSnippetLines, resolveLang, type HighlightedLine } from '../highlight';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
+  import FileIcon from './FileIcon.svelte';
+  import Icon from './Icon.svelte';
 
   interface Props {
     hub: string;
@@ -26,9 +28,13 @@
      * Distinct from `onOpenRefs` (a deliberate click) so it never yanks open the
      * mobile details drawer just because a file was selected. */
     onFileRefs?: (ctx: { repo: string; path: string }, hits: RefHit[]) => void;
+    /** Fired whenever "is there an active file at all" changes — App.svelte's
+     * per-view right-rail visibility (design/43 Thread 1) needs this: the Code
+     * view's rail is open whenever a file is active, hidden on a zero-files hub. */
+    onActiveFileChange?: (hasActive: boolean) => void;
   }
 
-  let { hub, onOpenRefs, onFileRefs }: Props = $props();
+  let { hub, onOpenRefs, onFileRefs, onActiveFileChange }: Props = $props();
 
   function fileKey(f: { repo: string; path: string }): string {
     return `${f.repo} ${f.path}`;
@@ -102,6 +108,34 @@
     }
     return [...byRepo.entries()].map(([repo, files]) => ({ repo, files }));
   });
+
+  // design/43 quick win: the `mod.rs` / `index.ts` problem. Basenames repeat
+  // across repos (and sometimes within one, across directories) in a flat
+  // list — count occurrences across ALL visible rows so a colliding pair
+  // anywhere gets a distinguishing parent-dir suffix, not just within a
+  // single repo group.
+  const basenameCounts = $derived.by((): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const f of codeFiles) {
+      const b = basename(f.path);
+      counts.set(b, (counts.get(b) ?? 0) + 1);
+    }
+    return counts;
+  });
+
+  /** The immediate parent directory, `like/this/` — null when the file sits
+   * at its repo's root (nothing to disambiguate with). */
+  function parentDir(path: string): string | null {
+    const parts = path.split('/');
+    parts.pop();
+    const dir = parts.pop();
+    return dir ? `${dir}/` : null;
+  }
+
+  function disambiguator(f: CodeFile): string | null {
+    if ((basenameCounts.get(basename(f.path)) ?? 0) <= 1) return null;
+    return parentDir(f.path);
+  }
 
   async function loadFiles() {
     filesLoading = true;
@@ -177,6 +211,10 @@
     void loadFile();
   });
 
+  $effect(() => {
+    onActiveFileChange?.(activeKey !== null);
+  });
+
   function highlightedFor(n: number): HighlightedLine | undefined {
     return highlighted.find((h) => h.n === n);
   }
@@ -224,16 +262,20 @@
     <div class="codepage">
       <div class="filetree">
         {#each groups as group (group.repo)}
-          <div class="ft-group">{group.repo}</div>
+          <div class="ft-group"><Icon name="folder" size={12} />{group.repo}</div>
           {#each group.files as f (fileKey(f))}
+            {@const dis = disambiguator(f)}
             <button
               type="button"
               class="ftitem"
               class:active={fileKey(f) === activeKey}
+              class:dim={!f.mapped}
+              title={f.mapped ? undefined : 'unmapped — no local clone to read this file from'}
               onclick={() => (activeKey = fileKey(f))}
             >
-              <span class="fdot" style="background:{f.mapped ? 'var(--done)' : 'var(--faint)'}"></span>
-              {basename(f.path)}
+              <FileIcon path={f.path} size={14} />
+              <span class="ftname">{basename(f.path)}</span>
+              {#if dis}<span class="ftdis">· {dis}</span>{/if}
             </button>
           {/each}
         {/each}
@@ -343,6 +385,9 @@
     background: var(--panel);
   }
   .ft-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font: 700 9px/1 var(--mono);
     text-transform: uppercase;
     letter-spacing: 0.07em;
@@ -371,11 +416,25 @@
     color: var(--text);
     font-weight: 600;
   }
-  .ftitem .fdot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
+  /* Unmapped (no local clone to read from) — dim the WHOLE row (icon
+     included), not just a color-coded dot. Color-only state fails both
+     scanning and accessibility; a `title` tooltip on the row carries the
+     "unmapped" fact for anyone who wants it spelled out. */
+  .ftitem.dim {
+    opacity: 0.45;
+  }
+  .ftname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Basename-collision disambiguator (`mod.rs · fleet/`) — the parent dir,
+     dim-styled, appended only for rows whose basename isn't unique among
+     the currently-visible files. */
+  .ftdis {
     flex: 0 0 auto;
+    color: var(--faint);
+    font-size: 11px;
   }
   .densitywrap {
     flex: 1;

@@ -12,6 +12,10 @@
     theme?: 'dark' | 'light';
     /** Whether the off-canvas left-rail drawer is currently open (tablet/phone only). */
     menuOpen?: boolean;
+    /** design/43: Repos has no left rail at all (full-width card grid) — the
+     * hamburger that would open it is hidden entirely, not just a no-op.
+     * Every other view keeps it (default true). */
+    showMenu?: boolean;
     onHubChange?: (hubId: string) => void;
     onViewChange?: (view: View) => void;
     onThemeToggle?: () => void;
@@ -26,6 +30,7 @@
     connStatus = 'live',
     theme = 'dark',
     menuOpen = false,
+    showMenu = true,
     onHubChange,
     onViewChange,
     onThemeToggle,
@@ -49,19 +54,21 @@
 </script>
 
 <div class="topbar">
-  <button
-    type="button"
-    class="hamburger"
-    class:open={menuOpen}
-    aria-label={menuOpen ? 'Close menu' : 'Open menu'}
-    aria-expanded={menuOpen}
-    onclick={() => onMenuToggle?.()}
-    data-testid="hamburger"
-  >
-    <span></span>
-    <span></span>
-    <span></span>
-  </button>
+  {#if showMenu}
+    <button
+      type="button"
+      class="hamburger"
+      class:open={menuOpen}
+      aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+      aria-expanded={menuOpen}
+      onclick={() => onMenuToggle?.()}
+      data-testid="hamburger"
+    >
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+  {/if}
 
   <div class="brand">
     <span class="glyph">c</span>

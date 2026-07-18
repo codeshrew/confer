@@ -9,9 +9,13 @@
     agents: Agent[];
     onTopicSelect?: (slug: string) => void;
     now?: number;
+    /** design/43: the Fleet view drops this section — its center pane IS the
+     * roster, 20px away, so duplicating it in the rail is pure cost. Every
+     * other view keeps it (default true). */
+    showFleet?: boolean;
   }
 
-  let { hubName, topics, currentTopic, agents, onTopicSelect, now = Date.now() }: Props = $props();
+  let { hubName, topics, currentTopic, agents, onTopicSelect, now = Date.now(), showFleet = true }: Props = $props();
 
   function stateClass(topic: Topic): string {
     if (topic.stale) return 'st-stale';
@@ -59,22 +63,24 @@
       </button>
     {/each}
 
-    <div class="rail-sep"></div>
-    <div class="rail-head"><h3>Fleet · you + {agents.length}</h3></div>
-    <div class="fleet">
-      <div class="agent viewer">
-        <span class="av veye">◉</span>
-        <span class="nm">You</span>
-        <span class="hb vw">viewing</span>
-      </div>
-      {#each agents as agent (agent.id)}
-        <div class="agent" class:stale={isStaleAge(agent.lastTs, now)}>
-          <span class="av" style="color:{agent.color};background:color-mix(in srgb, {agent.color} 18%, transparent)">{agent.abbr}</span>
-          <span class="nm">{agent.display}</span>
-          <span class="hb">{formatAge(agent.lastTs, now)}</span>
+    {#if showFleet}
+      <div class="rail-sep"></div>
+      <div class="rail-head"><h3>Fleet · you + {agents.length}</h3></div>
+      <div class="fleet">
+        <div class="agent viewer">
+          <span class="av veye">◉</span>
+          <span class="nm">You</span>
+          <span class="hb vw">viewing</span>
         </div>
-      {/each}
-    </div>
+        {#each agents as agent (agent.id)}
+          <div class="agent" class:stale={isStaleAge(agent.lastTs, now)}>
+            <span class="av" style="color:{agent.color};background:color-mix(in srgb, {agent.color} 18%, transparent)">{agent.abbr}</span>
+            <span class="nm">{agent.display}</span>
+            <span class="hb">{formatAge(agent.lastTs, now)}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>
 

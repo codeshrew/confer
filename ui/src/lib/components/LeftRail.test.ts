@@ -56,4 +56,19 @@ describe('LeftRail', () => {
     expect(onTopicSelect).toHaveBeenCalledWith('plate-pipeline');
     expect(appState.topic).toBe('plate-pipeline');
   });
+
+  it('drops the fleet roster section when showFleet is false (Fleet view — the center already is the roster)', () => {
+    render(LeftRail, { hubName: 'agent-coord', topics, currentTopic: 'reader', agents, showFleet: false });
+
+    expect(screen.queryByText('Herald')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Fleet · you/)).not.toBeInTheDocument();
+    // Topics stay — only the fleet section is dropped.
+    expect(screen.getByText('reader')).toBeInTheDocument();
+  });
+
+  it('shows the fleet roster section by default', () => {
+    render(LeftRail, { hubName: 'agent-coord', topics, currentTopic: 'reader', agents });
+
+    expect(screen.getByText('Herald')).toBeInTheDocument();
+  });
 });

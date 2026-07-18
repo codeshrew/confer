@@ -77,4 +77,18 @@ describe('ReverseIndexPanel', () => {
 
     expect(onSelectHit).toHaveBeenCalledWith(hits[0]);
   });
+
+  it('shows the "whole file" chip only when narrowed to a line range, and fires onWholeFile', async () => {
+    const user = userEvent.setup();
+    const onWholeFile = vi.fn();
+    const { rerender } = render(ReverseIndexPanel, { hits, range: [44, 49], onWholeFile });
+
+    const chip = screen.getByRole('button', { name: /whole file/ });
+    expect(chip).toBeInTheDocument();
+    await user.click(chip);
+    expect(onWholeFile).toHaveBeenCalledOnce();
+
+    await rerender({ hits, range: null, onWholeFile });
+    expect(screen.queryByRole('button', { name: /whole file/ })).not.toBeInTheDocument();
+  });
 });

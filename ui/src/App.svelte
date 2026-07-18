@@ -12,9 +12,17 @@
   import MetaThread from './lib/components/MetaThread.svelte';
   import RequestDetail from './lib/components/RequestDetail.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
+  import EmptyState from './lib/components/EmptyState.svelte';
   import { api } from './lib/api';
   import { appState, chatWindowCache, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
+  import {
+    defaultContextMode,
+    leftRailVisible,
+    rightRailToggleVisible,
+    rightRailVisible as computeRightRailVisible,
+    showFleetSection,
+  } from './lib/railLayout';
   import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
 
   let hubs = $state<Hub[]>([]);
@@ -155,6 +163,38 @@
   let contextMode = $state<ContextMode>('meta');
   let refHits = $state<RefHit[]>([]);
   let refContext = $state<{ repo: string; path: string; range: [number, number] | null } | null>(null);
+  // The active Code file's FULL (whole-file, range:null-included) hit list —
+  // kept separate from refHits/refContext above because a hot-line click
+  // narrows those to a single range. The "↩ whole file" chip (design/43
+  // quick win) needs somewhere to return TO that isn't itself overwritten by
+  // the narrowing click.
+  let fileLevelRefs = $state<{ ctx: { repo: string; path: string }; hits: RefHit[] } | null>(null);
+
+  // design/43 Thread 1 — Code view's right rail is open whenever a file is
+  // active (there's always one on a non-empty hub); CodeLens reports this
+  // via onActiveFileChange since "is a file active" isn't otherwise visible
+  // up here (fileRefs/hitsByLine are internal to it).
+  let codeHasActiveFile = $state(false);
+
+  // Whether the right rail has anything to inspect for the CURRENT view —
+  // the single source of truth for both the grid-column collapse and the
+  // pane's own visibility (see the `.main`/`.rail-r` markup below).
+  const rightRailOpen = $derived(
+    computeRightRailVisible({
+      view: appState.view,
+      hasSelection: appState.view === 'board' ? selectedRequestId !== null : appState.view === 'code' ? codeHasActiveFile : false,
+    })
+  );
+  const leftRailHidden = $derived(!leftRailVisible(appState.view));
+  const showFleetInRail = $derived(showFleetSection(appState.view));
+  const showRightRailToggle = $derived(rightRailToggleVisible(appState.view));
+
+  $effect(() => {
+    // Reset the inspector to the view's own legal default whenever the view
+    // changes — kills the "Request detail leaks into Code" bug family,
+    // where a mode picked on one view lingered visually into the next.
+    contextMode = defaultContextMode(appState.view);
+  });
 
   // A reverse-index hit clicked from the right rail (Code's file-level list,
   // or a line's hot-line drill-in) navigates to Chat, at that message — even
@@ -349,6 +389,15 @@
     refContext = { repo: ctx.repo, path: ctx.path, range: null };
     refHits = hits;
     contextMode = 'refs';
+    fileLevelRefs = { ctx, hits };
+  }
+
+  // The "↩ whole file" chip — returns the inspector from a hot-line-narrowed
+  // range back to the active file's full hit list (design/43 quick win).
+  function backToWholeFile() {
+    if (!fileLevelRefs) return;
+    refContext = { ...fileLevelRefs.ctx, range: null };
+    refHits = fileLevelRefs.hits;
   }
 
   // A reverse-index entry (file-level list or line drill-in) was clicked —
@@ -401,6 +450,7 @@
     {connStatus}
     theme={appState.theme}
     menuOpen={appState.drawer === 'left'}
+    showMenu={!leftRailHidden}
     onHubChange={(hubId) => (appState.hub = hubId)}
     onViewChange={(view) => (appState.view = view)}
     onThemeToggle={() => appState.toggleTheme()}
@@ -421,7 +471,11 @@
     />
   {/if}
 
-  <div class="main">
+  <div
+    class="main"
+    data-view={appState.view}
+    style={`${leftRailHidden ? '--rail-l-w:0px;' : ''}${!rightRailOpen ? '--rail-r-w:0px;' : ''}`}
+  >
     <!-- Scrim: only rendered visually (via CSS) below 1024px, dims + blocks
          clicks through to the tri-pane while a drawer is open, and closes
          whichever drawer is open when tapped. -->
@@ -433,7 +487,12 @@
       data-testid="drawer-scrim"
     ></div>
 
-    <div class="rail-l-wrap" class:open={appState.drawer === 'left'} data-testid="left-drawer">
+    <div
+      class="rail-l-wrap"
+      class:open={appState.drawer === 'left'}
+      style={leftRailHidden ? 'visibility:hidden' : undefined}
+      data-testid="left-drawer"
+    >
       <button
         type="button"
         class="drawer-close"
@@ -448,6 +507,7 @@
         topics={overview?.topics ?? []}
         currentTopic={appState.topic}
         agents={overview?.fleet ?? []}
+        showFleet={showFleetInRail}
         onTopicSelect={selectTopic}
       />
     </div>
@@ -470,16 +530,18 @@
         {:else}
           <span class="c strong">Repos</span>
         {/if}
-        <button
-          type="button"
-          class="rail-r-toggle"
-          aria-label={appState.drawer === 'right' ? 'Close details panel' : 'Open details panel'}
-          aria-expanded={appState.drawer === 'right'}
-          onclick={() => appState.toggleDrawer('right')}
-          data-testid="right-drawer-toggle"
-        >
-          ⓘ
-        </button>
+        {#if showRightRailToggle}
+          <button
+            type="button"
+            class="rail-r-toggle"
+            aria-label={appState.drawer === 'right' ? 'Close details panel' : 'Open details panel'}
+            aria-expanded={appState.drawer === 'right'}
+            onclick={() => appState.toggleDrawer('right')}
+            data-testid="right-drawer-toggle"
+          >
+            ⓘ
+          </button>
+        {/if}
       </div>
 
       <div class="view-pane" class:active={appState.view === 'chat'}>
@@ -521,7 +583,12 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
-          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} />
+          <CodeLens
+            hub={appState.hub}
+            onOpenRefs={openRefsFromCode}
+            onFileRefs={onCodeFileRefs}
+            onActiveFileChange={(has) => (codeHasActiveFile = has)}
+          />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>
@@ -531,7 +598,12 @@
       </div>
     </div>
 
-    <div class="rail-r" class:open={appState.drawer === 'right'} data-testid="right-drawer">
+    <div
+      class="rail-r"
+      class:open={appState.drawer === 'right'}
+      style={!rightRailOpen ? 'visibility:hidden' : undefined}
+      data-testid="right-drawer"
+    >
       <div class="ctx-head">
         <button
           type="button"
@@ -563,12 +635,21 @@
             path={refContext?.path ?? null}
             range={refContext?.range ?? null}
             onSelectHit={openHitInChat}
+            onWholeFile={backToWholeFile}
           />
-        {:else}
+        {:else if appState.selectedMessage}
           <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} />
+        {:else}
+          <EmptyState
+            glyph="↩"
+            title="Select a message to trace its thread"
+            body="Click any note or request in the stream — its reference graph (the reply-hash trail reconstructing its conversation, across topics) shows up here."
+          />
         {/if}
       </div>
-      <div class="foothint">↩ discovered via reply-hashes — no extra state, pure projection</div>
+      {#if contextMode === 'meta'}
+        <div class="foothint">↩ discovered via reply-hashes — no extra state, pure projection</div>
+      {/if}
     </div>
   </div>
 </div>
@@ -579,21 +660,36 @@
     flex-direction: column;
     height: 100vh;
   }
+  /* design/43 Thread 1: both rail widths are driven per-view by
+     `--rail-l-w`/`--rail-r-w` custom properties set inline on `.main` (see
+     App.svelte's script) — `0px` when a view's rail is hidden/collapsed,
+     otherwise unset so each breakpoint's own fallback below applies. The
+     transition animates Board's collapsed→open slide and any view switch's
+     rail appearance/disappearance; reduced-motion gets a hard snap instead. */
   .main {
     flex: 1;
     display: grid;
-    grid-template-columns: 248px 1fr 320px;
+    grid-template-columns: var(--rail-l-w, 248px) 1fr var(--rail-r-w, 320px);
     min-height: 0;
     position: relative;
+    transition: grid-template-columns 0.2s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .main {
+      transition: none;
+    }
   }
 
   /* ── Tablet (768–1023px): the tri-pane's desktop column layout is
      unchanged above 1024px. Below it, the right rail (meta-thread / request
-     detail / reverse-index) becomes an off-canvas drawer; the left rail
-     (topics/fleet) stays put — only its width shrinks slightly. ── */
+     detail / reverse-index) becomes an off-canvas drawer (so it drops out of
+     this grid entirely — only the left rail's track matters here); the left
+     rail (topics/fleet) stays put — only its width shrinks slightly, unless
+     the current view hides it (`--rail-l-w: 0px` overrides the 220px fallback
+     the same as it does 248px at desktop). ── */
   @media (max-width: 1023.98px) {
     .main {
-      grid-template-columns: 220px 1fr;
+      grid-template-columns: var(--rail-l-w, 220px) 1fr;
     }
   }
 

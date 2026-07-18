@@ -114,7 +114,7 @@ describe('CodeLens', () => {
     expect(screen.getByText('wealdlore')).toBeInTheDocument(); // the repo group header
   });
 
-  it('marks mapped vs unmapped files with a different dot color', async () => {
+  it('dims the whole row (not just a dot) for unmapped files, and gives it an "unmapped" title', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([]);
@@ -122,11 +122,44 @@ describe('CodeLens', () => {
     render(CodeLens, { hub: 'agent-coord' });
     await waitFor(() => expect(screen.getByRole('button', { name: 'citations.py' })).toBeInTheDocument());
 
-    const mappedDot = screen.getByRole('button', { name: 'PlateBundle.swift' }).querySelector('.fdot') as HTMLElement;
-    const unmappedDot = screen.getByRole('button', { name: 'citations.py' }).querySelector('.fdot') as HTMLElement;
+    const mappedRow = screen.getByRole('button', { name: 'PlateBundle.swift' });
+    const unmappedRow = screen.getByRole('button', { name: 'citations.py' });
 
-    expect(mappedDot.getAttribute('style')).toContain('var(--done)');
-    expect(unmappedDot.getAttribute('style')).toContain('var(--faint)');
+    expect(mappedRow.className).not.toContain('dim');
+    expect(unmappedRow.className).toContain('dim');
+    expect(unmappedRow.getAttribute('title')).toMatch(/unmapped/);
+  });
+
+  it('renders a file-type icon per row (not a plain colored dot)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'plates.py' })).toBeInTheDocument());
+
+    // plates.py -> python icon (a distinct fill color from swift/PlateBundle).
+    const pySvg = screen.getByRole('button', { name: 'plates.py' }).querySelector('svg');
+    expect(pySvg?.innerHTML).toContain('#0288d1');
+    expect(screen.getByRole('button', { name: 'PlateBundle.swift' }).querySelector('.fdot')).toBeNull();
+  });
+
+  it('disambiguates two visible rows sharing a basename with a dim parent-dir suffix', async () => {
+    const colliding: CodeFile[] = [
+      { repo: 'wealdlore', path: 'fleet/mod.rs', refCount: 2, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
+      { repo: 'wealdlore', path: 'reader/mod.rs', refCount: 1, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
+      { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 1, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
+    ];
+    vi.mocked(api.getCodeFiles).mockResolvedValue(colliding);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    expect(await screen.findByText('· fleet/')).toBeInTheDocument();
+    expect(screen.getByText('· reader/')).toBeInTheDocument();
+    // The non-colliding file gets no suffix at all.
+    expect(screen.queryByText('· pipeline/')).not.toBeInTheDocument();
   });
 
   it('shows the new empty state — not the file tree — when the hub has no referenced code files', async () => {
@@ -139,6 +172,22 @@ describe('CodeLens', () => {
     // No per-file fetches when there's nothing to select.
     expect(api.getCode).not.toHaveBeenCalled();
     expect(api.getRefs).not.toHaveBeenCalled();
+  });
+
+  it('reports onActiveFileChange(false) on a zero-files hub, true once a file auto-activates', async () => {
+    const onActiveFileChange = vi.fn();
+    vi.mocked(api.getCodeFiles).mockResolvedValue([]);
+
+    const { rerender } = render(CodeLens, { hub: 'confer-jarvis-orbit', onActiveFileChange });
+
+    await waitFor(() => expect(onActiveFileChange).toHaveBeenLastCalledWith(false));
+
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+    await rerender({ hub: 'agent-coord', onActiveFileChange });
+
+    await waitFor(() => expect(onActiveFileChange).toHaveBeenLastCalledWith(true));
   });
 
   it('re-fetches getCodeFiles and resets selection when the hub changes', async () => {
