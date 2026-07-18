@@ -12,9 +12,11 @@
   import { api } from '../api';
   import { highlightSnippetLines, resolveLang, type HighlightedLine } from '../highlight';
   import { codeState } from '../stores.svelte';
-  import { fileKey } from '../codeTree';
+  import { fileKey, groupRefHitsByFile } from '../codeTree';
+  import { formatAge } from '../format';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
+  import FileIcon from './FileIcon.svelte';
 
   interface Props {
     hub: string;
@@ -25,9 +27,13 @@
      * Distinct from `onOpenRefs` (a deliberate click) so it never yanks open the
      * mobile details drawer just because a file was selected. */
     onFileRefs?: (ctx: { repo: string; path: string }, hits: RefHit[]) => void;
+    /** design/44 §6 item 2.4 — fired whenever the repo rollup's hit list
+     * (re)loads, so the host can mirror it into the right rail's
+     * `ReverseIndexPanel` repo-mode, same contract as `onFileRefs`. */
+    onRepoRefs?: (repo: string, hits: RefHit[]) => void;
   }
 
-  let { hub, onOpenRefs, onFileRefs }: Props = $props();
+  let { hub, onOpenRefs, onFileRefs, onRepoRefs }: Props = $props();
 
   const s = $derived(codeState.forHub(hub));
 
@@ -37,6 +43,37 @@
   });
 
   const active = $derived(s.files.find((f) => fileKey(f) === s.activeKey) ?? null);
+
+  // design/44 §6 item 2.4 — repo rollup: the repo node in CodeTree was
+  // selected as the view target instead of a single file.
+  const repoTarget = $derived(s.viewMode === 'repo' ? s.activeRepo : null);
+  let repoLoading = $state(false);
+  let repoHits = $state<RefHit[]>([]);
+  const repoGroups = $derived(groupRefHitsByFile(repoHits));
+
+  async function loadRepoRollup(repo: string, hubId: string) {
+    repoLoading = true;
+    try {
+      const hits = await api.getRefs(hubId, repo, true);
+      repoHits = hits;
+      onRepoRefs?.(repo, hits);
+    } finally {
+      repoLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const repo = repoTarget;
+    const h = hub;
+    if (repo) void loadRepoRollup(repo, h);
+  });
+
+  /** A repo-rollup row was clicked — drill into that file, same as clicking
+   * it directly in CodeTree (design/43's existing behavior, unchanged). */
+  function selectFileFromRollup(repo: string, path: string) {
+    s.activeKey = fileKey({ repo, path });
+    s.viewMode = 'file';
+  }
 
   let loading = $state(false);
   let lines = $state<{ n: number; text: string }[]>([]);
@@ -127,6 +164,11 @@
   $effect(() => {
     void active;
     void hub;
+    // design/44 §6 item 2.4 — a repo rollup is selected (not a single file):
+    // skip the per-file fetch entirely, even though `active` may still be
+    // set (codeState auto-activates the first file on load regardless of
+    // viewMode) — `loadRepoRollup` above is the only fetch that should run.
+    if (s.viewMode === 'repo') return;
     void loadFile();
   });
 
@@ -159,8 +201,38 @@
       <EmptyState
         glyph="◇"
         title="No code referenced in this hub yet"
-        body="Messages here haven't pinned any `--ref`s — once someone posts a note or request that references a line range, it'll show up here, browsable with its conversation-density gutter."
+        body="Messages here haven't pinned any `--ref`s — once someone posts a note or request that references this repo — a file, a line range, or the repo itself — it'll show up here, browsable with its conversation-density gutter."
       />
+    </div>
+  {:else if repoTarget}
+    <div class="codetool">
+      <span class="ct-hint">repo rollup · every conversation referencing {repoTarget} · click a file to open it</span>
+    </div>
+    <div class="codepage">
+      <div class="densitywrap">
+        {#if repoLoading}
+          <Skeleton rows={4} />
+        {:else if repoGroups.length === 0}
+          <div class="clonestub">
+            <EmptyState
+              glyph="◇"
+              title="No conversations reference this repo yet"
+              body={`Nobody has referenced anything in ${repoTarget} via --ref yet.`}
+            />
+          </div>
+        {:else}
+          <div class="repo-rollup" data-testid="repo-rollup">
+            {#each repoGroups as g (g.path)}
+              <button type="button" class="rollup-row" onclick={() => selectFileFromRollup(repoTarget, g.path)}>
+                <FileIcon path={g.path} size={14} />
+                <span class="rollup-path">{g.path}</span>
+                <span class="rollup-count">{g.count} ref{g.count === 1 ? '' : 's'}</span>
+                <span class="rollup-ts">{formatAge(g.lastTs)}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
   {:else if active}
     <div class="codetool">
@@ -249,6 +321,51 @@
     flex: 1;
     overflow: auto;
     padding: 14px 0 30px;
+  }
+  .repo-rollup {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 20px;
+  }
+  .rollup-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    padding: 9px 12px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12.5px;
+  }
+  .rollup-row:hover {
+    border-color: var(--border-2);
+    background: var(--panel-3);
+  }
+  .rollup-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 600 12px/1 var(--mono);
+  }
+  .rollup-count {
+    flex: 0 0 auto;
+    font: 600 10px/1 var(--mono);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    padding: 3px 6px;
+    border-radius: 5px;
+  }
+  .rollup-ts {
+    flex: 0 0 auto;
+    font: 500 10.5px/1 var(--mono);
+    color: var(--faint);
   }
   .clonestub {
     margin: 40px 20px 0;

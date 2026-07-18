@@ -10,12 +10,42 @@ import {
   defaultExpandedIds,
   fileKey,
   filterFiles,
+  groupRefHitsByFile,
   truncateMiddle,
 } from './codeTree';
-import type { CodeFile } from './types';
+import type { CodeFile, RefHit } from './types';
 
 function f(repo: string, path: string, overrides: Partial<CodeFile> = {}): CodeFile {
   return { repo, path, refCount: 1, mapped: true, lastTs: '2026-07-17T10:00:00Z', ...overrides };
+}
+
+function hit(path: string, ts: string, overrides: Partial<RefHit> = {}): RefHit {
+  return {
+    repo: 'wealdlore',
+    path,
+    sha: 'a3f1c9',
+    range: null,
+    contentHash: null,
+    staleness: 'current',
+    msgId: `msg_${path}_${ts}`,
+    from: 'reader',
+    msgType: 'note',
+    ts,
+    topic: 'reader',
+    summary: 'discussion',
+    threadRoot: 'msg_root',
+    requestStatus: null,
+    hub: 'agent-coord',
+    hubPrivate: false,
+    refName: null,
+    refType: null,
+    commitDate: null,
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
+    ...overrides,
+  };
 }
 
 describe('buildTree — fold + path compaction', () => {
@@ -212,5 +242,37 @@ describe('truncateMiddle', () => {
     const out = truncateMiddle(long, 40);
     expect(out.length).toBeLessThanOrEqual(40);
     expect(out).toContain('…');
+  });
+});
+
+describe('groupRefHitsByFile — repo rollup (design/44 §6 item 2.4)', () => {
+  it('groups hits by path, counting each group and keeping the newest ts', () => {
+    const hits = [
+      hit('a.rs', '2026-07-10T00:00:00Z'),
+      hit('a.rs', '2026-07-17T00:00:00Z'),
+      hit('b.rs', '2026-07-12T00:00:00Z'),
+    ];
+
+    const groups = groupRefHitsByFile(hits);
+
+    expect(groups).toHaveLength(2);
+    const a = groups.find((g) => g.path === 'a.rs')!;
+    expect(a.count).toBe(2);
+    expect(a.lastTs).toBe('2026-07-17T00:00:00Z');
+    const b = groups.find((g) => g.path === 'b.rs')!;
+    expect(b.count).toBe(1);
+    expect(b.lastTs).toBe('2026-07-12T00:00:00Z');
+  });
+
+  it('sorts by count desc, then path asc for ties', () => {
+    const hits = [hit('z.rs', '2026-07-10T00:00:00Z'), hit('a.rs', '2026-07-10T00:00:00Z'), hit('m.rs', '2026-07-10T00:00:00Z'), hit('m.rs', '2026-07-11T00:00:00Z')];
+
+    const groups = groupRefHitsByFile(hits);
+
+    expect(groups.map((g) => g.path)).toEqual(['m.rs', 'a.rs', 'z.rs']);
+  });
+
+  it('returns an empty list for no hits', () => {
+    expect(groupRefHitsByFile([])).toEqual([]);
   });
 });

@@ -131,6 +131,54 @@ describe('CodeTree — expand/collapse + selection', () => {
   });
 });
 
+describe('CodeTree — repo rollup selection (design/44 §6 item 2.4)', () => {
+  it('clicking the repo-select affordance sets activeRepo/viewMode and fires onActivateRepo, without collapsing the tree', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    const onActivateRepo = vi.fn();
+    render(CodeTree, { hub: 'agent-coord', onActivateRepo });
+    await screen.findByRole('button', { name: /wealdlore/ });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('repo-select-wealdlore'));
+
+    expect(codeState.forHub('agent-coord').activeRepo).toBe('wealdlore');
+    expect(codeState.forHub('agent-coord').viewMode).toBe('repo');
+    expect(onActivateRepo).toHaveBeenCalledWith('wealdlore');
+    // The tree itself must still be expanded — selecting the repo is not
+    // the same gesture as the expand/collapse chevron.
+    expect(screen.getByRole('button', { name: /PlateBundle\.swift/ })).toBeInTheDocument();
+  });
+
+  it('the expand/collapse chevron still toggles the tree without touching activeRepo/viewMode', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    render(CodeTree, { hub: 'agent-coord' });
+    const repoRow = await screen.findByRole('button', { name: /wealdlore/ });
+
+    const user = userEvent.setup();
+    await user.click(repoRow);
+
+    expect(screen.queryByRole('button', { name: /PlateBundle\.swift/ })).not.toBeInTheDocument();
+    expect(codeState.forHub('agent-coord').viewMode).toBe('file');
+    expect(codeState.forHub('agent-coord').activeRepo).toBeNull();
+  });
+
+  it('activating a file resets viewMode back to "file" (leaving a prior repo-rollup selection)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    render(CodeTree, { hub: 'agent-coord' });
+    await screen.findByRole('button', { name: /wealdlore/ });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('repo-select-wealdlore'));
+    expect(codeState.forHub('agent-coord').viewMode).toBe('repo');
+
+    await user.click(screen.getByRole('button', { name: 'pipeline/' }));
+    await user.click(await screen.findByRole('button', { name: /plates\.py/ }));
+
+    expect(codeState.forHub('agent-coord').viewMode).toBe('file');
+    expect(codeState.forHub('agent-coord').activeKey).toBe(fileKey(threeFiles[1]!));
+  });
+});
+
 describe('CodeTree — filter (findability escape hatch)', () => {
   it('typing into the filter box switches to a flat match list', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);

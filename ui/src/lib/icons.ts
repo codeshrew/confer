@@ -53,6 +53,8 @@ export const uiIcons: Record<string, IconDef> = {
   'x': { viewBox: '0 0 24 24', markup: '<path d="M18 6 6 18" /><path d="m6 6 12 12" />' },
   'info': { viewBox: '0 0 24 24', markup: '<circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" />' },
   'panel-right': { viewBox: '0 0 24 24', markup: '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" />' },
+  'tag': { viewBox: '0 0 24 24', markup: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.428 0l6.58-6.58a2.426 2.426 0 0 0 0-3.428z" /><path d="M7.5 7.5h.01" />' },
+  'arrow-up-right': { viewBox: '0 0 24 24', markup: '<path d="M7 7h10v10" /><path d="M7 17 17 7" />' },
 };
 
 // ── ft: curated vscode-material-icon-theme subset (file types) ──────────

@@ -32,9 +32,13 @@
      * lives in the shared store), but it's the natural hook for "close the
      * mobile drawer on selection", matching selectTopic's contract. */
     onActivate?: (file: CodeFile) => void;
+    /** design/44 §6 item 2.4 — fired when the repo node's SELECT affordance
+     * (distinct from its expand/collapse chevron) is clicked: the repo
+     * itself becomes the view target (main pane -> rollup). */
+    onActivateRepo?: (repo: string) => void;
   }
 
-  let { hub, onActivate }: Props = $props();
+  let { hub, onActivate, onActivateRepo }: Props = $props();
 
   const s = $derived(codeState.forHub(hub));
 
@@ -82,7 +86,17 @@
 
   function activate(file: CodeFile) {
     s.activeKey = fileKey(file);
+    s.viewMode = 'file';
     onActivate?.(file);
+  }
+
+  /** design/44 §6 item 2.4 — selects the repo itself as the Code view's
+   * target (distinct from `toggleExpand`, which only opens/closes the tree
+   * node). Fired by the repo row's separate "view rollup" affordance. */
+  function selectRepo(repo: string) {
+    s.activeRepo = repo;
+    s.viewMode = 'repo';
+    onActivateRepo?.(repo);
   }
 
   function scrollToNode(id: string) {
@@ -251,18 +265,29 @@
 
 {#snippet node(n: TreeNode)}
   {#if n.kind === 'repo'}
-    <button
-      type="button"
-      class="row repo"
-      data-node-id={n.id}
-      aria-expanded={s.expanded.has(n.id)}
-      onclick={() => toggleExpand(n.id)}
-    >
-      <Icon name="chevron-right" size={12} class={s.expanded.has(n.id) ? 'chev open' : 'chev'} />
-      <span class="glyph">◆</span>
-      <span class="label">{n.repo}</span>
-      <span class="badge">Σ{n.refCount}</span>
-    </button>
+    <div class="row-wrap repo-wrap" data-node-id={n.id} class:selected={s.viewMode === 'repo' && s.activeRepo === n.repo}>
+      <button
+        type="button"
+        class="row repo"
+        aria-expanded={s.expanded.has(n.id)}
+        onclick={() => toggleExpand(n.id)}
+      >
+        <Icon name="chevron-right" size={12} class={s.expanded.has(n.id) ? 'chev open' : 'chev'} />
+        <span class="glyph">◆</span>
+        <span class="label">{n.repo}</span>
+        <span class="badge">Σ{n.refCount}</span>
+      </button>
+      <button
+        type="button"
+        class="repo-select"
+        title="View every conversation referencing this repo"
+        aria-label="View repo rollup"
+        data-testid={`repo-select-${n.repo}`}
+        onclick={() => selectRepo(n.repo)}
+      >
+        <Icon name="arrow-up-right" size={12} />
+      </button>
+    </div>
     {#if s.expanded.has(n.id)}
       {#each n.children as child (child.id)}
         {@render node(child)}
@@ -400,6 +425,37 @@
   .row.repo {
     font-weight: 650;
     color: var(--text);
+    flex: 1;
+    min-width: 0;
+  }
+  .row-wrap.repo-wrap {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    border-radius: 6px;
+  }
+  .row-wrap.repo-wrap.selected {
+    background: var(--panel-3);
+  }
+  .row-wrap.repo-wrap.selected .row.repo {
+    color: var(--accent);
+  }
+  .repo-select {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .repo-select:hover {
+    color: var(--accent);
+    background: var(--panel-2);
   }
   .row .glyph {
     color: var(--faint);

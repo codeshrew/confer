@@ -19,6 +19,7 @@
   import { appState, chatWindowCache, codeState, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
   import { breadcrumbFromTree, buildTree, collapseBreadcrumb, fileKey, type BreadcrumbNode } from './lib/codeTree';
+  import { formatIsoDate } from './lib/format';
   import {
     defaultContextMode,
     leftRailVisible,
@@ -165,7 +166,9 @@
   type ContextMode = 'meta' | 'request' | 'refs';
   let contextMode = $state<ContextMode>('meta');
   let refHits = $state<RefHit[]>([]);
-  let refContext = $state<{ repo: string; path: string; range: [number, number] | null } | null>(null);
+  // design/44 §6 item 2.4 — `path: null` means repo-mode (a whole-repo
+  // rollup, no single file selected yet).
+  let refContext = $state<{ repo: string; path: string | null; range: [number, number] | null } | null>(null);
   // The active Code file's FULL (whole-file, range:null-included) hit list —
   // kept separate from refHits/refContext above because a hot-line click
   // narrows those to a single range. The "↩ whole file" chip (design/43
@@ -484,6 +487,11 @@
   // clicking it can reveal that exact row (see onCrumbSegmentClick below).
   const codeCrumb = $derived.by((): { segments: BreadcrumbNode[]; full: string; sha: string | null } => {
     const cs = codeState.forHub(appState.hub);
+    // design/44 §6 item 2.4 — the repo node was selected as the view target
+    // itself (a repo rollup, not a single file): the crumb is just the repo.
+    if (cs.viewMode === 'repo' && cs.activeRepo) {
+      return { segments: [{ label: cs.activeRepo, nodeId: cs.activeRepo }], full: cs.activeRepo, sha: null };
+    }
     const active = cs.files.find((f) => fileKey(f) === cs.activeKey);
     if (!active) return { segments: [], full: '', sha: null };
     const tree = buildTree(cs.files);
@@ -492,6 +500,21 @@
     return { segments: chain, full, sha: cs.codeSha !== 'HEAD' ? cs.codeSha : null };
   });
   const codeCrumbDisplay = $derived(collapseBreadcrumb(codeCrumb.segments, 4));
+
+  // design/44 §5.1 — "Web (... Code view header): a branch/tag chip + the
+  // commit date beside the sha chip." Sourced from the active file's newest
+  // hit (the same one `codeSha` above is pinned at) — no extra fetch, this
+  // is the same whole-file hit list CodeLens already reports via onFileRefs.
+  const codeCrumbMeta = $derived.by((): { refName: string | null; commitDate: string | null } => {
+    // Only meaningful in single-file scope — a repo rollup has no one
+    // "newest hit" to label, and `fileLevelRefs` can otherwise be a stale
+    // leftover from whichever file was active before a repo-rollup selection.
+    if (codeState.forHub(appState.hub).viewMode !== 'file') return { refName: null, commitDate: null };
+    const hits = fileLevelRefs?.hits ?? [];
+    if (hits.length === 0) return { refName: null, commitDate: null };
+    const newest = [...hits].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!;
+    return { refName: newest.refName, commitDate: newest.commitDate };
+  });
 
   /** A breadcrumb segment (repo/dir/file) click reveals + scrolls that node
    * in CodeTree — selection-only, no routing implication yet (design/41's
@@ -506,6 +529,43 @@
    * from the drawer menu means the reader is "done with the menu". */
   function onCodeFileActivate() {
     if (appState.drawer === 'left') appState.drawer = 'none';
+  }
+
+  /** design/44 §6 item 2.4 — CodeTree's repo-select affordance. Closes the
+   * mobile left drawer (same contract as onCodeFileActivate); the actual
+   * repo-rollup fetch + right-rail sync happens in CodeLens (onRepoRefs
+   * below), the same one-fetch-one-callback shape onFileRefs already uses. */
+  function onCodeRepoActivate() {
+    if (appState.drawer === 'left') appState.drawer = 'none';
+  }
+
+  /** Fired by CodeLens whenever a repo rollup's hit list (re)loads — mirrors
+   * onCodeFileRefs, keeping the right rail's ReverseIndexPanel in repo-mode
+   * (`path: null`) in sync with whichever repo is the active view target. */
+  function onCodeRepoRefs(repo: string, hits: RefHit[]) {
+    refContext = { repo, path: null, range: null };
+    refHits = hits;
+    contextMode = 'refs';
+  }
+
+  /** The reverse-index panel's "widen to repo" breadcrumb segment — routes
+   * through the SAME codeState the CodeTree repo-select affordance uses, so
+   * CodeLens's own effect does the fetch and calls onCodeRepoRefs above. */
+  function widenToRepo(repo: string) {
+    const cs = codeState.forHub(appState.hub);
+    cs.activeRepo = repo;
+    cs.viewMode = 'repo';
+  }
+
+  /** A repo-mode file-group row was clicked — narrow back down into that
+   * file. Sets the shared codeState (CodeLens's `active` effect does the
+   * fetch and calls onCodeFileRefs, which updates this same right rail). */
+  function selectFileFromRepoMode(path: string) {
+    const repo = refContext?.repo;
+    if (!repo) return;
+    const cs = codeState.forHub(appState.hub);
+    cs.activeKey = fileKey({ repo, path });
+    cs.viewMode = 'file';
   }
 </script>
 
@@ -574,7 +634,7 @@
              topics/fleet — replaces LeftRail entirely in this view (also
              becomes the mobile left drawer's content for free, since this
              wrapper's drawer CSS doesn't care what's inside it). -->
-        <CodeTree hub={appState.hub} onActivate={onCodeFileActivate} />
+        <CodeTree hub={appState.hub} onActivate={onCodeFileActivate} onActivateRepo={onCodeRepoActivate} />
       {:else}
         <LeftRail
           hubName={appState.hub}
@@ -612,6 +672,12 @@
           {/each}
           {#if codeCrumb.sha}
             <span class="ct-sha" title="Rendered at the newest reference's pinned sha">@{codeCrumb.sha.slice(0, 10)}</span>
+          {/if}
+          {#if codeCrumbMeta.refName}
+            <span class="ct-refname" data-testid="code-header-refname">{codeCrumbMeta.refName}</span>
+          {/if}
+          {#if codeCrumbMeta.commitDate}
+            <span class="ct-commit-date" data-testid="code-header-date">{formatIsoDate(codeCrumbMeta.commitDate)}</span>
           {/if}
         {:else}
           <span class="c strong">Repos</span>
@@ -671,7 +737,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
-          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} />
+          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} onRepoRefs={onCodeRepoRefs} />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>
@@ -731,6 +797,8 @@
             range={refContext?.range ?? null}
             onSelectHit={openHitInChat}
             onWholeFile={backToWholeFile}
+            onWidenToRepo={() => refContext?.repo && widenToRepo(refContext.repo)}
+            onSelectFile={selectFileFromRepoMode}
           />
         {:else if appState.selectedMessage}
           <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} onSelectNode={onMetaThreadSelectNode} />
@@ -980,6 +1048,17 @@
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 3px 6px;
+  }
+  .ct-refname {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    border-radius: 5px;
+    padding: 3px 6px;
+  }
+  .ct-commit-date {
+    font: 500 10.5px/1 var(--mono);
+    color: var(--faint);
   }
   .rail-r {
     background: var(--panel);

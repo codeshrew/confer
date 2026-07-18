@@ -65,6 +65,13 @@ function hitOn(line: number, path = 'Sources/Reader/PlateBundle.swift'): RefHit 
     requestStatus: null,
     hub: 'agent-coord',
     hubPrivate: false,
+    refName: null,
+    refType: null,
+    commitDate: null,
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
   };
 }
 
@@ -88,6 +95,13 @@ function wholeFileHit(overrides: Partial<RefHit> = {}, path = 'Sources/Reader/Pl
     requestStatus: null,
     hub: 'agent-coord',
     hubPrivate: false,
+    refName: null,
+    refType: null,
+    commitDate: null,
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
     ...overrides,
   };
 }
@@ -332,5 +346,67 @@ describe('CodeLens', () => {
     render(CodeLens, { hub: 'agent-coord' });
 
     expect(await screen.findByText('No code returned')).toBeInTheDocument();
+  });
+
+  it('the no-referenced-code empty-state copy invites a repo, a file, or a line range — not just a line range', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'confer-jarvis-orbit' });
+
+    expect(await screen.findByText(/references this repo — a file, a line range, or the repo itself/)).toBeInTheDocument();
+  });
+});
+
+describe('CodeLens — repo rollup (design/44 §6 item 2.4)', () => {
+  it('renders a grouped-by-file rollup when codeState.viewMode is "repo", fetching via getRefs(hub, repo)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getRefs).mockResolvedValue([
+      hitOn(44),
+      hitOn(45),
+      hitOn(1, 'pipeline/plates.py'),
+    ]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    codeState.forHub('agent-coord').activeRepo = 'wealdlore';
+    codeState.forHub('agent-coord').viewMode = 'repo';
+
+    expect(await screen.findByTestId('repo-rollup')).toBeInTheDocument();
+    expect(api.getRefs).toHaveBeenCalledWith('agent-coord', 'wealdlore', true);
+    expect(screen.getByText('Sources/Reader/PlateBundle.swift')).toBeInTheDocument();
+    expect(screen.getByText('pipeline/plates.py')).toBeInTheDocument();
+    expect(screen.getByText('2 refs')).toBeInTheDocument();
+    expect(screen.getByText('1 ref')).toBeInTheDocument();
+  });
+
+  it('clicking a rollup row drills into that file (sets activeKey + viewMode back to "file")', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(1, 'pipeline/plates.py')]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    codeState.forHub('agent-coord').activeRepo = 'wealdlore';
+    codeState.forHub('agent-coord').viewMode = 'repo';
+
+    const row = await screen.findByText('pipeline/plates.py');
+    const user = userEvent.setup();
+    await user.click(row);
+
+    expect(codeState.forHub('agent-coord').viewMode).toBe('file');
+    expect(codeState.forHub('agent-coord').activeKey).toBe(fileKey({ repo: 'wealdlore', path: 'pipeline/plates.py' }));
+    // Let the now-triggered file-load effect settle before the test (and its
+    // mocks) tear down — otherwise the in-flight api.getCode promise resolves
+    // after a later test's beforeEach has reset the mock.
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'a3f1c9'));
+  });
+
+  it('shows a repo-scoped empty state when the repo has no hits', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    codeState.forHub('agent-coord').activeRepo = 'wealdlore';
+    codeState.forHub('agent-coord').viewMode = 'repo';
+
+    expect(await screen.findByText('No conversations reference this repo yet')).toBeInTheDocument();
   });
 });

@@ -130,6 +130,13 @@ export interface CodeFileState {
    * affordance); CodeTree's effect consumes it (expand ancestors + scroll)
    * and clears it. Selection-only — no routing implication. */
   pendingReveal: string | null;
+  /** design/44 §6 item 2.4 — the Code view's target granularity: 'file' (the
+   * pre-44 default — CodeLens renders `activeKey`'s code) or 'repo' (the
+   * repo node in CodeTree was selected as the view target — CodeLens renders
+   * a grouped-by-file rollup for `activeRepo` instead). */
+  viewMode: 'file' | 'repo';
+  /** The repo selected as a rollup target — set alongside `viewMode: 'repo'`. */
+  activeRepo: string | null;
 }
 
 function createCodeFileState(): CodeFileState {
@@ -142,6 +149,8 @@ function createCodeFileState(): CodeFileState {
     sort: 'tree',
     codeSha: 'HEAD',
     pendingReveal: null,
+    viewMode: 'file',
+    activeRepo: null,
   };
 }
 

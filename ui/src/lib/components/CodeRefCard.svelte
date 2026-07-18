@@ -7,8 +7,10 @@
   import type { CodeRef, RefHit } from '../types';
   import { api } from '../api';
   import { highlightSnippetLines, type HighlightedLine, resolveLang } from '../highlight';
+  import { formatIsoDate } from '../format';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
+  import Icon from './Icon.svelte';
 
   interface Props {
     ref: CodeRef;
@@ -20,12 +22,22 @@
 
   let { ref, hub, collapseThreshold = 8, onRevHook }: Props = $props();
 
+  // design/44 §5.1 — extends the original current/changed/moved/unpinned/
+  // unknown labels with the ancestry/squash-aware values (Addenda 1+2):
+  // `reachable` reads as a neutral "in history" (not stale, just not the
+  // tip); `offline` is the genuinely-fragile warning case; `squashed` gets
+  // its own distinct treatment below (baseRef/forkPoint); legacy `unpinned`
+  // is spelled out as "(legacy)" and `unknown` as "not in local clone" so
+  // neither reads as a generic, unexplained badge.
   const STALENESS_LABEL: Record<string, string> = {
     current: 'current',
     changed: 'changed',
     moved: 'moved',
-    unpinned: 'unpinned',
-    unknown: 'unknown',
+    reachable: 'in history',
+    offline: 'offline',
+    squashed: 'squashed',
+    unpinned: 'unpinned (legacy)',
+    unknown: 'not in local clone',
   };
 
   let loading = $state(true);
@@ -101,9 +113,26 @@
   <div class="ref-head">
     <span class="repo">◆ {ref.repo}</span>
     <span class="path">{ref.path}</span>
+    {#if ref.refName}
+      <span class="ref-chip" data-testid="ref-branch-chip" title={ref.refType ?? undefined}>
+        <Icon name={ref.refType === 'tag' ? 'tag' : 'git-branch'} size={11} />
+        {ref.refName}
+      </span>
+    {/if}
     <span class="sha">@{ref.sha}</span>
+    {#if ref.commitDate}
+      <span class="commit-date" data-testid="commit-date">{formatIsoDate(ref.commitDate)}</span>
+    {/if}
     {#if rangeLabel}<span class="lines">{rangeLabel}</span>{/if}
     <span class="stale-badge stale-{staleness}" data-testid="staleness-badge">{STALENESS_LABEL[staleness] ?? staleness}</span>
+    {#if staleness === 'squashed' && ref.baseRef}
+      <span class="squash-chip" data-testid="squash-chip">
+        merged/squashed away — forked from {ref.baseRef}@{(ref.forkPoint ?? '').slice(0, 7)}
+      </span>
+    {/if}
+    {#if ref.dirty || ref.untracked}
+      <span class="dirty-chip" data-testid="dirty-chip">working-tree snapshot — see embedded lines</span>
+    {/if}
     {#if lines.length > 0}
       <button type="button" class="ref-toggle" onclick={toggleFromClick} data-testid="ref-toggle">
         <span class="lbl">{collapsed ? 'Expand' : 'Collapse'}</span>
@@ -157,7 +186,9 @@
   {/if}
 
   <div class="ref-foot">
-    <span>pinned to <b>{ref.sha}</b> · immutable</span>
+    <span data-testid="ref-foot-pin">
+      pinned to <b>{ref.sha}</b>{#if ref.refName} · {ref.refName}{/if}{#if ref.commitDate} · {formatIsoDate(ref.commitDate)}{/if} · immutable
+    </span>
     {#if refHits.length > 0}
       <button type="button" class="revhook" onclick={revHook} data-testid="revhook">
         ↩ {refHits.length} conversation{refHits.length === 1 ? '' : 's'} reference these lines
@@ -209,6 +240,21 @@
     border-radius: 5px;
     padding: 3px 7px;
   }
+  .ref-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font: 600 10.5px/1 var(--mono);
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border-2);
+    border-radius: 5px;
+    padding: 3px 7px;
+  }
+  .commit-date {
+    font: 500 10.5px/1 var(--mono);
+    color: var(--faint);
+  }
   .stale-badge {
     font: 700 9.5px/1 var(--mono);
     letter-spacing: 0.04em;
@@ -220,11 +266,28 @@
     color: var(--done);
     background: color-mix(in srgb, var(--done) 16%, transparent);
   }
-  .stale-changed {
+  /* design/44 Addendum 1 — `reachable` is a deliberately NEUTRAL read (the
+     pinned sha is still an ancestor of HEAD, just not the tip) — distinct
+     from the amber "content changed" signal below, so it gets the same
+     calm blue as `--claimed` rather than a warning color. */
+  .stale-reachable {
+    color: var(--claimed);
+    background: color-mix(in srgb, var(--claimed) 16%, transparent);
+  }
+  .stale-changed,
+  .stale-moved {
     color: var(--blocked);
     background: color-mix(in srgb, var(--blocked) 16%, transparent);
   }
-  .stale-moved {
+  /* `offline` (Addendum 1) is the genuinely-fragile case — not reachable
+     from HEAD, no recovery info — so it reads as a real warning. */
+  .stale-offline {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 16%, transparent);
+  }
+  /* `squashed` (Addendum 2) is offline-but-explained — a distinct color so
+     it doesn't read as the same alarm as bare `offline`. */
+  .stale-squashed {
     color: var(--deferred);
     background: color-mix(in srgb, var(--deferred) 16%, transparent);
   }
@@ -235,6 +298,22 @@
   .stale-unknown {
     color: var(--faint);
     background: color-mix(in srgb, var(--faint) 16%, transparent);
+  }
+  .squash-chip {
+    font: 600 10.5px/1.4 var(--mono);
+    color: var(--deferred);
+    background: color-mix(in srgb, var(--deferred) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--deferred) 40%, var(--border-2));
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+  .dirty-chip {
+    font: 600 10.5px/1.4 var(--mono);
+    color: var(--blocked);
+    background: color-mix(in srgb, var(--blocked) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--blocked) 40%, var(--border-2));
+    border-radius: 6px;
+    padding: 4px 8px;
   }
   .ref-head .ref-toggle {
     margin-left: auto;

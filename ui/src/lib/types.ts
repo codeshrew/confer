@@ -1,7 +1,17 @@
 // The API contract — mirrors the Rust projections (Board::fold, RefIndex::fold,
 // agents, Snapshot) that confer serve's backend will serialize as JSON.
 
-export type Staleness = 'current' | 'changed' | 'moved' | 'unpinned' | 'unknown';
+// design/44 §3 + Addenda 1/2 — extends the original current/changed/moved/
+// unpinned/unknown vocabulary with three ancestry/squash-aware values:
+// `reachable` (still an ancestor of HEAD, just not the tip — a robust
+// alternative to the fragile "not HEAD ⇒ stale" read), `offline` (not
+// reachable — rebased away/abandoned/GC'd), and `squashed` (offline, but the
+// captured `baseRef`/`forkPoint` shows it was merged/squashed away rather
+// than simply lost).
+export type Staleness = 'current' | 'changed' | 'moved' | 'reachable' | 'offline' | 'squashed' | 'unpinned' | 'unknown';
+
+/** `ref_type` classification (design/44 §1.2) — null for a legacy/unresolved ref. */
+export type RefType = 'branch' | 'tag' | 'detached';
 export type RequestStatus = 'OPEN' | 'CLAIMED' | 'BLOCKED' | 'DONE' | 'ERROR' | 'SUPERSEDED';
 export type MsgType = 'note' | 'request' | 'claim' | 'done' | 'error' | 'blocked' | 'defer' | 'supersede';
 
@@ -23,7 +33,24 @@ export interface Topic {
   lastTs: string | null;
 }
 
-export interface CodeRef {
+// design/44 §3 — the temporal-identity fields every pinned ref/code-ref now
+// carries: `refName`/`refType` (branch/tag label), `commitDate` (ISO8601,
+// placement without a clone), `dirty`/`untracked` (the write-time integrity
+// gate's flags — a working-tree snapshot, not a clean commit), and the
+// Addendum-2 fork-point pair (`baseRef`/`forkPoint`) that makes a squashed-
+// away branch's history recoverable. All best-effort/nullable — a legacy
+// pre-44 ref (or one where a git call was undeterminable) omits them.
+export interface RefTemporalFields {
+  refName: string | null;
+  refType: RefType | null;
+  commitDate: string | null;
+  dirty: boolean;
+  untracked: boolean;
+  baseRef: string | null;
+  forkPoint: string | null;
+}
+
+export interface CodeRef extends RefTemporalFields {
   repo: string;
   path: string;
   sha: string;
@@ -76,7 +103,7 @@ export interface Agent {
   wip: { id: string; summary: string; status: RequestStatus }[];
 }
 
-export interface RefHit {
+export interface RefHit extends RefTemporalFields {
   repo: string;
   path: string;
   sha: string;

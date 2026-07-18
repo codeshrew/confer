@@ -18,6 +18,13 @@ const ref: CodeRef = {
   sha: 'a3f1c9',
   range: [44, 49],
   contentHash: 'sha256:9f2c...e01a',
+  refName: null,
+  refType: null,
+  commitDate: null,
+  dirty: false,
+  untracked: false,
+  baseRef: null,
+  forkPoint: null,
 };
 
 const smallSnippet: Snippet = {
@@ -53,6 +60,13 @@ const hits: RefHit[] = [
     requestStatus: 'DONE',
     hub: 'agent-coord',
     hubPrivate: false,
+    refName: null,
+    refType: null,
+    commitDate: null,
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
   },
 ];
 
@@ -101,6 +115,83 @@ describe('CodeRefCard', () => {
     await user.click(screen.getByTestId('revhook'));
 
     expect(onRevHook).toHaveBeenCalledWith(ref, hits);
+  });
+
+  it('renders a branch chip + commit date beside the sha chip when refName/commitDate are present', async () => {
+    vi.mocked(api.getCode).mockResolvedValue(smallSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+    const branchRef: CodeRef = { ...ref, refName: 'main', refType: 'branch', commitDate: '2026-07-12T09:00:00Z' };
+
+    render(CodeRefCard, { ref: branchRef, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('ref-branch-chip')).toBeInTheDocument());
+    expect(screen.getByTestId('ref-branch-chip').textContent).toContain('main');
+    expect(screen.getByTestId('commit-date').textContent).toBe('2026-07-12');
+    expect(screen.getByTestId('ref-foot-pin').textContent).toContain('main');
+    expect(screen.getByTestId('ref-foot-pin').textContent).toContain('2026-07-12');
+  });
+
+  it('renders a tag chip distinctly (refType tag) with no branch icon confusion', async () => {
+    vi.mocked(api.getCode).mockResolvedValue(smallSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+    const tagRef: CodeRef = { ...ref, refName: 'v1.2.0', refType: 'tag', commitDate: '2026-06-01T00:00:00Z' };
+
+    render(CodeRefCard, { ref: tagRef, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('ref-branch-chip').textContent).toContain('v1.2.0'));
+  });
+
+  it('renders a dirty/untracked warning chip when the ref carries a working-tree snapshot', async () => {
+    vi.mocked(api.getCode).mockResolvedValue(smallSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+    const dirtyRef: CodeRef = { ...ref, dirty: true };
+
+    render(CodeRefCard, { ref: dirtyRef, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('dirty-chip')).toBeInTheDocument());
+    expect(screen.getByTestId('dirty-chip').textContent).toContain('working-tree snapshot');
+  });
+
+  it('does not render the dirty chip when neither dirty nor untracked is set', async () => {
+    vi.mocked(api.getCode).mockResolvedValue(smallSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeRefCard, { ref, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('staleness-badge')).toBeInTheDocument());
+    expect(screen.queryByTestId('dirty-chip')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['reachable', 'in history'],
+    ['offline', 'offline'],
+    ['unpinned', 'unpinned (legacy)'],
+    ['unknown', 'not in local clone'],
+  ] as const)('labels staleness %s as %s', async (staleness, label) => {
+    vi.mocked(api.getCode).mockResolvedValue({ ...smallSnippet, staleness });
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeRefCard, { ref, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('staleness-badge').textContent).toBe(label));
+  });
+
+  it('renders a distinct "merged/squashed away" chip using baseRef/forkPoint when staleness is squashed', async () => {
+    vi.mocked(api.getCode).mockResolvedValue({ ...smallSnippet, staleness: 'squashed' });
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+    const squashedRef: CodeRef = {
+      ...ref,
+      refName: 'alignment-pass',
+      refType: 'branch',
+      baseRef: 'main',
+      forkPoint: 'cafebabe0011223344556677889900aabbccddee',
+    };
+
+    render(CodeRefCard, { ref: squashedRef, hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('squash-chip')).toBeInTheDocument());
+    expect(screen.getByTestId('squash-chip').textContent).toContain('merged/squashed away');
+    expect(screen.getByTestId('squash-chip').textContent).toContain('main@cafebab');
   });
 
   it('stops the revhook click from bubbling — CodeRefCard is nested inside Message.svelte\'s own clickable row, and opening the reverse index must not also fire that row\'s onSelect', async () => {
