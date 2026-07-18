@@ -100,31 +100,25 @@
   }
   .seen .dots {
     display: flex;
-    padding-left: 2px;
+    align-items: center;
+    gap: 3px;
+    padding-left: 4px;
   }
+  /* Non-overlapping, so no dot's background-ring can crescent-cut the one before
+     it. Seen = filled agent color; unseen = clean faint hollow ring; you = filled
+     accent. Uniform 8px circles. */
   .seen .sd {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    margin-left: -2px;
-    box-shadow: 0 0 0 2px var(--bg);
+    flex: 0 0 auto;
   }
   .seen .sd.un {
     background: transparent !important;
-    box-shadow: inset 0 0 0 1.5px var(--faint), 0 0 0 2px var(--bg);
-    opacity: 0.7;
+    box-shadow: inset 0 0 0 1.5px var(--faint);
   }
   .seen .sd.you {
-    position: relative;
-    background: transparent !important;
-    box-shadow: inset 0 0 0 1.5px var(--text), 0 0 0 2px var(--bg);
-  }
-  .seen .sd.you::after {
-    content: '';
-    position: absolute;
-    inset: 3px;
-    border-radius: 50%;
-    background: var(--text);
+    background: var(--accent) !important;
   }
   .seen .chk {
     color: var(--done);

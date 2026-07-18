@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Agent, Topic } from '../types';
-  import { formatAge, isStaleAge } from '../format';
+  import { formatAge } from '../format';
 
   interface Props {
     hubName: string;
@@ -72,7 +72,10 @@
           <span class="hb vw">viewing</span>
         </div>
         {#each agents as agent (agent.id)}
-          <div class="agent" class:stale={isStaleAge(agent.lastTs, now)}>
+          <!-- Liveness is the real heartbeat-derived `live` field (matching Fleet.svelte),
+               NOT the last-posted age: an agent can be live (watch armed, heartbeating) yet
+               not have posted in days. The age shown is last-*posted*, surfaced as context. -->
+          <div class="agent" class:stale={!agent.live} title={`${agent.live ? 'live' : 'heartbeat stale'} · last posted ${formatAge(agent.lastTs, now)} ago`}>
             <span class="av" style="color:{agent.color};background:color-mix(in srgb, {agent.color} 18%, transparent)">{agent.abbr}</span>
             <span class="nm">{agent.display}</span>
             <span class="hb">{formatAge(agent.lastTs, now)}</span>
