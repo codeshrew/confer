@@ -185,22 +185,60 @@ pub fn staleness_ex(
     }
 }
 
-/// design/45 §1.2/§1.7: has a patch's proposed change already landed at HEAD? `HEAD:<path>`'s
-/// blob OID equals `result_hash` (a deletion — no `result_hash` — landed iff the path is now
-/// absent at HEAD). `Unknown` with no clone; only meaningful for a `patch: true` ref (an
-/// ordinary ref's staleness comes from `staleness_ex` instead).
+/// design/45 §1.2/§1.7 + design/48 §4: has a patch's proposed change already landed?
+///
+/// Two tiers:
+/// 1. **Fast path** (cheap, the original check): `HEAD:<path>`'s blob OID equals
+///    `result_hash` (a deletion — no `result_hash` — landed iff the path is now absent at
+///    HEAD). Only a single `rev-parse`, so it's always tried first.
+/// 2. **Durable fallback** (design/48 §4): the fast path is TRANSIENT — it only holds until
+///    the next edit to that file, so a patch that genuinely landed long ago reads as not
+///    landed the moment the file changes again. When the fast path says "not at HEAD", fall
+///    back to `git log --find-object=<result_hash> -- <path>`: did ANY historical commit's
+///    tree contain this exact blob at this path? That answers the archival question ("did
+///    this land, ever") from any clone, with no tracking state, and survives later edits.
+///
+/// `Unknown` with no clone; only meaningful for a `patch: true` ref (an ordinary ref's
+/// staleness comes from `staleness_ex` instead).
 pub fn patch_staleness(clone: Option<&Path>, path: &str, result_hash: Option<&str>) -> Staleness {
     let Some(dir) = clone else { return Staleness::Unknown };
     let at_head = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &format!("HEAD:{path}")])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    let landed = match (result_hash, at_head) {
+    let landed_at_head = match (result_hash, &at_head) {
         (Some(rh), Some(oid)) => oid == rh,
         (None, None) => true,
         _ => false,
     };
-    if landed { Staleness::Landed } else { Staleness::Unknown }
+    if landed_at_head {
+        return Staleness::Landed;
+    }
+    // Fast path missed (file changed since, or — for a non-deletion patch — the path is
+    // currently absent). Fall back to the durable history walk, if we have a blob to search
+    // for (a deletion has none, and the fast-path miss already stands as its verdict).
+    if let Some(rh) = result_hash {
+        if history_contains_blob_at_path(dir, rh, path) {
+            return Staleness::Landed;
+        }
+    }
+    Staleness::Unknown
+}
+
+/// design/48 §4: the durable half of `patch_staleness` — did ANY historical commit's tree
+/// (walking HEAD's ancestry) contain blob `oid` at `path`? `git log --find-object` is the
+/// tool built for exactly this ("which commits touched a tree/blob with this OID"), scoped
+/// to `path` so an unrelated blob collision elsewhere in the repo can't false-positive.
+/// `-1`/`--format=%H` keeps the call cheap — one match is proof enough, we don't need the
+/// full list. Degrades to `false` (never panics/propagates) on: no match (blob never landed
+/// at this path in this history), a git error (bad object, path never existed, etc.), or
+/// anything else non-zero-exit — the caller reads that as `Unknown`, an honest "can't tell",
+/// not a false `Landed`.
+fn history_contains_blob_at_path(dir: &Path, oid: &str, path: &str) -> bool {
+    match gitcmd::output(dir, &["log", "-1", "--format=%H", &format!("--find-object={oid}"), "--", path]) {
+        Ok(o) if o.status.success() => !String::from_utf8_lossy(&o.stdout).trim().is_empty(),
+        _ => false,
+    }
 }
 
 /// Total line count of `<sha>:<path>` in `dir` — the cheap general check behind the
@@ -456,6 +494,48 @@ mod tests {
         // a different (stale) content_hash at the SAME head → Changed, not Moved/Unknown.
         assert_eq!(staleness(Some(&dir), &head, "f.rs", Some("0000000000000000000000000000000000000000")), Staleness::Changed);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_staleness_fast_path_at_head() {
+        let (dir, _head, blob) = repo_with_file("patch-fast", "a\nb\n");
+        // HEAD:<path> already matches result_hash — Landed via the cheap peek, no history walk.
+        assert_eq!(patch_staleness(Some(&dir), "f.rs", Some(&blob)), Staleness::Landed);
+        // a deletion (no result_hash) whose path is genuinely absent at HEAD — also Landed.
+        assert_eq!(patch_staleness(Some(&dir), "gone.rs", None), Staleness::Landed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_staleness_durable_fallback_after_a_later_edit() {
+        // design/48 §4: the exact bug this fixes. A patch's result_hash landed at some commit,
+        // but the file has since changed again — the fast HEAD:<path> peek now reads "not
+        // landed" even though the patch demonstrably landed at some point in history. The
+        // durable `git log --find-object` walk must still say Landed.
+        let (dir, _head1, landed_blob) = repo_with_file("patch-durable", "landed content\n");
+        std::fs::write(dir.join("f.rs"), "a later, unrelated edit\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "c1 supersedes the landed content"]);
+        // fast path alone would say Unknown (HEAD:<path> no longer matches landed_blob) —
+        // patch_staleness must fall back to history and still report Landed.
+        assert_eq!(patch_staleness(Some(&dir), "f.rs", Some(&landed_blob)), Staleness::Landed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_staleness_unknown_when_blob_never_landed() {
+        let (dir, _head, _blob) = repo_with_file("patch-never", "a\nb\n");
+        // a result_hash that never existed at this path, at HEAD or anywhere in history.
+        assert_eq!(
+            patch_staleness(Some(&dir), "f.rs", Some(&"f".repeat(40))),
+            Staleness::Unknown
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_staleness_unknown_without_a_clone() {
+        assert_eq!(patch_staleness(None, "f.rs", Some(&"a".repeat(40))), Staleness::Unknown);
     }
 
     #[test]

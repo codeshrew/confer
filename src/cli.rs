@@ -227,12 +227,14 @@ pub(crate) enum Cmd {
         args: CreateArgs,
     },
     /// Claim a request (you're taking it). Sugar for `append --type claim --of`.
+    /// Takes the request id positionally (`confer claim <id>`) or via `--of`.
     Claim {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Mark a request done. `--as wont-do|duplicate|obsolete` closes it *without*
     /// completion (a conscious drop). Sugar for `append --type done --of`.
+    /// Takes the request id positionally (`confer done <id>`) or via `--of`.
     Done {
         #[command(flatten)]
         args: LifecycleArgs,
@@ -240,18 +242,21 @@ pub(crate) enum Cmd {
         resolution: Option<String>,
     },
     /// Mark a request failed. Sugar for `append --type error --of`.
+    /// Takes the request id positionally (`confer error <id>`) or via `--of`.
     Error {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Mark a request blocked/waiting (off the active board → `requests --blocked`);
     /// re-`claim` when unblocked. Sugar for `append --type blocked --of`.
+    /// Takes the request id positionally (`confer blocked <id>`) or via `--of`.
     Blocked {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Backlog a request (someday) — anyone can, incl. the addressee. Sugar for
     /// `append --type defer --of`.
+    /// Takes the request id positionally (`confer defer <id>`) or via `--of`.
     Defer {
         #[command(flatten)]
         args: LifecycleArgs,

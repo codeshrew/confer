@@ -834,11 +834,26 @@ fn run() -> Result<()> {
         }),
         Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
         Cmd::Note { args } => cmd_create("note", args, None),
-        Cmd::Claim { args } => cmd_lifecycle("claim", args, None),
-        Cmd::Done { args, resolution } => cmd_lifecycle("done", args, resolution),
-        Cmd::Error { args } => cmd_lifecycle("error", args, None),
-        Cmd::Blocked { args } => cmd_lifecycle("blocked", args, None),
-        Cmd::Defer { args } => cmd_lifecycle("defer", args, None),
+        Cmd::Claim { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("claim", args, None)
+        }
+        Cmd::Done { mut args, resolution } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("done", args, resolution)
+        }
+        Cmd::Error { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("error", args, None)
+        }
+        Cmd::Blocked { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("blocked", args, None)
+        }
+        Cmd::Defer { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("defer", args, None)
+        }
         Cmd::Suggest { args } => cmd_suggest(args),
         Cmd::Apply { id, check, repo_dir, force } => patch::cmd_apply(id, check, repo_dir, force),
         Cmd::Poll {
@@ -1105,8 +1120,12 @@ pub(crate) fn ssh_keygen_path() -> String {
 /// so `done --of X` already reaches the opener; `--to`/`--reply-to` override that.
 #[derive(clap::Args)]
 pub(crate) struct LifecycleArgs {
-    /// the request id this update is about
-    #[arg(long)]
+    /// the request id this update is about (positional shorthand for --of; matching
+    /// `show`/`ack`, which already take a bare id — this closes that inconsistency)
+    id: Option<String>,
+    /// the request id this update is about — same as the positional id; give at most
+    /// one (both are fine if they agree)
+    #[arg(long, default_value = "")]
     of: String,
     /// one-line summary (a sensible default is used if omitted)
     #[arg(long)]
@@ -1138,6 +1157,22 @@ pub(crate) struct LifecycleArgs {
     /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
     #[arg(long = "allow-dirty")]
     allow_dirty: bool,
+}
+
+impl LifecycleArgs {
+    /// Reconcile the positional id with `--of`: either alone is fine; given both, they
+    /// must agree (a clear error otherwise beats silently preferring one over the other).
+    fn resolved_of(&self) -> Result<String> {
+        let of = self.of.trim();
+        match (self.id.as_deref().map(str::trim), of) {
+            (Some(pos), of) if !pos.is_empty() && !of.is_empty() && pos != of => Err(anyhow!(
+                "conflicting request id: positional '{pos}' vs --of '{of}' — pass just one"
+            )),
+            (Some(pos), _) if !pos.is_empty() => Ok(pos.to_string()),
+            (_, of) if !of.is_empty() => Ok(of.to_string()),
+            _ => Err(anyhow!("a request id is required: pass it positionally or via --of")),
+        }
+    }
 }
 
 /// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
