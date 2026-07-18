@@ -46,6 +46,16 @@ struct Hub {
 }
 
 fn new_hub() -> Hub {
+    let home = tmp("home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    new_hub_with_home(home)
+}
+
+/// Same as `new_hub()`, but sharing a CALLER-PROVIDED home dir rather than minting a
+/// fresh one — lets a test put TWO distinct hubs under the same `~/.confer/hubs.json`
+/// registry (the realistic shape of the P0 leak: one machine identity following more
+/// than one hub, `confer serve` scoped to just one of them).
+fn new_hub_with_home(home: PathBuf) -> Hub {
     let root = tmp("hub");
     let bare = root.join("hub.git");
     assert!(git(&root, &["init", "--bare", "-q", "-b", "main", bare.to_str().unwrap()]).status.success());
@@ -61,8 +71,6 @@ fn new_hub() -> Hub {
     git(&seed, &["commit", "-q", "-m", "init"]);
     git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
     assert!(git(&seed, &["push", "-q", "-u", "origin", "main"]).status.success());
-    let home = tmp("home");
-    std::fs::create_dir_all(home.join(".confer")).unwrap();
     Hub { bare, home }
 }
 
@@ -109,14 +117,23 @@ impl Drop for Server {
 }
 
 fn start_server(c: &Clone) -> Server {
+    start_server_with(c, &[])
+}
+
+/// Same as `start_server`, but with extra CLI args appended (e.g. `&["--all-hubs"]`) —
+/// used by the P0 scoping tests, which need to start `confer serve` both with and
+/// without `--all-hubs` against the same shared-HOME two-hub fixture.
+fn start_server_with(c: &Clone, extra: &[&str]) -> Server {
     // Bind an EPHEMERAL port (`:0`) and read back the actual port serve prints — the OS
     // assigns it atomically at bind, so there's no find-a-free-port-then-bind race
     // (parallel tests picking the same "free" port was the flake this replaces).
+    let mut args: Vec<&str> = vec!["serve", "--bind", "127.0.0.1:0"];
+    args.extend_from_slice(extra);
     let mut child = Command::new(BIN)
         .env("HOME", &c.home)
         .env("CONFER_HUB", &c.dir)
         .env("CONFER_ROLE", &c.role)
-        .args(["serve", "--bind", "127.0.0.1:0"])
+        .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -170,8 +187,10 @@ fn start_server(c: &Clone) -> Server {
 
 /// A bare-bones blocking HTTP/1.1 GET (no client dep) — connects, sends the request
 /// with `Connection: close` so the server closes the socket when done, then reads to
-/// EOF. Returns (status, body).
-fn http_get(addr: &str, path: &str) -> (u16, String) {
+/// EOF. Returns (status, head, body) — `head` (raw header block, one line per header)
+/// so callers that need to assert on response headers (the P3 security-headers test)
+/// don't need a second request path.
+fn http_get_full(addr: &str, path: &str) -> (u16, String, String) {
     let mut s = TcpStream::connect(addr).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(s, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
@@ -179,9 +198,15 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
     let _ = s.read_to_end(&mut buf); // best-effort: a read timeout still leaves buf usable
     let text = String::from_utf8_lossy(&buf).into_owned();
     let mut parts = text.splitn(2, "\r\n\r\n");
-    let head = parts.next().unwrap_or("");
+    let head = parts.next().unwrap_or("").to_string();
     let body = parts.next().unwrap_or("").to_string();
     let status: u16 = head.lines().next().and_then(|l| l.split_whitespace().nth(1)).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, head, body)
+}
+
+/// Returns (status, body) — the common case that doesn't care about headers.
+fn http_get(addr: &str, path: &str) -> (u16, String) {
+    let (status, _head, body) = http_get_full(addr, path);
     (status, body)
 }
 
@@ -733,7 +758,7 @@ fn thread_returns_the_thread_and_errors_on_bad_id() {
 fn code_endpoint_returns_snippet_and_degrades_gracefully() {
     let hub = new_hub();
     let alpha = hub.clone("alpha");
-    seed(&alpha); // registers + maps "mylib" with lib.rs = "one\ntwo\nthree\nfour\n"
+    seed(&alpha); // registers + maps "mylib" with lib.rs = "one\ntwo\nthree\nfour\n"; refs mylib:lib.rs#L1-2
     let server = start_server(&alpha);
 
     // missing required query params → 400.
@@ -742,8 +767,18 @@ fn code_endpoint_returns_snippet_and_degrades_gracefully() {
         assert_eq!(status, 400, "path {path} body {body}");
     }
 
-    // a real, mapped repo + a valid range returns the lines + rust language detection.
-    let (status, body) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&range=L1-2");
+    // Recover the exact (repo, path, sha) `seed()` actually pinned via `/api/refs` — the
+    // P2 restriction (Jarvis's 0.8.0 review) means `/api/code` only serves tuples that
+    // appear in the hub's RefIndex, so a literal "HEAD" (never a pinned sha) is no longer
+    // a valid probe here.
+    let (rstatus, rbody) = http_get(&server.addr, "/api/refs?target=mylib:lib.rs");
+    assert_eq!(rstatus, 200, "body: {rbody}");
+    let rv: serde_json::Value = serde_json::from_str(&rbody).unwrap();
+    let referenced_sha = rv.as_array().unwrap()[0]["sha"].as_str().unwrap().to_string();
+
+    // a real, mapped, REFERENCED repo/path/sha + a valid range returns the lines + rust
+    // language detection.
+    let (status, body) = http_get(&server.addr, &format!("/api/code?repo=mylib&path=lib.rs&sha={referenced_sha}&range=L1-2"));
     assert_eq!(status, 200, "body: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
     assert_eq!(v["lang"], "rust");
@@ -753,28 +788,40 @@ fn code_endpoint_returns_snippet_and_degrades_gracefully() {
     assert_eq!(lines[1]["text"], "two");
     assert!(v["staleness"].is_string());
 
-    // a malformed range is a 400, not silently ignored.
-    let (s2, b2) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&range=notarange");
+    // a malformed range on an otherwise-referenced tuple is a 400, not silently ignored.
+    let (s2, b2) = http_get(&server.addr, &format!("/api/code?repo=mylib&path=lib.rs&sha={referenced_sha}&range=notarange"));
     assert_eq!(s2, 400, "body: {b2}");
 
-    // an UNMAPPED repo degrades gracefully: 200, empty lines, never an error just
-    // because this machine doesn't have the clone. A symbolic sha (HEAD) is "unpinned"
-    // regardless of clone status; a full-hex sha against no clone is "unknown".
-    let (s3, b3) = http_get(&server.addr, "/api/code?repo=nope-no-such-repo&path=x.rs&sha=HEAD");
-    assert_eq!(s3, 200, "body: {b3}");
-    let v3: serde_json::Value = serde_json::from_str(&b3).unwrap();
-    assert_eq!(v3["lines"].as_array().unwrap().len(), 0);
-    assert_eq!(v3["staleness"], "unpinned");
+    // P2: a (repo, path, sha) NOBODY ever referenced via --ref 404s — this is the actual
+    // fix, not a side effect. Same repo+path, wrong sha:
+    let unreferenced_sha = "f".repeat(40);
+    let (s3, b3) = http_get(&server.addr, &format!("/api/code?repo=mylib&path=lib.rs&sha={unreferenced_sha}"));
+    assert_eq!(s3, 404, "an unreferenced sha must 404, not full-repo-browse: {b3}");
+    // same repo, an unreferenced path:
+    let (s3b, b3b) = http_get(&server.addr, &format!("/api/code?repo=mylib&path=never-referenced.rs&sha={referenced_sha}"));
+    assert_eq!(s3b, 404, "an unreferenced path must 404: {b3b}");
+    // a repo nobody ever referenced at all:
+    let (s3c, b3c) = http_get(&server.addr, "/api/code?repo=nope-no-such-repo&path=x.rs&sha=HEAD");
+    assert_eq!(s3c, 404, "an unreferenced repo must 404: {b3c}");
 
-    let full_hex_sha = "a".repeat(40);
-    let (s3b, b3b) = http_get(&server.addr, &format!("/api/code?repo=nope-no-such-repo&path=x.rs&sha={full_hex_sha}"));
-    assert_eq!(s3b, 200, "body: {b3b}");
-    let v3b: serde_json::Value = serde_json::from_str(&b3b).unwrap();
-    assert_eq!(v3b["lines"].as_array().unwrap().len(), 0);
-    assert_eq!(v3b["staleness"], "unknown");
+    // A REFERENCED tuple whose repo happens not to be locally cloned still degrades
+    // gracefully (200, empty lines) rather than erroring — the P2 restriction is about
+    // WHICH tuples are servable, not a replacement for the existing clone-map graceful
+    // degradation.
+    let unmapped_sha = "b".repeat(40);
+    assert!(ok(&alpha.append(&[
+        "--type", "note", "--to", "beta", "--summary", "unmapped ref", "--text", "poking",
+        "--ref", &format!("neverlib:x.rs@{unmapped_sha}#L1-2"),
+    ])));
+    let (s5, b5) = http_get(&server.addr, &format!("/api/code?repo=neverlib&path=x.rs&sha={unmapped_sha}"));
+    assert_eq!(s5, 200, "a referenced-but-unmapped repo must still degrade gracefully: {b5}");
+    let v5: serde_json::Value = serde_json::from_str(&b5).unwrap();
+    assert_eq!(v5["lines"].as_array().unwrap().len(), 0);
+    assert_eq!(v5["staleness"], "unknown");
 
-    // unknown hub still 404s the same way as the other endpoints.
-    let (s4, b4) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&hub=nope-such-hub");
+    // unknown hub still 404s the same way as the other endpoints (and before the
+    // referenced-tuple check even runs).
+    let (s4, b4) = http_get(&server.addr, &format!("/api/code?repo=mylib&path=lib.rs&sha={referenced_sha}&hub=nope-such-hub"));
     assert_eq!(s4, 404, "body: {b4}");
 }
 
@@ -847,14 +894,107 @@ fn root_serves_spa_and_classic_serves_server_html() {
     seed(&alpha);
     let server = start_server(&alpha);
 
-    // `/` serves the embedded single-file SPA (script-driven, self-contained).
+    // `/` serves the embedded single-file SPA (script-driven, self-contained) — built by
+    // `npm --prefix ui run build` before `cargo build` (see build.rs). Without that build
+    // step `build.rs` embeds a documented placeholder page instead (so `cargo build`/`cargo
+    // test` still work with no `node` toolchain at all) — this used to be a CI landmine:
+    // this exact assertion would spuriously fail on any checkout that ran `cargo test`
+    // without first building the UI. Skip the SPA-shape assertion gracefully in that case
+    // (loudly, via eprintln, so it's visibly a skip and not a silently-vanished check) —
+    // `/api/*` and `/classic` are unaffected by whether the UI was built and are asserted
+    // unconditionally below.
     let (status, body) = http_get(&server.addr, "/");
     assert_eq!(status, 200);
-    assert!(body.contains("<script"), "root should serve the SPA: {}", &body[..body.len().min(400)]);
-    assert!(!body.contains("confer web view"), "root should be the SPA, not the classic page");
+    if body.contains("dashboard isn't built yet") {
+        eprintln!(
+            "root_serves_spa_and_classic_serves_server_html: ui/dist wasn't built (placeholder page) — \
+             skipping the SPA-shape assertion; run `npm --prefix ui install && npm --prefix ui run build` first to exercise it"
+        );
+    } else {
+        assert!(body.contains("<script"), "root should serve the SPA: {}", &body[..body.len().min(400)]);
+        assert!(!body.contains("confer web view"), "root should be the SPA, not the classic page");
+    }
 
     // `/classic` is the no-JS server-rendered fallback.
     let (cs, cbody) = http_get(&server.addr, "/classic");
     assert_eq!(cs, 200);
     assert!(cbody.contains("confer web view"), "classic body: {cbody}");
+}
+
+/// P0 (Jarvis's 0.8.0 review): `/api/refs?allHubs=1` used to jump straight to
+/// `crosshub::hub_dirs()` — EVERY hub this machine's identity follows, registered in
+/// `~/.confer/hubs.json` — regardless of what `confer serve` was told to expose. The
+/// realistic leak shape: one machine identity follows two hubs (unrelated projects), and
+/// an operator runs `confer serve --lan` scoped to just one of them. Two SEPARATE hubs
+/// sharing one `HOME` (so both land in the same `hubs.json`) reproduces exactly that.
+#[test]
+fn refs_all_hubs_is_scoped_to_the_operators_own_choice_not_every_hub_on_the_machine() {
+    let home = tmp("shared-home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+
+    // Hub A: the one the operator actually starts `serve` against.
+    let hub_a = new_hub_with_home(home.clone());
+    let alpha = hub_a.clone("alpha");
+    assert!(ok(&alpha.confer(&["join", "--role", "alpha"])), "alpha join must register hub A in the shared hubs.json");
+    seed(&alpha); // refs mylib:lib.rs#L1-2
+
+    // Hub B: a DIFFERENT hub the same machine identity also follows, with its own
+    // secret-shaped ref the operator never asked to expose via hub A's server.
+    let hub_b = new_hub_with_home(home.clone());
+    let gamma = hub_b.clone("gamma");
+    assert!(ok(&gamma.confer(&["join", "--role", "gamma"])), "gamma join must register hub B in the shared hubs.json");
+    let secret_sha = "c".repeat(40);
+    assert!(ok(&gamma.append(&[
+        "--type", "note", "--to", "beta", "--summary", "hub B secret", "--text", "shh",
+        "--ref", &format!("secretlib:secret.rs@{secret_sha}#L1-2"),
+    ])));
+
+    // 1. `confer serve` started scoped to hub A ONLY (no --all-hubs). `allHubs=1` must
+    //    NOT reach hub B's content — the P0 leak. It must be rejected outright (400),
+    //    not silently narrowed, so a caller relying on fleet-wide results gets a loud
+    //    signal instead of a quietly-scoped-down 200.
+    {
+        let server = start_server(&alpha); // no --all-hubs
+        let (status, body) = http_get(&server.addr, "/api/refs?target=secretlib:secret.rs&allHubs=1");
+        assert_eq!(status, 400, "allHubs=1 against a NOT-all-hubs server must be rejected, not silently scoped: {body}");
+
+        // hub A's own content is unaffected and never carries hub B's secret ref.
+        let (s2, b2) = http_get(&server.addr, "/api/refs?target=mylib:lib.rs");
+        assert_eq!(s2, 200, "body: {b2}");
+        let v2: serde_json::Value = serde_json::from_str(&b2).unwrap();
+        assert_eq!(v2.as_array().unwrap().len(), 1);
+        assert!(!b2.contains("secretlib"), "hub A's own-scope query must never see hub B's ref: {b2}");
+    }
+
+    // 2. `confer serve --all-hubs` (the operator's own opt-in to the fleet-wide view) DOES
+    //    let `allHubs=1` see hub B's content — the same query now legitimately crosses
+    //    hubs because the operator consented to that scope at startup.
+    {
+        let server = start_server_with(&alpha, &["--all-hubs"]);
+        let (status, body) = http_get(&server.addr, "/api/refs?target=secretlib:secret.rs&allHubs=1");
+        assert_eq!(status, 200, "body: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 1, "hub B's ref must be visible once the operator started --all-hubs: {arr:?}");
+        assert_eq!(arr[0]["repo"], "secretlib");
+    }
+}
+
+/// P3 (defense-in-depth): every non-SSE response carries a CSP + framing/sniffing
+/// header set, on the JSON API, `/classic`, and the embedded SPA alike.
+#[test]
+fn responses_carry_security_headers() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha);
+    let server = start_server(&alpha);
+
+    for path in ["/api/hubs", "/classic", "/"] {
+        let (status, head, _body) = http_get_full(&server.addr, path);
+        assert_eq!(status, 200, "path {path}");
+        let head_lower = head.to_lowercase();
+        assert!(head_lower.contains("content-security-policy:"), "{path} missing CSP: {head}");
+        assert!(head_lower.contains("x-frame-options: deny"), "{path} missing X-Frame-Options: {head}");
+        assert!(head_lower.contains("x-content-type-options: nosniff"), "{path} missing X-Content-Type-Options: {head}");
+    }
 }

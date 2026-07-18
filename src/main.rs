@@ -1049,7 +1049,7 @@ fn run() -> Result<()> {
             // from --port, else CONFER_SERVE_PORT, else 8422.
             let env_port = std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok());
             let bind = serve::resolve_bind(&serve::BindFlags { bind, lan, port, env_port });
-            serve::run(resolve_hubs(all_hubs)?, &bind)
+            serve::run(resolve_hubs(all_hubs)?, &bind, all_hubs)
         }
         Cmd::InstallHook { project } => cmd_install_hook(project),
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),

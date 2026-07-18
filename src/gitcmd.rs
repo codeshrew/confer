@@ -212,7 +212,7 @@ fn acquire_lock_until(root: &Path, overall: Option<std::time::Instant>) -> Resul
     }
     // A persistent lock file (never removed) — flock is on the open handle, so a
     // leftover empty file is harmless and reused.
-    let mut file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&p)?;
+    let mut file = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&p)?;
     // Poll for the lock with a budget so a genuinely wedged-but-alive holder can't
     // block us forever. Holds are bounded (the sync retry below is capped), so this
     // rarely waits. flock frees automatically if the holder dies.

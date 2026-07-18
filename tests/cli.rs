@@ -293,6 +293,7 @@ fn append_under_held_lock_fails_loudly_never_phantom_sends() {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(a.dir.join(".confer/gitlock"))
         .unwrap();
     held.lock_exclusive().unwrap(); // a concurrent op holds the clone lock
@@ -366,6 +367,7 @@ fn append_op_is_bounded_by_the_overall_deadline_not_the_stacked_phase_budgets() 
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(a.dir.join(".confer/gitlock"))
         .unwrap();
     held.lock_exclusive().unwrap(); // a concurrent op holds the clone lock for the whole test
@@ -6156,4 +6158,221 @@ fn refs_and_show_carry_the_patch_kind_and_landed_chip() {
 
     let shown_landed = out(&c.confer(&["show", &id]));
     assert!(shown_landed.contains("proposed a change here (applied)"), "shown_landed: {shown_landed}");
+}
+
+// ── design/45 review (0.8.0): receiver-side re-validation is enforced by construction ───────
+// (Jarvis's finding: write-time gates were courtesy-only — a hand-authored/replayed message
+// could reach `confer apply` with a binary diff, a byte-bomb, or a forged `result_hash`, and
+// bypass every gate. These tests exercise the `validate_patch` chokepoint from BOTH the honest
+// write path AND a hand-authored message reaching `confer apply` directly.)
+
+/// A real `git diff --binary` block for a brand-new binary file `path` with content `bytes`,
+/// scoped to that path (the codedir is left clean afterward — nothing staged or committed).
+fn binary_diff_new_file(codedir: &Path, path: &str, bytes: &[u8]) -> String {
+    std::fs::write(codedir.join(path), bytes).unwrap();
+    assert!(git(codedir, &["add", "--", path]).status.success());
+    let o = git(codedir, &["diff", "--binary", "--full-index", "--cached", "--", path]);
+    assert!(o.status.success(), "git diff --binary failed");
+    let diff = out(&o);
+    assert!(diff.contains("GIT binary patch"), "sanity: should be a real binary diff: {diff}");
+    git(codedir, &["reset", "-q"]);
+    let _ = std::fs::remove_file(codedir.join(path));
+    diff
+}
+
+/// A 26-char id, distinct enough for these hand-authored-message tests (doesn't need to be a
+/// REAL ULID — `schema::parse_message` only requires the field be a string, and nothing here
+/// depends on id-order semantics since each test posts exactly one such message).
+fn forged_id() -> String {
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let raw = format!("01FORGED{}{:08}", std::process::id(), n);
+    let mut s: String = raw.chars().filter(char::is_ascii_alphanumeric).collect();
+    while s.len() < 26 {
+        s.push('0');
+    }
+    s.chars().take(26).collect()
+}
+
+/// Hand-author a message directly into `c`'s hub — bypassing `confer append`/`suggest` and every
+/// write-time gate entirely, simulating a message that reached the store via SOME OTHER route
+/// (a hand-edited file, a compromised/out-of-date peer, a rogue client) — exactly the threat
+/// model design/45's receiver-side re-validation closes. Returns the message id.
+fn hand_craft_patch_message(c: &Clone, repo: &str, sha: &str, path: &str, result_hash: Option<&str>, diff: &str) -> String {
+    let id = forged_id();
+    let dir = c.dir.join("threads").join("forged");
+    std::fs::create_dir_all(&dir).unwrap();
+    let result_hash_line =
+        result_hash.map(|h| format!("\n    result_hash: {h}")).unwrap_or_default();
+    let fence = format!("```confer-patch repo={repo} sha={sha}\n{}\n```\n", diff.trim_end_matches('\n'));
+    let md = format!(
+        "---\nid: {id}\nfrom: forger\ntype: note\nts: 2026-07-18T00:00:00Z\nrefs:\n  - repo: {repo}\n    sha: {sha}\n    path: {path}\n    patch: true{result_hash_line}\n---\n\n{fence}\n"
+    );
+    std::fs::write(dir.join(format!("{id}.md")), md).unwrap();
+    id
+}
+
+#[test]
+fn patch_write_gate_refuses_a_binary_diff() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-write");
+
+    let diff = binary_diff_new_file(&codedir, "img.bin", &[0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    let patch_file = codedir.join("bin.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "sneaky binary",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "a binary diff must be refused at write time");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+    // Nothing was committed to the codedir's working tree/index by the refused write path (the
+    // scratch `bin.diff` file itself is just this test's own input, not confer's doing).
+    let _ = std::fs::remove_file(&patch_file);
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "codedir must stay clean");
+}
+
+#[test]
+fn suggest_refuses_a_binary_diff() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-suggest");
+
+    let diff = binary_diff_new_file(&codedir, "img.bin", &[9u8, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    let patch_file = codedir.join("bin.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "sneaky binary suggestion",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "confer suggest must also refuse a binary diff");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+}
+
+#[test]
+fn apply_refuses_a_binary_diff_smuggled_past_the_anti_spoof_pairing_rule() {
+    // The realistic smuggle: a MIXED diff — one ordinary text-file hunk (with real `--- `/`+++ `
+    // headers, so it CAN legitimately pair with a matching `patch:true` ref) plus a SECOND file's
+    // `GIT binary patch` block, which has NO `--- `/`+++ ` headers at all, so it's invisible to
+    // `parse_diff_touched_files`/the anti-spoof coverage check — yet `git apply` would still
+    // materialize it onto the real working tree. Before the `validate_patch` chokepoint, `confer
+    // apply` never re-checked for this at all.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-apply");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let text_diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    // A leading NUL byte is what makes git's own heuristic classify this as binary.
+    let binary_diff = binary_diff_new_file(&codedir, "smuggled.bin", &[0u8, 1, 2, 3, 4, 5, 6, 7, 8]);
+    let combined = format!("{text_diff}{binary_diff}");
+
+    let expected_blob = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut ch| {
+                use std::io::Write;
+                ch.stdin.take().unwrap().write_all(b"line1\nCHANGED\nline3\n").unwrap();
+                ch.wait_with_output()
+            })
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", Some(&expected_blob), &combined);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(!ok(&chk), "a diff carrying a binary block must be refused even at --check");
+    assert!(err(&chk).contains("binary"), "err: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(!ok(&a), "a diff carrying a binary block must be refused at real apply");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+
+    // The working tree is untouched: neither the text change nor the smuggled binary file landed.
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nline2\nline3\n");
+    assert!(!codedir.join("smuggled.bin").exists(), "the smuggled binary file must NOT have been written");
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "codedir must stay clean");
+}
+
+#[test]
+fn apply_refuses_an_oversized_diff_even_with_a_forged_small_line_count() {
+    // A hand-authored message whose diff is dominated by one enormous line (far beyond
+    // MAX_DIFF_BYTES) but touches only 2 changed (+/-) LINES — `changed_line_count` alone would
+    // read this as tiny and let it straight through the line-based size gate. The byte ceiling
+    // in `validate_patch` catches it independent of the (spoofable) line count.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-oversized-bytes");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let huge_line = "x".repeat(2 * 1024 * 1024); // 2 MiB on a single `+` line
+    let diff = format!(
+        "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n line1\n-line2\n+{huge_line}\n line3\n"
+    );
+    assert_eq!(patch_changed_lines_sanity(&diff), 2, "sanity: only 2 changed lines by the naive count");
+
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", None, &diff);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(!ok(&chk), "an oversized-by-bytes diff must be refused even with a tiny changed-line count");
+    assert!(err(&chk).contains("byte"), "err: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(!ok(&a), "real apply must also refuse it");
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nline2\nline3\n", "untouched");
+}
+
+/// The naive `+`/`-` count a spoofed diff is trying to hide behind (mirrors `changed_line_count`
+/// without depending on the crate — this test crate only links the built binary).
+fn patch_changed_lines_sanity(diff: &str) -> usize {
+    diff.lines()
+        .filter(|l| (l.starts_with('+') && !l.starts_with("+++")) || (l.starts_with('-') && !l.starts_with("---")))
+        .count()
+}
+
+#[test]
+fn apply_forged_result_hash_does_not_spoof_already_landed() {
+    // The P2 finding: `result_hash` is frontmatter the SENDER wrote. A peer who reads a target
+    // path's CURRENT `HEAD` blob OID and forges it as `result_hash` on a diff that has genuinely
+    // NOT landed must NOT get a false "already landed" — `confer apply` must independently verify
+    // (here: `git apply --check --reverse`), never trust the self-declared value.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-forged-result-hash");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    // f.rs is STILL "line1\nline2\nline3\n" at HEAD — the diff below has never been applied.
+    let current_oid = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["rev-parse", "HEAD:f.rs"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    let diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    // Forge result_hash = the file's CURRENT (unrelated, un-landed) blob oid — exactly what an
+    // attacker who merely reads the live repo state could produce, without ever actually
+    // authoring/applying a change that produces it.
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", Some(&current_oid), &diff);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_ne!(code(&chk), 2, "a forged result_hash must NOT produce a false already-landed (exit 2): {}", err(&chk));
+    assert!(ok(&chk), "the real diff genuinely applies cleanly here: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "apply failed: {}", err(&a));
+    assert!(!out(&a).contains("already landed"), "must not falsely report already landed: {}", out(&a));
+    assert_eq!(
+        std::fs::read_to_string(codedir.join("f.rs")).unwrap(),
+        "line1\nCHANGED\nline3\n",
+        "the real diff must actually have been applied, not skipped"
+    );
 }

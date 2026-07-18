@@ -702,7 +702,11 @@ fn attach_patch(
     ref_from: Option<&Path>,
     allow_large: bool,
 ) -> Result<(Vec<schema::CodeRef>, String)> {
-    if let Some(warning) = patch::size_gate(diff, allow_large)? {
+    // design/45 review, P1: binary refusal + the hard byte ceiling + the line-count size gate,
+    // ALL through the one `validate_patch` chokepoint `confer apply` also uses — the diff below
+    // this point is always a `ValidatedPatch`, so it structurally cannot skip these gates.
+    let (validated, warning) = patch::validate_patch(diff, allow_large)?;
+    if let Some(warning) = warning {
         hint(warning);
     }
     let card_root_sha = repo_inv.get(repo).and_then(|c| c.root_sha.clone());
@@ -720,7 +724,7 @@ fn attach_patch(
     }
     let base_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
 
-    let hashes = patch::validate_and_derive(dir, &base_sha, diff)?;
+    let hashes = patch::validate_and_derive(dir, &base_sha, &validated)?;
     let touched = patch::parse_diff_touched_files(diff);
     if touched.is_empty() {
         return Err(anyhow!(

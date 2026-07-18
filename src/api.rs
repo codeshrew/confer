@@ -122,6 +122,28 @@ fn resolve_hub<'a>(dirs: &'a [PathBuf], q: &HashMap<String, String>) -> Option<&
     resolve_hub_idx(dirs, q).map(|i| &dirs[i])
 }
 
+/// THE single scoped hub-resolver — every cross-hub need in this module must route
+/// through this, never call `crosshub::hub_dirs()` directly (a P0 fix: `refs()` used to
+/// special-case `?allHubs=1` straight to `crosshub::hub_dirs()` — EVERY hub registered on
+/// the machine — ignoring the operator's chosen scope entirely; a `confer serve --lan`
+/// started against ONE hub still handed out every other hub's content to any unauth LAN
+/// client). `all_hubs` is the operator's OWN scope, decided once at `confer serve`
+/// startup (`--all-hubs` or not) and threaded down through `serve::run` — never derived
+/// from anything in the request. When the server was started scoped to one/some hubs
+/// (`all_hubs = false`), the fleet-wide set is never reachable from a handler, full stop;
+/// when it was started `--all-hubs`, the operator already consented to exposing every
+/// hub, so `dirs` (already `crosshub::hub_dirs()` at startup — see `resolve_hubs` in
+/// main.rs) is what's returned. Either way this is the ONLY line in this crate calling
+/// `crosshub::hub_dirs()` from a request path, so a future endpoint cannot repeat the
+/// bypass — it has nothing else to call.
+fn allowed_hubs(dirs: &[PathBuf], all_hubs: bool) -> Vec<PathBuf> {
+    if all_hubs {
+        crosshub::hub_dirs()
+    } else {
+        dirs.to_vec()
+    }
+}
+
 /// A borrowed-or-owned Snapshot: the common case holds the server's warm-cache lock
 /// (populated every ~2s by `serve`'s background fold); the fallback (cache miss / a
 /// poisoned lock) does one fresh, uncached `Snapshot::load` so a request is still
@@ -163,14 +185,19 @@ fn hub_json(dirs: &[PathBuf], dir: &Path, agent_count: usize) -> Value {
 
 /// Route `path` (already stripped of query) to a handler. Anything unrecognized under
 /// `/api/` is a 404 with the same `{"error":".."}` shape as an unknown hub.
-pub fn dispatch(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, path: &str, url: &str) -> ApiResponse {
+///
+/// `all_hubs` is the operator's scope from `confer serve` startup (`--all-hubs` or not —
+/// see `serve::run`), threaded down so a handler CAN'T fabricate a broader scope than the
+/// operator chose; only `refs()` currently needs it (the one endpoint with a legitimate
+/// cross-hub query), routed through `allowed_hubs()`.
+pub fn dispatch(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, path: &str, url: &str, all_hubs: bool) -> ApiResponse {
     let q = parse_qs(url);
     match path {
         "/api/hubs" => hubs(dirs, cache),
         "/api/overview" => overview(dirs, cache, &q),
         "/api/messages" => messages(dirs, cache, &q),
         "/api/thread" => thread(dirs, cache, &q),
-        "/api/refs" => refs(dirs, &q),
+        "/api/refs" => refs(dirs, all_hubs, &q),
         "/api/codefiles" => codefiles(dirs, cache, &q),
         "/api/code" => code(dirs, &q),
         "/api/repos" => repos_inventory(dirs, &q),
@@ -625,7 +652,7 @@ fn memoized_staleness(
     (v, false)
 }
 
-fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
+fn refs(dirs: &[PathBuf], all_hubs: bool, q: &HashMap<String, String>) -> ApiResponse {
     let Some(target) = q.get("target").filter(|s| !s.is_empty()) else {
         return ApiResponse::err(400, "missing ?target=");
     };
@@ -633,9 +660,20 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         Ok(v) => v,
         Err(e) => return ApiResponse::err(400, e.to_string()),
     };
-    let all_hubs = matches!(q.get("allHubs").map(String::as_str), Some("1") | Some("true"));
-    let hubs: Vec<PathBuf> = if all_hubs {
-        crosshub::hub_dirs()
+    // P0 fix (Jarvis's 0.8.0 review): `?allHubs=1` used to jump straight to
+    // `crosshub::hub_dirs()` — EVERY hub registered on the machine — regardless of what
+    // the operator started `confer serve` scoped to. It now honors `allHubs=1` ONLY when
+    // the server itself was started `--all-hubs` (the operator's own consent, decided
+    // once at startup — see `serve::run`'s `all_hubs` param); otherwise the param is
+    // rejected outright (400) rather than silently narrowed, so a caller relying on
+    // fleet-wide results gets a loud signal instead of a quietly-scoped-down 200. Either
+    // way `allowed_hubs()` is the only place that can reach `crosshub::hub_dirs()`.
+    let requested_all_hubs = matches!(q.get("allHubs").map(String::as_str), Some("1") | Some("true"));
+    let hubs: Vec<PathBuf> = if requested_all_hubs {
+        if !all_hubs {
+            return ApiResponse::err(400, "allHubs=1 requires the server to be started with --all-hubs");
+        }
+        allowed_hubs(dirs, true)
     } else {
         match resolve_hub(dirs, q) {
             Some(d) => vec![d.clone()],
@@ -782,6 +820,23 @@ fn lang_of(path: &str) -> &'static str {
     }
 }
 
+/// P2 fix (Jarvis's 0.8.0 review): `/api/code` used to be a free-form `git cat-file` over
+/// any `repo`+`path`+`sha` an unauth `--lan` client cared to ask for — full-repo browse of
+/// any locally-mapped repo, any branch/tag/commit, not just what people actually pinned
+/// via `--ref`. Restricted to the RefIndex (the hub's reverse index of pinned refs, the
+/// same projection `/api/refs` and `/api/codefiles` already build from the log): a
+/// `(repo, path, sha)` triple that no message actually references 404s. Chosen over just
+/// tightening the `--lan` warning copy because the mechanic (`--ref` pins a specific
+/// snippet) implies "referenced code only" — this makes that true rather than merely
+/// documenting the gap; the Code view only ever asks for refs it got from `/api/codefiles`
+/// or a message's `refs`, both already RefIndex-sourced, so no legitimate caller loses
+/// anything.
+fn is_referenced(dir: &Path, repo: &str, path: &str, sha: &str) -> bool {
+    let Ok(msgs) = store::all_messages(dir) else { return false };
+    let idx = projection::RefIndex::fold(&msgs);
+    idx.query(repo, Some(path), None).iter().any(|h| h.sha == sha)
+}
+
 fn code(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
     let Some(dir) = resolve_hub(dirs, q) else { return ApiResponse::err(404, "unknown hub") };
     let (Some(repo), Some(path), Some(sha)) = (q.get("repo"), q.get("path"), q.get("sha")) else {
@@ -789,6 +844,9 @@ fn code(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
     };
     if repo.is_empty() || path.is_empty() || sha.is_empty() {
         return ApiResponse::err(400, "missing ?repo=&path=&sha=");
+    }
+    if !is_referenced(dir, repo, path, sha) {
+        return ApiResponse::err(404, "not a referenced (repo, path, sha) — /api/code only serves pinned refs");
     }
     let range = match q.get("range").filter(|s| !s.is_empty()) {
         Some(r) => match append::parse_range(r) {

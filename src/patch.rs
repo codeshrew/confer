@@ -30,6 +30,15 @@ pub(crate) const REFUSE_LINES: usize = 400;
 /// travels as a git branch, not a patch.
 pub(crate) const HARD_CAP_LINES: usize = 2000;
 
+/// The hard BYTE ceiling — always enforced, even with `--allow-large-patch`, and independent of
+/// `changed_line_count`. Closes the P1 finding from Jarvis's 0.8.0 review: a `GIT binary patch`
+/// base85 block (or any diff dominated by one enormous line) contains almost no `+`/`-` LINES, so
+/// `changed_line_count`/`size_gate` alone reads it as tiny. A byte cap this generous is already
+/// far beyond any plausible text-diff suggestion (§1.2's whole premise is "suggestion-scale"), so
+/// it never fires on an honest patch — it only stops a diff whose byte volume is wildly out of
+/// proportion to its line count.
+pub(crate) const MAX_DIFF_BYTES: usize = 1024 * 1024;
+
 /// Count of actual +/- content lines (never `+++`/`---` file headers) across a unified diff —
 /// the size-gate's unit (design/45 §1.2: "~150 changed lines" / "~400 total diff lines").
 pub(crate) fn changed_line_count(diff: &str) -> usize {
@@ -70,6 +79,61 @@ pub(crate) fn size_gate(diff: &str, allow_large: bool) -> Result<Option<String>>
         )));
     }
     Ok(None)
+}
+
+/// True when a unified diff contains a binary hunk — a `GIT binary patch` block (git's base85
+/// encoding of a binary delta) or the plain `Binary files a/… and b/… differ` notice `git diff`
+/// emits when `--binary` wasn't passed. Either marker means `git apply` CAN still materialize
+/// binary content from this diff even though it reads as "0 changed lines" to
+/// `changed_line_count` — design/45 says binary patches are refused outright ("binary: never"),
+/// so detection has to run on the raw text, before any line-counting.
+pub(crate) fn is_binary_diff(diff: &str) -> bool {
+    diff.lines().any(|l| {
+        l.starts_with("GIT binary patch")
+            || (l.starts_with("Binary files ") && l.trim_end().ends_with("differ"))
+    })
+}
+
+/// A diff that has passed [`validate_patch`] — the ONLY way to construct one. `apply_real`,
+/// `apply_check`, and `validate_and_derive` all require a `&ValidatedPatch` rather than a raw
+/// `&str diff`, so an unvalidated diff cannot reach `git apply` by construction: there is no path
+/// through this module's public API that skips the gates below, regardless of whether the diff
+/// arrived via the honest `confer suggest`/`--patch` write path or a hand-authored/replayed
+/// message reaching `confer apply` by any other route (design/45 review, P1 + P2).
+pub(crate) struct ValidatedPatch {
+    diff: String,
+}
+
+impl ValidatedPatch {
+    pub(crate) fn diff(&self) -> &str {
+        &self.diff
+    }
+}
+
+/// The single validation chokepoint (design/45 §1.4/§1.5, closing the 0.8.0 review's P1): binary
+/// refusal, then the hard byte ceiling, then the line-count size gate — in that order, since a
+/// binary/oversized diff should never even reach `changed_line_count`. Both gates ahead of
+/// `size_gate` are unconditional: neither `allow_large` nor anything else can waive them. Returns
+/// the `ValidatedPatch` plus `size_gate`'s optional warning (still surfaced to the caller as a
+/// hint, never swallowed).
+pub(crate) fn validate_patch(diff: &str, allow_large: bool) -> Result<(ValidatedPatch, Option<String>)> {
+    if is_binary_diff(diff) {
+        bail!(
+            "--patch: binary diffs are refused — confer patches are text-diff suggestions only \
+             (design/45: binary content never travels as a patch). Push a branch and --ref the \
+             commit instead."
+        );
+    }
+    if diff.len() > MAX_DIFF_BYTES {
+        bail!(
+            "--patch: {} bytes exceeds the {MAX_DIFF_BYTES}-byte hard cap — even with \
+             --allow-large-patch this is refused; a diff this large by BYTES (regardless of its \
+             +/- line count) isn't a text-diff suggestion. Push a branch and --ref the commit instead.",
+            diff.len()
+        );
+    }
+    let warning = size_gate(diff, allow_large)?;
+    Ok((ValidatedPatch { diff: diff.to_string() }, warning))
 }
 
 // ── unified-diff parsing (dependency-free; no external diff/patch crate) ───────────────────
@@ -209,9 +273,16 @@ pub(crate) fn parse_patch_fence(body: &str) -> Option<ParsedFence> {
 
 /// One touched file as `confer apply`/the write path see it after pairing: the path and the
 /// `result_hash` its matching ref carried (absent on a deletion).
+///
+/// `result_hash` is deliberately NOT consulted by `already_landed` (design/45 review, P2): it is
+/// frontmatter the SENDER wrote, so treating it as proof a change landed is exactly the forged-
+/// `result_hash` spoof that finding closed. It's kept on this struct (and exercised by the pairing
+/// tests below) as the value the message CLAIMED, for callers that want to display or audit it —
+/// never as an input to a trust decision.
 #[derive(Debug, Clone)]
 pub(crate) struct PatchFileRef {
     pub(crate) path: String,
+    #[allow(dead_code)]
     pub(crate) result_hash: Option<String>,
 }
 
@@ -271,7 +342,12 @@ fn write_temp_patch(diff: &str) -> Result<PathBuf> {
 /// (an `Err` here is "refuse the send"), `result_hash` per file (absent for a deletion — the path
 /// is gone from the temp index), and (via the caller's own `parse_diff_touched_files`) the
 /// touched-path list the derived refs are built from. The working tree is NEVER touched.
-pub(crate) fn validate_and_derive(dir: &Path, sha: &str, diff: &str) -> Result<HashMap<String, String>> {
+pub(crate) fn validate_and_derive(
+    dir: &Path,
+    sha: &str,
+    patch: &ValidatedPatch,
+) -> Result<HashMap<String, String>> {
+    let diff = patch.diff();
     let idx_path = std::env::temp_dir().join(format!(
         "confer-patch-index-{}-{}",
         std::process::id(),
@@ -354,23 +430,20 @@ fn dirty_paths(dir: &Path, paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// The landed short-circuit (§1.5 rule 2): every touched path's `HEAD:<path>` blob OID equals
-/// its `result_hash` (a deletion — no `result_hash` — landed iff the path is absent at HEAD).
-fn already_landed(dir: &Path, files: &[PatchFileRef]) -> bool {
-    if files.is_empty() {
-        return false;
-    }
-    files.iter().all(|f| {
-        let at_head = gitcmd::output(dir, &["rev-parse", "--verify", "--quiet", &format!("HEAD:{}", f.path)])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        match (&f.result_hash, at_head) {
-            (Some(rh), Some(oid)) => &oid == rh,
-            (None, None) => true, // a deleted file's path is (still) absent at HEAD
-            _ => false,
-        }
-    })
+/// The landed short-circuit (§1.5 rule 2) — REWORKED to close the 0.8.0 review's P2 finding: the
+/// message's `result_hash` is frontmatter the SENDER wrote, not something confer verified on
+/// receipt, so a peer who simply reads a target path's current `HEAD` blob OID and posts it as
+/// `result_hash` could make an unrelated (or malicious) diff report "already landed" — `apply
+/// --check` would say so, and `apply` would print "nothing to apply" without ever showing the
+/// diff, so an agent trusting that predicate believes a fix landed that never did.
+///
+/// The fix trusts nothing the message declares: it asks git directly whether HEAD already
+/// contains this exact diff's effect, via `git apply --check --reverse` — the standard idiom for
+/// "is this patch already applied". That check depends only on the diff's own bytes and the real
+/// repository state, so a forged `result_hash` (or any other frontmatter) cannot influence it.
+fn already_landed(dir: &Path, patch_path: &Path) -> bool {
+    let p = patch_path.to_string_lossy().to_string();
+    gitcmd::output(dir, &["apply", "--check", "--reverse", &p]).map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// A scratch linked worktree, force-removed on drop — never leaves a stray worktree registration
@@ -474,6 +547,25 @@ pub(crate) fn cmd_apply(id: String, check: bool, repo_dir: Option<String>, force
         )
     })?;
 
+    // Receiver-side re-validation (design/45 review, P1 + P2): `paired.diff` is the message's raw
+    // diff bytes — however this message actually reached the store (an honest `confer suggest`,
+    // a hand-authored/replayed message, a compromised or out-of-date peer), it is NOT trusted
+    // just because it parsed and paired. It goes through the SAME chokepoint the write path uses
+    // before a single byte of it can reach `git apply`. `allow_large: true` here is deliberate,
+    // not a loophole: the softer WARN/REFUSE line-count band is a write-time UX nudge ("consider
+    // a branch instead") the sender already had the chance to heed with `--allow-large-patch`;
+    // apply's job is re-enforcing the UNCONDITIONAL gates — binary refusal and the hard byte/line
+    // ceilings — not re-litigating that judgment call with no `--allow-large-patch` flag of its
+    // own to waive it.
+    let (validated, warning) = validate_patch(&paired.diff, true).map_err(|e| {
+        anyhow!("{}: refusing to apply — {e}", short_id(&full_id))
+    })?;
+    if let Some(w) = warning {
+        crate::hint(w);
+    }
+    let patch_path = write_temp_patch(validated.diff())?;
+    let _guard = TempFile(patch_path.clone());
+
     let Some(capture) = resolve_apply_dir(&root, &paired.repo, repo_dir.as_deref()) else {
         return Err(anyhow!(
             "unresolvable: no local clone of '{}' is mapped on this machine (or reachable from \
@@ -484,7 +576,7 @@ pub(crate) fn cmd_apply(id: String, check: bool, repo_dir: Option<String>, force
     };
     let dir = &capture.dir;
 
-    if already_landed(dir, &paired.files) {
+    if already_landed(dir, &patch_path) {
         if check {
             return Err(AlreadyLanded.into());
         }
@@ -509,9 +601,6 @@ pub(crate) fn cmd_apply(id: String, check: bool, repo_dir: Option<String>, force
             dir.display()
         ));
     }
-
-    let patch_path = write_temp_patch(&paired.diff)?;
-    let _guard = TempFile(patch_path.clone());
 
     if check {
         return if apply_check(dir, &patch_path, use_3way)? { Ok(()) } else { Err(PredicateFalse.into()) };

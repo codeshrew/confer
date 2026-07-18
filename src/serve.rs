@@ -360,7 +360,15 @@ fn parse_query(url: &str) -> (usize, bool) {
 }
 
 /// Start the read-only web server over the given hubs at `bind`. Blocks.
-pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
+///
+/// `all_hubs` records whether the OPERATOR started this server with `--all-hubs` (i.e.
+/// `dirs` is already the full fleet, `crosshub::hub_dirs()`) or scoped to specific hubs —
+/// it's the operator's own consent, decided once here at startup, threaded down through
+/// every worker to `api::dispatch` so a handler (`refs()`'s `?allHubs=1`) can check the
+/// server's actual scope instead of assuming or re-deriving it (a P0 security fix: this
+/// used to not exist at all, so `/api/refs?allHubs=1` reached every hub on the machine
+/// regardless of what `confer serve` was told to expose).
+pub fn run(dirs: Vec<PathBuf>, bind: &str, all_hubs: bool) -> Result<()> {
     let snaps: Vec<projection::Snapshot> = dirs.iter().map(|d| projection::Snapshot::load(d.clone(), true)).collect();
     let cache = Arc::new(Mutex::new(snaps));
 
@@ -428,9 +436,9 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
         let cache = Arc::clone(&cache);
         let dirs = dirs.clone();
         let sse_count = Arc::clone(&sse_count);
-        handles.push(std::thread::spawn(move || worker_loop(&server, &cache, &dirs, &sse_count)));
+        handles.push(std::thread::spawn(move || worker_loop(&server, &cache, &dirs, &sse_count, all_hubs)));
     }
-    worker_loop(&server, &cache, &dirs, &sse_count);
+    worker_loop(&server, &cache, &dirs, &sse_count, all_hubs);
     for h in handles {
         let _ = h.join();
     }
@@ -439,16 +447,40 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
 
 /// One worker's request loop: pull requests off the shared server until it shuts down
 /// (`recv` errors), routing each to the JSON API, SSE, or the existing HTML render.
-fn worker_loop(server: &tiny_http::Server, cache: &Mutex<Vec<projection::Snapshot>>, dirs: &[PathBuf], sse_count: &Arc<AtomicUsize>) {
+fn worker_loop(
+    server: &tiny_http::Server,
+    cache: &Mutex<Vec<projection::Snapshot>>,
+    dirs: &[PathBuf],
+    sse_count: &Arc<AtomicUsize>,
+    all_hubs: bool,
+) {
     loop {
         match server.recv() {
-            Ok(req) => handle(req, cache, dirs, sse_count),
+            Ok(req) => handle(req, cache, dirs, sse_count, all_hubs),
             Err(_) => return,
         }
     }
 }
 
-fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dirs: &[PathBuf], sse_count: &Arc<AtomicUsize>) {
+/// P3 (defense-in-depth, Jarvis's 0.8.0 review): sane security response headers for every
+/// non-SSE response. The SPA inlines all its JS/CSS (`vite-plugin-singlefile`, no external
+/// origin ever fetched), so a strict `default-src 'self'` + inline allowance for style/script
+/// costs the dashboard nothing. `frame-ancestors 'none'` + `X-Frame-Options: DENY` block
+/// clickjacking; `X-Content-Type-Options: nosniff` stops MIME-sniffing the JSON API
+/// responses as something executable. Not applied to `/api/events` (SSE) — its response is
+/// written directly to the raw socket via a hand-rolled preamble, not through this header
+/// path, and CSP/framing headers have no bearing on a `text/event-stream` body anyway.
+fn security_headers() -> Vec<tiny_http::Header> {
+    let csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+               img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+    vec![
+        tiny_http::Header::from_bytes(&b"Content-Security-Policy"[..], csp.as_bytes()).unwrap(),
+        tiny_http::Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap(),
+        tiny_http::Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+    ]
+}
+
+fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dirs: &[PathBuf], sse_count: &Arc<AtomicUsize>, all_hubs: bool) {
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("/").to_string();
 
@@ -474,14 +506,14 @@ fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dir
     }
 
     if path.starts_with("/api/") {
-        let resp = api::dispatch(dirs, cache, &path, &url);
+        let resp = api::dispatch(dirs, cache, &path, &url, all_hubs);
         let body = serde_json::to_string(&resp.body).unwrap_or_else(|_| "{}".to_string());
         let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
         let cc = tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap();
-        let response = tiny_http::Response::from_string(body)
-            .with_status_code(resp.status)
-            .with_header(ct)
-            .with_header(cc);
+        let mut response = tiny_http::Response::from_string(body).with_status_code(resp.status).with_header(ct).with_header(cc);
+        for h in security_headers() {
+            response.add_header(h);
+        }
         let _ = req.respond(response);
         return;
     }
@@ -501,14 +533,22 @@ fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dir
             }
         };
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
-        let _ = req.respond(tiny_http::Response::from_string(html).with_header(header));
+        let mut response = tiny_http::Response::from_string(html).with_header(header);
+        for h in security_headers() {
+            response.add_header(h);
+        }
+        let _ = req.respond(response);
         return;
     }
 
     // Everything else → the embedded SPA (it does its own client-side view routing and
     // reads data from the /api/* endpoints on this same origin).
     let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
-    let _ = req.respond(tiny_http::Response::from_string(DASHBOARD).with_header(header));
+    let mut response = tiny_http::Response::from_string(DASHBOARD).with_header(header);
+    for h in security_headers() {
+        response.add_header(h);
+    }
+    let _ = req.respond(response);
 }
 
 #[cfg(test)]
