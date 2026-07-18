@@ -398,6 +398,101 @@ fn malformed_refs_target_is_400() {
 }
 
 #[test]
+fn thread_returns_the_thread_and_errors_on_bad_id() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    let req_id = seed(&alpha);
+    let server = start_server(&alpha);
+
+    // missing ?id= is a 400, not a panic/500.
+    let (s0, b0) = http_get(&server.addr, "/api/thread");
+    assert_eq!(s0, 400, "body: {b0}");
+    let v0: serde_json::Value = serde_json::from_str(&b0).unwrap();
+    assert!(v0.get("error").is_some());
+
+    // an id that matches nothing is a 404, same JSON error shape.
+    let (s1, b1) = http_get(&server.addr, "/api/thread?id=nonexistent00000000");
+    assert_eq!(s1, 404, "body: {b1}");
+    let v1: serde_json::Value = serde_json::from_str(&b1).unwrap();
+    assert!(v1.get("error").is_some());
+
+    // the seeded request's thread comes back as an ordered array of its own messages.
+    let (status, body) = http_get(&server.addr, &format!("/api/thread?id={req_id}"));
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
+    let arr = v.as_array().expect("array");
+    assert!(!arr.is_empty(), "the request itself must be in its own thread: {arr:?}");
+    let root = arr.iter().find(|m| m["msgId"] == req_id).expect("request present in its own thread");
+    for key in ["msgId", "from", "type", "topic", "summary", "refs"] {
+        assert!(root.get(key).is_some(), "missing thread item.{key} in {root}");
+    }
+    // the claim posted `--of <req_id>` in seed() hangs off the same thread root.
+    assert!(arr.iter().any(|m| m["type"] == "claim"), "claim should be part of the thread: {arr:?}");
+}
+
+#[test]
+fn code_endpoint_returns_snippet_and_degrades_gracefully() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha); // registers + maps "mylib" with lib.rs = "one\ntwo\nthree\nfour\n"
+    let server = start_server(&alpha);
+
+    // missing required query params → 400.
+    for path in ["/api/code", "/api/code?repo=mylib", "/api/code?repo=mylib&path=lib.rs", "/api/code?repo=&path=lib.rs&sha=HEAD"] {
+        let (status, body) = http_get(&server.addr, path);
+        assert_eq!(status, 400, "path {path} body {body}");
+    }
+
+    // a real, mapped repo + a valid range returns the lines + rust language detection.
+    let (status, body) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&range=L1-2");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("bad json ({e}): {body}"));
+    assert_eq!(v["lang"], "rust");
+    let lines = v["lines"].as_array().expect("lines array");
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["text"], "one");
+    assert_eq!(lines[1]["text"], "two");
+    assert!(v["staleness"].is_string());
+
+    // a malformed range is a 400, not silently ignored.
+    let (s2, b2) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&range=notarange");
+    assert_eq!(s2, 400, "body: {b2}");
+
+    // an UNMAPPED repo degrades gracefully: 200, empty lines, never an error just
+    // because this machine doesn't have the clone. A symbolic sha (HEAD) is "unpinned"
+    // regardless of clone status; a full-hex sha against no clone is "unknown".
+    let (s3, b3) = http_get(&server.addr, "/api/code?repo=nope-no-such-repo&path=x.rs&sha=HEAD");
+    assert_eq!(s3, 200, "body: {b3}");
+    let v3: serde_json::Value = serde_json::from_str(&b3).unwrap();
+    assert_eq!(v3["lines"].as_array().unwrap().len(), 0);
+    assert_eq!(v3["staleness"], "unpinned");
+
+    let full_hex_sha = "a".repeat(40);
+    let (s3b, b3b) = http_get(&server.addr, &format!("/api/code?repo=nope-no-such-repo&path=x.rs&sha={full_hex_sha}"));
+    assert_eq!(s3b, 200, "body: {b3b}");
+    let v3b: serde_json::Value = serde_json::from_str(&b3b).unwrap();
+    assert_eq!(v3b["lines"].as_array().unwrap().len(), 0);
+    assert_eq!(v3b["staleness"], "unknown");
+
+    // unknown hub still 404s the same way as the other endpoints.
+    let (s4, b4) = http_get(&server.addr, "/api/code?repo=mylib&path=lib.rs&sha=HEAD&hub=nope-such-hub");
+    assert_eq!(s4, 404, "body: {b4}");
+}
+
+#[test]
+fn unknown_api_path_404s() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha);
+    let server = start_server(&alpha);
+
+    let (status, body) = http_get(&server.addr, "/api/nope-not-a-real-endpoint");
+    assert_eq!(status, 404, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v.get("error").is_some());
+}
+
+#[test]
 fn root_serves_spa_and_classic_serves_server_html() {
     let hub = new_hub();
     let alpha = hub.clone("alpha");

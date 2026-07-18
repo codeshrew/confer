@@ -5119,6 +5119,46 @@ fn repos_discover_maps_matching_clone_and_reports_unmatched() {
 }
 
 #[test]
+fn root_sha_mismatch_makes_a_mapped_clone_invisible() {
+    // design/40's F3 identity anchor: a hub card carrying `root_sha` must match the
+    // MAPPED clone's actual root commit, or the clone is treated as absent — refusing
+    // to render code from a directory that just HAPPENS to be recorded under the same
+    // slug (a swapped/wrong clone, or a slug collision across forks).
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-rootsha");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "a\nb\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // A hub card asserting a root_sha that does NOT match this clone's actual root.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("mylib.md"),
+        format!("---\nrole: code\nroot_sha: {}\n---\n", "0".repeat(40)),
+    )
+    .unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])), "map should still succeed");
+
+    // A full-hex pin needs no clone to be ACCEPTED at write time...
+    let a = c.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", &format!("mylib:f.rs@{head}")]);
+    assert!(ok(&a), "append with full-hex ref failed: {}", err(&a));
+    let id = newest_id(&c);
+
+    // ...but `show` must NOT render the snippet from the mismatched clone — it's
+    // treated exactly like "not cloned here", never silently trusted.
+    let s = out(&c.confer(&["show", &id]));
+    assert!(s.contains("not cloned here"), "root_sha mismatch must hide the mapped clone: {s}");
+    assert!(!s.contains("│"), "must never render a code snippet gutter from the mismatched clone: {s}");
+
+    // `refs` staleness for the same ref must degrade to unknown (can't vouch for it),
+    // not "current"/"changed" (which would imply we read the right repo).
+    let r = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(r.contains("unknown") || !r.contains("current"), "refs staleness: {r}");
+}
+
+#[test]
 fn ref_pins_sha_and_records_content_hash_at_write() {
     let c = new_hub().clone("alpha");
     // a code repo with a committed file

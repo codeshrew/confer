@@ -583,4 +583,139 @@ mod tests {
         ];
         assert_eq!(done_resolution(&msgs, "01A").as_deref(), Some("duplicate"));
     }
+
+    #[test]
+    fn id_ref_matches_edge_cases() {
+        // exact match always wins.
+        assert!(id_ref_matches("01ABCDEFGH", "01ABCDEFGH"));
+        // a suffix of >= 8 chars matches (the short-id affordance).
+        assert!(id_ref_matches("01J8Z9K3QH7XABCDEF", "K3QH7XABCDEF"));
+        // a suffix shorter than 8 chars is rejected — too likely to collide.
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", "ABCDEF"));
+        // a LEADING prefix never matches (ULIDs share a timestamp prefix — prefix
+        // matching would conflate unrelated messages posted close in time).
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", "01J8Z9K3"));
+        // an empty reference never matches anything.
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", ""));
+        assert!(!id_ref_matches("", ""));
+    }
+
+    #[test]
+    fn claimants_are_distinct_and_first_claim_ordered() {
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "claim", Some("01A"), None, None),
+            m("01C", "carol", "claim", Some("01A"), None, None),
+            // bob claims again (a re-claim after a blocked/unblocked cycle) — must not
+            // duplicate or reorder; bob stays head (first claimant = owner).
+            m("01D", "bob", "claim", Some("01A"), None, None),
+        ];
+        assert_eq!(claimants(&msgs, "01A"), vec!["bob".to_string(), "carol".to_string()]);
+    }
+
+    #[test]
+    fn request_deferred_fold_order_claim_clears_a_prior_defer() {
+        let mut req = m("01A", "alice", "request", None, None, None);
+        req.front.defer = false;
+        let msgs = vec![
+            req.clone(),
+            m("01B", "bob", "defer", Some("01A"), None, None),
+        ];
+        assert!(request_deferred(&msgs, &req), "an explicit defer event moves it to the backlog");
+
+        // a later claim commits to active work — clears the defer.
+        let msgs2 = vec![
+            req.clone(),
+            m("01B", "bob", "defer", Some("01A"), None, None),
+            m("01C", "carol", "claim", Some("01A"), None, None),
+        ];
+        assert!(!request_deferred(&msgs2, &req), "a claim after defer clears it (Phase 2 semantics)");
+
+        // sender-time defer facet (front.defer=true) also counts, with no events at all.
+        let mut sender_deferred = req.clone();
+        sender_deferred.front.defer = true;
+        assert!(request_deferred(&[sender_deferred.clone()], &sender_deferred));
+    }
+
+    #[test]
+    fn thread_root_walks_of_reply_to_supersedes_and_guards_cycles() {
+        // A plain chain: C -of-> B -of-> A (a request). Root is A.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "note", Some("01A"), None, None),
+            m("01C", "carol", "note", Some("01B"), None, None),
+        ];
+        let leaf = msgs.iter().find(|x| x.front.id == "01C").unwrap();
+        assert_eq!(thread_root(&msgs, leaf).front.id, "01A");
+
+        // A dangling parent (of/reply_to points at an id that doesn't exist) stops at
+        // the message itself rather than panicking or looping.
+        let dangling = vec![m("01Z", "dave", "note", Some("nonexistent"), None, None)];
+        assert_eq!(thread_root(&dangling, &dangling[0]).front.id, "01Z");
+
+        // A 2-cycle (A points at B, B points at A) must terminate, not loop forever —
+        // the walk stops as soon as it would revisit the message it started the hop
+        // from (guarded by the bounded loop + ptr_eq check either way).
+        let mut a = m("01A", "alice", "note", Some("01B"), None, None);
+        let mut b = m("01B", "bob", "note", Some("01A"), None, None);
+        a.front.reply_to = None;
+        b.front.reply_to = None;
+        let cyc = vec![a, b];
+        let root = thread_root(&cyc, &cyc[0]);
+        assert!(root.front.id == "01A" || root.front.id == "01B", "must terminate on some node in the cycle: {}", root.front.id);
+    }
+
+    fn code_ref(repo: &str, path: &str, range: Option<[u64; 2]>) -> crate::schema::CodeRef {
+        crate::schema::CodeRef { repo: repo.into(), path: path.into(), sha: "a".repeat(40), range, content_hash: None }
+    }
+
+    #[test]
+    fn ref_index_query_matches_whole_file_and_overlapping_ranges() {
+        let mut whole = m("01A", "alice", "note", None, None, None);
+        whole.front.refs = vec![code_ref("lib", "f.rs", None)];
+        let mut ranged = m("01B", "bob", "note", None, None, None);
+        ranged.front.refs = vec![code_ref("lib", "f.rs", Some([10, 20]))];
+        let msgs = vec![whole, ranged];
+        let idx = RefIndex::fold(&msgs);
+
+        // A whole-file ref (no range) matches ANY line query.
+        let hits_any_line = idx.query("lib", Some("f.rs"), Some([500, 500]));
+        assert!(hits_any_line.iter().any(|h| h.msg_id == "01A"), "whole-file ref should match any line");
+
+        // A query with no range at all matches every hit regardless of the hit's range.
+        let all = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(all.len(), 2);
+
+        // Overlap: query [15,16] intersects the ranged hit [10,20].
+        let overlap = idx.query("lib", Some("f.rs"), Some([15, 16]));
+        assert!(overlap.iter().any(|h| h.msg_id == "01B"));
+
+        // No overlap: query [30,40] misses the ranged hit entirely (but the whole-file
+        // ref still matches — it has no range to miss).
+        let miss = idx.query("lib", Some("f.rs"), Some([30, 40]));
+        assert!(miss.iter().any(|h| h.msg_id == "01A"));
+        assert!(!miss.iter().any(|h| h.msg_id == "01B"), "a disjoint range must not match: {miss:?}");
+
+        // A different repo/path never matches.
+        assert!(idx.query("other", Some("f.rs"), None).is_empty());
+        assert!(idx.query("lib", Some("nope.rs"), None).is_empty());
+
+        // Newest-first ordering (by msg_id descending).
+        let all_sorted = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(all_sorted[0].msg_id, "01B");
+    }
+
+    #[test]
+    fn ref_index_fold_carries_thread_root_and_request_status() {
+        let req = m("01A", "alice", "request", None, None, None);
+        let mut reply = m("01B", "bob", "note", Some("01A"), None, None);
+        reply.front.refs = vec![code_ref("lib", "f.rs", Some([1, 2]))];
+        let claim = m("01C", "bob", "claim", Some("01A"), None, None);
+        let msgs = vec![req, reply, claim];
+        let idx = RefIndex::fold(&msgs);
+        let hits = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].thread_root, "01A");
+        assert_eq!(hits[0].request_status, Some("CLAIMED"));
+    }
 }

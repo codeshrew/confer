@@ -153,3 +153,145 @@ pub fn render_resolved(repo_inv: &repos::Repos, r: &schema::CodeRef, max_lines: 
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t.local", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// A tiny repo with one committed file, returning (dir, head_sha, blob_oid_of_file).
+    fn repo_with_file(tag: &str, contents: &str) -> (PathBuf, String, String) {
+        let dir = std::env::temp_dir().join(format!("confer-refcode-{}-{tag}-{}", std::process::id(), std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("f.rs"), contents).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "c0"]);
+        let head = String::from_utf8_lossy(
+            &Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+        let blob = String::from_utf8_lossy(
+            &Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "HEAD:f.rs"]).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+        (dir, head, blob)
+    }
+
+    #[test]
+    fn staleness_unpinned_for_non_full_hex_sha_regardless_of_clone() {
+        // A short/symbolic sha ("HEAD", a branch, an abbreviated sha) was never durably
+        // pinned — Unpinned wins even with a perfectly good clone and content_hash.
+        let (dir, _head, blob) = repo_with_file("unpinned", "a\nb\n");
+        assert_eq!(staleness(Some(&dir), "HEAD", "f.rs", Some(&blob)), Staleness::Unpinned);
+        assert_eq!(staleness(None, "abcdef", "f.rs", None), Staleness::Unpinned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staleness_unknown_without_clone_or_content_hash() {
+        let (dir, head, blob) = repo_with_file("unknown", "a\nb\n");
+        // no clone at all
+        assert_eq!(staleness(None, &head, "f.rs", Some(&blob)), Staleness::Unknown);
+        // clone present but no content_hash recorded (pre-design/40 legacy ref)
+        assert_eq!(staleness(Some(&dir), &head, "f.rs", None), Staleness::Unknown);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staleness_moved_when_path_gone_at_head() {
+        let (dir, head, blob) = repo_with_file("moved", "a\nb\n");
+        // the pinned path never existed (or was renamed away) — HEAD:<path> fails to
+        // resolve, not an error: the path MOVED under the pin.
+        assert_eq!(staleness(Some(&dir), &head, "renamed.rs", Some(&blob)), Staleness::Moved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staleness_current_vs_changed() {
+        let (dir, head, blob) = repo_with_file("curchg", "a\nb\n");
+        assert_eq!(staleness(Some(&dir), &head, "f.rs", Some(&blob)), Staleness::Current);
+        // a different (stale) content_hash at the SAME head → Changed, not Moved/Unknown.
+        assert_eq!(staleness(Some(&dir), &head, "f.rs", Some("0000000000000000000000000000000000000000")), Staleness::Changed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippet_none_without_a_clone() {
+        assert_eq!(snippet(None, "abc", "f.rs", None, 100), None);
+    }
+
+    #[test]
+    fn snippet_none_for_missing_object() {
+        let (dir, head, _blob) = repo_with_file("missingobj", "a\nb\n");
+        assert_eq!(snippet(Some(&dir), &head, "does-not-exist.rs", None, 100), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippet_size_guard_rejects_oversized_blob() {
+        let big = "x".repeat(2_100_000); // > 2MB guard
+        let (dir, head, _blob) = repo_with_file("big", &big);
+        assert_eq!(snippet(Some(&dir), &head, "f.rs", None, 100), None, "a >2MB blob must degrade to pointer-only, not slurp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippet_range_is_clamped_and_bounded_by_max_lines() {
+        let (dir, head, _blob) = repo_with_file("range", "one\ntwo\nthree\nfour\nfive\n");
+        // range [0, 3] — start clamps up to 1 (line numbers are 1-based).
+        let lines = snippet(Some(&dir), &head, "f.rs", Some([0, 3]), 100).unwrap();
+        assert_eq!(lines, vec![(1, "one".to_string()), (2, "two".to_string()), (3, "three".to_string())]);
+        // an end past EOF just stops at the last line, no error/panic.
+        let lines = snippet(Some(&dir), &head, "f.rs", Some([4, 999]), 100).unwrap();
+        assert_eq!(lines, vec![(4, "four".to_string()), (5, "five".to_string())]);
+        // max_lines caps the count even within a valid range.
+        let lines = snippet(Some(&dir), &head, "f.rs", None, 2).unwrap();
+        assert_eq!(lines.len(), 2);
+        // a range entirely past EOF yields no lines → None (not an empty Some(vec![])).
+        assert_eq!(snippet(Some(&dir), &head, "f.rs", Some([50, 60]), 100), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_resolved_hints_map_a_clone_when_unmapped() {
+        let repo_inv: repos::Repos = Default::default(); // no "mylib" card at all → clone_for → None
+        let r = schema::CodeRef {
+            repo: "mylib".into(),
+            sha: "a".repeat(40),
+            path: "f.rs".into(),
+            range: None,
+            content_hash: None,
+        };
+        let out = render_resolved(&repo_inv, &r, 50);
+        assert!(out.contains("not cloned here"), "out: {out}");
+        assert!(out.contains("confer repos map mylib"), "out: {out}");
+        // the full-hex sha is truncated to a 9-char short form in the header line.
+        assert!(out.contains(&format!("@{}", &"a".repeat(9))), "out: {out}");
+    }
+
+    #[test]
+    fn render_resolved_keeps_short_sha_unmodified() {
+        let repo_inv: repos::Repos = Default::default();
+        let r = schema::CodeRef { repo: "mylib".into(), sha: "HEAD".into(), path: "f.rs".into(), range: None, content_hash: None };
+        let out = render_resolved(&repo_inv, &r, 50);
+        // a non-full-hex sha (legacy "HEAD") is shown as-is, not truncated/mangled.
+        assert!(out.contains("@HEAD"), "out: {out}");
+        assert!(out.contains("unpinned"), "legacy HEAD refs should badge as unpinned: {out}");
+    }
+}
