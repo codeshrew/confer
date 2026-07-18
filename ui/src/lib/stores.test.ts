@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { appState, chatWindowCache, hubDataCache } from './stores.svelte';
-import type { Message, Overview } from './types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { appState, chatWindowCache, codeState, hubDataCache } from './stores.svelte';
+import { api } from './api';
+import type { CodeFile, Message, Overview } from './types';
+
+vi.mock('./api', () => ({
+  api: { getCodeFiles: vi.fn() },
+}));
 
 describe('appState.drawer', () => {
   it('starts closed', () => {
@@ -173,5 +178,93 @@ describe('chatWindowCache', () => {
 
     expect(chatWindowCache.size).toBe(0);
     expect(chatWindowCache.has('hub-x', 'general')).toBe(false);
+  });
+});
+
+describe('codeState (design/43 Phase B — the shared CodeTree/CodeLens store)', () => {
+  const files: CodeFile[] = [
+    { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', refCount: 3, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
+    { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 2, mapped: true, lastTs: '2026-07-17T14:52:00Z' },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(api.getCodeFiles).mockReset();
+    codeState.clear();
+  });
+
+  it('forHub() creates an empty, unloaded record on first access', () => {
+    const s = codeState.forHub('never-seen-hub');
+    expect(s.loaded).toBe(false);
+    expect(s.files).toEqual([]);
+    expect(s.activeKey).toBeNull();
+    expect(s.expanded.size).toBe(0);
+    expect(s.filter).toBe('');
+    expect(s.sort).toBe('tree');
+    expect(s.codeSha).toBe('HEAD');
+  });
+
+  it('forHub() returns the SAME object on repeat calls — CodeTree and CodeLens share one record', () => {
+    expect(codeState.forHub('hub-a')).toBe(codeState.forHub('hub-a'));
+  });
+
+  it('load() fetches once, populates files, and defaults activeKey to the first file', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(files);
+
+    await codeState.load('agent-coord');
+
+    const s = codeState.forHub('agent-coord');
+    expect(s.loaded).toBe(true);
+    expect(s.files).toEqual(files);
+    expect(s.activeKey).toBe('wealdlore Sources/Reader/PlateBundle.swift');
+    expect(api.getCodeFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('load() is a no-op once loaded — revisiting a hub is instant, no re-fetch', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(files);
+    await codeState.load('agent-coord');
+    await codeState.load('agent-coord');
+    expect(api.getCodeFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('concurrent load() calls for the same unloaded hub share one in-flight fetch', async () => {
+    let resolve!: (v: CodeFile[]) => void;
+    vi.mocked(api.getCodeFiles).mockReturnValue(new Promise((res) => (resolve = res)));
+
+    const p1 = codeState.load('agent-coord');
+    const p2 = codeState.load('agent-coord');
+    resolve(files);
+    await Promise.all([p1, p2]);
+
+    expect(api.getCodeFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidate() flips loaded off (so the next load() refetches) without resetting expansion/filter/sort', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(files);
+    await codeState.load('agent-coord');
+    const s = codeState.forHub('agent-coord');
+    s.filter = 'plates';
+    s.sort = 'active';
+    s.expanded.add('wealdlore');
+
+    codeState.invalidate('agent-coord');
+    expect(s.loaded).toBe(false);
+    expect(s.filter).toBe('plates');
+    expect(s.sort).toBe('active');
+    expect(s.expanded.has('wealdlore')).toBe(true);
+
+    vi.mocked(api.getCodeFiles).mockResolvedValue(files);
+    await codeState.load('agent-coord');
+    expect(api.getCodeFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps two hubs completely separate', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(files);
+    await codeState.load('hub-a');
+    const otherFiles: CodeFile[] = [{ repo: 'r', path: 'x.rs', refCount: 1, mapped: true, lastTs: '2026-07-17T10:00:00Z' }];
+    vi.mocked(api.getCodeFiles).mockResolvedValue(otherFiles);
+    await codeState.load('hub-b');
+
+    expect(codeState.forHub('hub-a').files).toEqual(files);
+    expect(codeState.forHub('hub-b').files).toEqual(otherFiles);
   });
 });

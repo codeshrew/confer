@@ -60,23 +60,50 @@ test('Fleet shows agent identity cards', async ({ page }) => {
   await expect(fleetView.getByText('viewing this dashboard')).toBeVisible();
 });
 
-test('Code shows the file tree and a code view', async ({ page }) => {
+test('Code shows the file tree (design/43 Phase B — left rail) and a code view', async ({ page }) => {
   await page.getByRole('tab', { name: 'Code', exact: true }).click();
 
+  // The file tree now lives in the left-rail slot (CodeTree.svelte), not
+  // inside the code pane itself — scope to it via its own testid.
+  const tree = page.getByTestId('code-tree');
   // Scoped to the Code pane itself — with Chat kept alive (not destroyed)
   // in the background for instant tab-switching, a Chat message's own
   // CodeRefCard can render the exact same file path / highlighted token
   // text, which would otherwise make these matches ambiguous.
   const codeView = page.getByTestId('code-view');
 
-  await expect(page.getByRole('button', { name: 'PlateBundle.swift' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'plates.py' })).toBeVisible();
-  await expect(page.getByText('wealdlore', { exact: true })).toBeVisible();
-  await expect(codeView.getByText('Sources/Reader/PlateBundle.swift')).toBeVisible();
+  await expect(tree.getByRole('button', { name: /PlateBundle\.swift/ })).toBeVisible();
+  await expect(tree.getByRole('button', { name: /wealdlore/ })).toBeVisible();
+  // The unified breadcrumb (absorbing the old codetool `repo › path` line)
+  // now lives in the App crumb, above the code pane.
+  const crumb = page.locator('.crumb');
+  await expect(crumb.getByText('PlateBundle.swift', { exact: true })).toBeVisible();
   // A highlighted code line from the mock snippet.
   await expect(codeView.getByText('assembleBundle').first()).toBeVisible();
 
-  // Switching files swaps the code view.
-  await page.getByRole('button', { name: 'plates.py' }).click();
-  await expect(codeView.getByText('pipeline/plates.py')).toBeVisible();
+  // Switching files (via the tree, expanding pipeline/ first) swaps the
+  // code view and the breadcrumb.
+  await tree.getByRole('button', { name: 'pipeline/' }).click();
+  await tree.getByRole('button', { name: /plates\.py/ }).click();
+  await expect(crumb.getByText('plates.py', { exact: true })).toBeVisible();
+});
+
+test('Code: filtering the tree finds a file, and Tree|Active toggles the presentation', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Code', exact: true }).click();
+  const tree = page.getByTestId('code-tree');
+
+  await tree.getByLabel('Filter code files').fill('plates');
+  await expect(tree.getByRole('listbox', { name: 'Filter matches' })).toBeVisible();
+  // The match's highlighted substring splits the label across sibling
+  // <span>s, so the browser's accname algorithm inserts spaces at each
+  // boundary — match on the `title` (the plain, unsplit `repo/path`)
+  // instead of the accessible name here.
+  await expect(tree.locator('button[title="wealdlore/pipeline/plates.py"]')).toBeVisible();
+  await expect(tree.getByRole('button', { name: /PlateBundle\.swift/ })).toHaveCount(0);
+
+  await tree.getByLabel('Filter code files').press('Escape');
+  await expect(tree.getByRole('listbox')).toHaveCount(0);
+
+  await tree.getByRole('button', { name: 'Active', exact: true }).click();
+  await expect(tree.getByRole('button', { name: /PlateBundle\.swift/ })).toBeVisible();
 });

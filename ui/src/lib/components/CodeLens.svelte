@@ -1,23 +1,20 @@
 <script lang="ts">
   // The Code lens (Tier 3) — "conversations behind the code", browsable.
-  // Ports `.code-wrap`/`.codetool`/`.filetree`/`.densitywrap`/`.densefile`/
-  // `.dens` from design/serve-dashboard-v2-mockup.html: a file-tree stub,
-  // Shiki-highlighted file view, a per-line conversation-density gutter
-  // (heat via color-mix), and the "not cloned here" empty state for files
-  // confer can't read from a local clone.
-  //
-  // The file tree hydrates from `/api/codefiles?hub=` — the distinct files
-  // THIS hub's messages actually reference via `--ref` — instead of the
-  // hardcoded fixture this component used to ship with (which rendered the
-  // same fake wealdlore paths on every hub, regardless of what that hub
-  // actually talked about).
-  import type { CodeFile, RefHit } from '../types';
+  // design/43 Phase B: the in-pane file list moved to CodeTree.svelte (the
+  // Code view's left-rail navigator) — this component is now just the
+  // Shiki-highlighted file view + the per-line conversation-density gutter
+  // (heat via color-mix) + the "not cloned here" empty states. It reads
+  // `files`/`activeKey` from the SAME shared `codeState` store CodeTree
+  // writes to (stores.svelte.ts), rather than owning its own local file
+  // list — clicking a file in the tree updates this pane with no prop or
+  // callback plumbing between the two components.
+  import type { RefHit } from '../types';
   import { api } from '../api';
   import { highlightSnippetLines, resolveLang, type HighlightedLine } from '../highlight';
+  import { codeState } from '../stores.svelte';
+  import { fileKey } from '../codeTree';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
-  import FileIcon from './FileIcon.svelte';
-  import Icon from './Icon.svelte';
 
   interface Props {
     hub: string;
@@ -28,29 +25,18 @@
      * Distinct from `onOpenRefs` (a deliberate click) so it never yanks open the
      * mobile details drawer just because a file was selected. */
     onFileRefs?: (ctx: { repo: string; path: string }, hits: RefHit[]) => void;
-    /** Fired whenever "is there an active file at all" changes — App.svelte's
-     * per-view right-rail visibility (design/43 Thread 1) needs this: the Code
-     * view's rail is open whenever a file is active, hidden on a zero-files hub. */
-    onActiveFileChange?: (hasActive: boolean) => void;
   }
 
-  let { hub, onOpenRefs, onFileRefs, onActiveFileChange }: Props = $props();
+  let { hub, onOpenRefs, onFileRefs }: Props = $props();
 
-  function fileKey(f: { repo: string; path: string }): string {
-    return `${f.repo} ${f.path}`;
-  }
+  const s = $derived(codeState.forHub(hub));
 
-  /** The file tree shows just the basename (matches the prior fixture's
-   * short `key` labels, and what the e2e specs click by accessible name) —
-   * the full path is always visible in the codetool breadcrumb once a file
-   * is selected. */
-  function basename(path: string): string {
-    return path.split('/').pop() || path;
-  }
+  $effect(() => {
+    const h = hub;
+    void codeState.load(h);
+  });
 
-  let codeFiles = $state<CodeFile[]>([]);
-  let filesLoading = $state(true);
-  let activeKey = $state<string | null>(null);
+  const active = $derived(s.files.find((f) => fileKey(f) === s.activeKey) ?? null);
 
   let loading = $state(false);
   let lines = $state<{ n: number; text: string }[]>([]);
@@ -61,11 +47,6 @@
   // the file-level "conversations about this code" list, distinct from
   // `hitsByLine` which only carries the ranged subset for the gutter.
   let fileRefs = $state<RefHit[]>([]);
-  // The sha actually rendered — the newest hit's pinned sha, or 'HEAD' when
-  // there are no hits (or the hit itself is an unpinned/legacy 'HEAD' ref).
-  let codeSha = $state('HEAD');
-
-  const active = $derived(codeFiles.find((f) => fileKey(f) === activeKey) ?? null);
 
   /** Most-recently-posted hit for the active file (ISO ts, string-sortable) —
    * drives both the sha `getCode` renders at and the empty-state copy. */
@@ -97,61 +78,6 @@
     };
   });
 
-  // Group by repo, preserving the backend's own order (refCount desc, path
-  // asc) within and across groups — files may span more than one repo.
-  const groups = $derived.by((): { repo: string; files: CodeFile[] }[] => {
-    const byRepo = new Map<string, CodeFile[]>();
-    for (const f of codeFiles) {
-      const list = byRepo.get(f.repo) ?? [];
-      list.push(f);
-      byRepo.set(f.repo, list);
-    }
-    return [...byRepo.entries()].map(([repo, files]) => ({ repo, files }));
-  });
-
-  // design/43 quick win: the `mod.rs` / `index.ts` problem. Basenames repeat
-  // across repos (and sometimes within one, across directories) in a flat
-  // list — count occurrences across ALL visible rows so a colliding pair
-  // anywhere gets a distinguishing parent-dir suffix, not just within a
-  // single repo group.
-  const basenameCounts = $derived.by((): Map<string, number> => {
-    const counts = new Map<string, number>();
-    for (const f of codeFiles) {
-      const b = basename(f.path);
-      counts.set(b, (counts.get(b) ?? 0) + 1);
-    }
-    return counts;
-  });
-
-  /** The immediate parent directory, `like/this/` — null when the file sits
-   * at its repo's root (nothing to disambiguate with). */
-  function parentDir(path: string): string | null {
-    const parts = path.split('/');
-    parts.pop();
-    const dir = parts.pop();
-    return dir ? `${dir}/` : null;
-  }
-
-  function disambiguator(f: CodeFile): string | null {
-    if ((basenameCounts.get(basename(f.path)) ?? 0) <= 1) return null;
-    return parentDir(f.path);
-  }
-
-  async function loadFiles() {
-    filesLoading = true;
-    activeKey = null;
-    codeFiles = [];
-    try {
-      const files = await api.getCodeFiles(hub);
-      codeFiles = files;
-      activeKey = files[0] ? fileKey(files[0]) : null;
-    } catch (err) {
-      console.error('confer serve: failed to load code files', hub, err);
-    } finally {
-      filesLoading = false;
-    }
-  }
-
   function pickSha(hits: RefHit[]): string {
     if (hits.length === 0) return 'HEAD';
     return [...hits].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!.sha;
@@ -163,7 +89,7 @@
       lines = [];
       hitsByLine = new Map();
       fileRefs = [];
-      codeSha = 'HEAD';
+      s.codeSha = 'HEAD';
       loading = false;
       return;
     }
@@ -176,7 +102,7 @@
       fileRefs = relevant;
       onFileRefs?.({ repo: f.repo, path: f.path }, relevant);
       const sha = pickSha(relevant);
-      codeSha = sha;
+      s.codeSha = sha;
 
       const snippet = await api.getCode(hub, f.repo, f.path, sha);
       lines = snippet.lines;
@@ -199,20 +125,9 @@
   }
 
   $effect(() => {
-    // Reset selection and re-fetch the file tree whenever the hub changes —
-    // a file from the PREVIOUS hub must not linger selected.
-    void hub;
-    void loadFiles();
-  });
-
-  $effect(() => {
     void active;
     void hub;
     void loadFile();
-  });
-
-  $effect(() => {
-    onActiveFileChange?.(activeKey !== null);
   });
 
   function highlightedFor(n: number): HighlightedLine | undefined {
@@ -235,13 +150,11 @@
 </script>
 
 <div class="code-wrap" data-testid="code-view">
-  {#if filesLoading}
-    <div class="codetool"><span class="ct-hint">Loading files…</span></div>
+  {#if !s.loaded}
     <div class="codepage">
-      <div class="filetree"><Skeleton rows={4} /></div>
       <div class="densitywrap"><Skeleton rows={6} /></div>
     </div>
-  {:else if codeFiles.length === 0}
+  {:else if s.files.length === 0}
     <div class="clonestub">
       <EmptyState
         glyph="◇"
@@ -251,35 +164,9 @@
     </div>
   {:else if active}
     <div class="codetool">
-      <span class="ct-crumb">◆ {active.repo}</span>
-      <span class="ct-sep">›</span>
-      <span class="ct-crumb">{active.path}</span>
-      {#if codeSha !== 'HEAD'}
-        <span class="ct-sha" title={`Rendered at the newest reference's pinned sha`}>@{codeSha.slice(0, 10)}</span>
-      {/if}
       <span class="ct-hint">conversation-density gutter · click a hot line to see who discussed it</span>
     </div>
     <div class="codepage">
-      <div class="filetree">
-        {#each groups as group (group.repo)}
-          <div class="ft-group"><Icon name="folder" size={12} />{group.repo}</div>
-          {#each group.files as f (fileKey(f))}
-            {@const dis = disambiguator(f)}
-            <button
-              type="button"
-              class="ftitem"
-              class:active={fileKey(f) === activeKey}
-              class:dim={!f.mapped}
-              title={f.mapped ? undefined : 'unmapped — no local clone to read this file from'}
-              onclick={() => (activeKey = fileKey(f))}
-            >
-              <FileIcon path={f.path} size={14} />
-              <span class="ftname">{basename(f.path)}</span>
-              {#if dis}<span class="ftdis">· {dis}</span>{/if}
-            </button>
-          {/each}
-        {/each}
-      </div>
       <div class="densitywrap">
         {#if loading}
           <Skeleton rows={4} />
@@ -342,31 +229,13 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    padding: 12px 20px;
+    padding: 10px 20px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
     flex: 0 0 auto;
     font-size: 13px;
   }
-  .ct-crumb {
-    color: var(--text);
-    font-weight: 600;
-    font-family: var(--mono);
-    font-size: 12.5px;
-  }
-  .ct-sep {
-    color: var(--faint);
-  }
-  .ct-sha {
-    font: 600 10.5px/1 var(--mono);
-    color: var(--muted);
-    background: var(--panel-3);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 6px;
-  }
   .ct-hint {
-    margin-left: auto;
     color: var(--faint);
     font-size: 11.5px;
   }
@@ -375,66 +244,6 @@
     min-height: 0;
     display: flex;
     overflow: hidden;
-  }
-  .filetree {
-    width: 200px;
-    flex: 0 0 auto;
-    overflow-y: auto;
-    border-right: 1px solid var(--border);
-    padding: 12px 8px;
-    background: var(--panel);
-  }
-  .ft-group {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font: 700 9px/1 var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--faint);
-    padding: 6px 8px 5px;
-  }
-  .ftitem {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    border: 0;
-    background: transparent;
-    text-align: left;
-    padding: 6px 8px;
-    border-radius: 7px;
-    color: var(--muted);
-    font-size: 12.5px;
-  }
-  .ftitem:hover {
-    background: var(--panel-2);
-    color: var(--text);
-  }
-  .ftitem.active {
-    background: var(--panel-3);
-    color: var(--text);
-    font-weight: 600;
-  }
-  /* Unmapped (no local clone to read from) — dim the WHOLE row (icon
-     included), not just a color-coded dot. Color-only state fails both
-     scanning and accessibility; a `title` tooltip on the row carries the
-     "unmapped" fact for anyone who wants it spelled out. */
-  .ftitem.dim {
-    opacity: 0.45;
-  }
-  .ftname {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* Basename-collision disambiguator (`mod.rs · fleet/`) — the parent dir,
-     dim-styled, appended only for rows whose basename isn't unique among
-     the currently-visible files. */
-  .ftdis {
-    flex: 0 0 auto;
-    color: var(--faint);
-    font-size: 11px;
   }
   .densitywrap {
     flex: 1;
@@ -488,36 +297,5 @@
   }
   .cc {
     color: var(--text);
-  }
-
-  /* On phone, stack the file tree above the code instead of side-by-side —
-     200px off a ~360px viewport leaves the code view uncomfortably narrow.
-     The file tree becomes a horizontally-scrolling strip of chips so it
-     never forces the page to scroll sideways. */
-  @media (max-width: 767.98px) {
-    .codepage {
-      flex-direction: column;
-    }
-    .filetree {
-      width: 100%;
-      max-height: none;
-      display: flex;
-      flex-direction: row;
-      gap: 6px;
-      overflow-x: auto;
-      overflow-y: hidden;
-      border-right: 0;
-      border-bottom: 1px solid var(--border);
-      padding: 8px;
-    }
-    .ft-group {
-      display: none;
-    }
-    .ftitem {
-      width: auto;
-      flex: 0 0 auto;
-      white-space: nowrap;
-      min-height: 40px;
-    }
   }
 </style>

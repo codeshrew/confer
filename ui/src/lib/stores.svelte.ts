@@ -1,7 +1,10 @@
 // Svelte 5 runes-based app state. Small and typed — later agents extend
 // this as more panes come online (chat stream selection, filters, etc).
 
-import type { Message, Overview } from './types';
+import { SvelteSet } from 'svelte/reactivity';
+import { api } from './api';
+import { buildTree, defaultExpandedIds, fileKey } from './codeTree';
+import type { CodeFile, Message, Overview } from './types';
 
 // --- per-hub data cache --------------------------------------------------
 // Switching hubs in the TopBar re-fetches /api/overview + /api/messages
@@ -96,6 +99,111 @@ function createChatWindowCache() {
 export type ChatWindowCache = ReturnType<typeof createChatWindowCache>;
 
 export const chatWindowCache: ChatWindowCache = createChatWindowCache();
+
+// --- per-hub Code-view state (design/43 Phase B) -------------------------
+// Lifting the Code view's file/tree/selection state out of CodeLens and
+// into a shared, per-hub-keyed store is the prerequisite for splitting the
+// old single "file list + code pane" component into two: CodeTree (the
+// left-rail navigator) and CodeLens (the center code pane + gutter). Both
+// read/write the SAME per-hub record, so clicking a file in the tree and
+// seeing the code pane update (or vice versa) needs no prop-drilling or
+// callback plumbing between them — just two components pointed at the same
+// reactive object. Keyed per hub like `chatWindowCache` above: switching
+// hubs and back restores the previously-loaded file list, expansion state,
+// filter, and sort instantly instead of re-fetching and re-collapsing.
+export interface CodeFileState {
+  /** False until this hub's `/api/codefiles` fetch has resolved once. */
+  loaded: boolean;
+  files: CodeFile[];
+  activeKey: string | null;
+  /** Tree/dir node ids currently expanded — a `SvelteSet` so `.add`/`.delete`
+   * are independently reactive without reassigning the whole set. */
+  expanded: SvelteSet<string>;
+  filter: string;
+  sort: 'tree' | 'active';
+  /** The sha CodeLens is actually rendering at (the newest ref's pinned
+   * sha, or 'HEAD') — lives here too so the unified breadcrumb (built in
+   * App.svelte from this same store) doesn't need a callback prop just to
+   * learn what CodeLens decided to render. */
+  codeSha: string;
+  /** Set by a breadcrumb-segment click (or any other "reveal this node"
+   * affordance); CodeTree's effect consumes it (expand ancestors + scroll)
+   * and clears it. Selection-only — no routing implication. */
+  pendingReveal: string | null;
+}
+
+function createCodeFileState(): CodeFileState {
+  return {
+    loaded: false,
+    files: [],
+    activeKey: null,
+    expanded: new SvelteSet<string>(),
+    filter: '',
+    sort: 'tree',
+    codeSha: 'HEAD',
+    pendingReveal: null,
+  };
+}
+
+function createCodeStateStore() {
+  const perHub = new Map<string, CodeFileState>();
+  const inFlight = new Map<string, Promise<void>>();
+
+  function ensure(hubId: string): CodeFileState {
+    const existing = perHub.get(hubId);
+    if (existing) return existing;
+    const created = $state(createCodeFileState());
+    perHub.set(hubId, created);
+    return created;
+  }
+
+  return {
+    /** The reactive per-hub record — create it (empty, unloaded) on first
+     * access so callers never have to null-check before reading `.files`. */
+    forHub(hubId: string): CodeFileState {
+      return ensure(hubId);
+    },
+    /** Fetches `/api/codefiles` once per hub (cache-hit skips the refetch,
+     * same "instant revisit" contract as `hubDataCache`/`chatWindowCache`).
+     * Concurrent callers (CodeTree + CodeLens both mount together on first
+     * visit to Code view) share one in-flight request instead of firing two. */
+    async load(hubId: string): Promise<void> {
+      const s = ensure(hubId);
+      if (s.loaded) return;
+      let p = inFlight.get(hubId);
+      if (!p) {
+        p = api
+          .getCodeFiles(hubId)
+          .then((files) => {
+            s.files = files;
+            if (s.activeKey === null && files[0]) s.activeKey = fileKey(files[0]);
+            s.expanded = new SvelteSet(defaultExpandedIds(buildTree(files), s.activeKey));
+            s.loaded = true;
+          })
+          .finally(() => inFlight.delete(hubId));
+        inFlight.set(hubId, p);
+      }
+      return p;
+    },
+    /** Marks a hub's file list stale (e.g. a live SSE message/presence event
+     * for it) so the next `load()` call re-fetches — mirrors
+     * `hubDataCache.invalidate`. Expansion/filter/sort/activeKey are left
+     * alone; only `loaded` flips, so a live update doesn't reset the
+     * reader's tree state out from under them. */
+    invalidate(hubId: string): void {
+      const s = perHub.get(hubId);
+      if (s) s.loaded = false;
+    },
+    clear(): void {
+      perHub.clear();
+      inFlight.clear();
+    },
+  };
+}
+
+export type CodeStateStore = ReturnType<typeof createCodeStateStore>;
+
+export const codeState: CodeStateStore = createCodeStateStore();
 
 export type View = 'chat' | 'board' | 'fleet' | 'code' | 'repos';
 export type Theme = 'dark' | 'light';

@@ -4,6 +4,15 @@ import userEvent from '@testing-library/user-event';
 import CodeLens from './CodeLens.svelte';
 import type { CodeFile, RefHit, Snippet } from '../types';
 import { api } from '../api';
+import { codeState } from '../stores.svelte';
+import { fileKey } from '../codeTree';
+
+// design/43 Phase B: CodeLens no longer owns the file list (that's
+// CodeTree.svelte, in the left-rail slot — see CodeTree.test.ts) or fetches
+// `/api/codefiles` directly — it reads `files`/`activeKey` off the shared
+// `codeState` store (stores.svelte.ts), same as CodeTree does. These specs
+// drive file selection by mutating `codeState.forHub(hub).activeKey`
+// directly instead of clicking a file-tree row that no longer lives here.
 
 vi.mock('../api', () => ({
   api: {
@@ -17,6 +26,7 @@ beforeEach(() => {
   vi.mocked(api.getCode).mockReset();
   vi.mocked(api.getRefs).mockReset();
   vi.mocked(api.getCodeFiles).mockReset();
+  codeState.clear();
 });
 
 const plateBundleSnippet: Snippet = {
@@ -30,7 +40,7 @@ const plateBundleSnippet: Snippet = {
 };
 
 // Same three-file shape the component used to hardcode: two mapped files in
-// one repo, one unmapped — now sourced from getCodeFiles instead.
+// one repo, one unmapped — now sourced from getCodeFiles via codeState.
 const threeFiles: CodeFile[] = [
   { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', refCount: 3, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
   { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 2, mapped: true, lastTs: '2026-07-17T14:52:00Z' },
@@ -83,7 +93,7 @@ function wholeFileHit(overrides: Partial<RefHit> = {}, path = 'Sources/Reader/Pl
 }
 
 describe('CodeLens', () => {
-  it('fetches getCodeFiles(hub) and loads the first (mapped) file, calling getCode/getRefs with the right args', async () => {
+  it('loads codeState (the SAME store CodeTree writes to) and auto-activates the first file, calling getCode/getRefs with the right args', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([]);
@@ -95,122 +105,25 @@ describe('CodeLens', () => {
       expect(api.getCode).toHaveBeenCalledWith('agent-coord', 'wealdlore', 'Sources/Reader/PlateBundle.swift', 'HEAD')
     );
     expect(api.getRefs).toHaveBeenCalledWith('agent-coord', 'wealdlore:Sources/Reader/PlateBundle.swift', true);
+    expect(codeState.forHub('agent-coord').activeKey).toBe(fileKey(threeFiles[0]!));
 
     // Shiki tokenizes the line into several <span> pieces, so match on the
     // reassembled text content of the code block rather than a single node.
     await waitFor(() => expect(container.querySelector('.densefile .code')?.textContent).toContain('func assembleBundle'));
   });
 
-  it('renders the fetched files in the tree by basename, grouped under their repo', async () => {
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    render(CodeLens, { hub: 'agent-coord' });
-
-    expect(await screen.findByRole('button', { name: 'PlateBundle.swift' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'plates.py' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'citations.py' })).toBeInTheDocument();
-    expect(screen.getByText('wealdlore')).toBeInTheDocument(); // the repo group header
-  });
-
-  it('dims the whole row (not just a dot) for unmapped files, and gives it an "unmapped" title', async () => {
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    render(CodeLens, { hub: 'agent-coord' });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'citations.py' })).toBeInTheDocument());
-
-    const mappedRow = screen.getByRole('button', { name: 'PlateBundle.swift' });
-    const unmappedRow = screen.getByRole('button', { name: 'citations.py' });
-
-    expect(mappedRow.className).not.toContain('dim');
-    expect(unmappedRow.className).toContain('dim');
-    expect(unmappedRow.getAttribute('title')).toMatch(/unmapped/);
-  });
-
-  it('renders a file-type icon per row (not a plain colored dot)', async () => {
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    render(CodeLens, { hub: 'agent-coord' });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'plates.py' })).toBeInTheDocument());
-
-    // plates.py -> python icon (a distinct fill color from swift/PlateBundle).
-    const pySvg = screen.getByRole('button', { name: 'plates.py' }).querySelector('svg');
-    expect(pySvg?.innerHTML).toContain('#0288d1');
-    expect(screen.getByRole('button', { name: 'PlateBundle.swift' }).querySelector('.fdot')).toBeNull();
-  });
-
-  it('disambiguates two visible rows sharing a basename with a dim parent-dir suffix', async () => {
-    const colliding: CodeFile[] = [
-      { repo: 'wealdlore', path: 'fleet/mod.rs', refCount: 2, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
-      { repo: 'wealdlore', path: 'reader/mod.rs', refCount: 1, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
-      { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 1, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
-    ];
-    vi.mocked(api.getCodeFiles).mockResolvedValue(colliding);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    render(CodeLens, { hub: 'agent-coord' });
-
-    expect(await screen.findByText('· fleet/')).toBeInTheDocument();
-    expect(screen.getByText('· reader/')).toBeInTheDocument();
-    // The non-colliding file gets no suffix at all.
-    expect(screen.queryByText('· pipeline/')).not.toBeInTheDocument();
-  });
-
-  it('shows the new empty state — not the file tree — when the hub has no referenced code files', async () => {
+  it('shows the new empty state when the hub has no referenced code files', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue([]);
 
     render(CodeLens, { hub: 'confer-jarvis-orbit' });
 
     expect(await screen.findByText('No code referenced in this hub yet')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'PlateBundle.swift' })).not.toBeInTheDocument();
     // No per-file fetches when there's nothing to select.
     expect(api.getCode).not.toHaveBeenCalled();
     expect(api.getRefs).not.toHaveBeenCalled();
   });
 
-  it('reports onActiveFileChange(false) on a zero-files hub, true once a file auto-activates', async () => {
-    const onActiveFileChange = vi.fn();
-    vi.mocked(api.getCodeFiles).mockResolvedValue([]);
-
-    const { rerender } = render(CodeLens, { hub: 'confer-jarvis-orbit', onActiveFileChange });
-
-    await waitFor(() => expect(onActiveFileChange).toHaveBeenLastCalledWith(false));
-
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-    await rerender({ hub: 'agent-coord', onActiveFileChange });
-
-    await waitFor(() => expect(onActiveFileChange).toHaveBeenLastCalledWith(true));
-  });
-
-  it('re-fetches getCodeFiles and resets selection when the hub changes', async () => {
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    const { rerender } = render(CodeLens, { hub: 'agent-coord' });
-    await waitFor(() => expect(api.getCodeFiles).toHaveBeenCalledWith('agent-coord'));
-
-    const otherHubFiles: CodeFile[] = [
-      { repo: 'jarvis-repo', path: 'src/main.rs', refCount: 1, mapped: true, lastTs: '2026-07-17T10:00:00Z' },
-    ];
-    vi.mocked(api.getCodeFiles).mockResolvedValue(otherHubFiles);
-
-    await rerender({ hub: 'confer-jarvis-orbit' });
-
-    await waitFor(() => expect(api.getCodeFiles).toHaveBeenCalledWith('confer-jarvis-orbit'));
-    expect(await screen.findByRole('button', { name: 'main.rs' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'PlateBundle.swift' })).not.toBeInTheDocument();
-  });
-
-  it('shows a loading skeleton before the file-list fetch resolves', async () => {
+  it('shows a loading skeleton before the codeState fetch resolves', async () => {
     let resolveFiles!: (files: CodeFile[]) => void;
     vi.mocked(api.getCodeFiles).mockReturnValue(new Promise((res) => (resolveFiles = res)));
 
@@ -221,10 +134,10 @@ describe('CodeLens', () => {
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([]);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'PlateBundle.swift' })).toBeInTheDocument());
+    await waitFor(() => expect(api.getCode).toHaveBeenCalled());
   });
 
-  it('switching to an unmapped file shows the "no clone mapped" empty state, disabled, without calling the API', async () => {
+  it('re-fetches when switching to a different active file (as CodeTree would drive via the shared store)', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([]);
@@ -232,13 +145,26 @@ describe('CodeLens', () => {
     render(CodeLens, { hub: 'agent-coord' });
     await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
 
-    const user = userEvent.setup();
-    await user.click(screen.getByText('citations.py'));
+    codeState.forHub('agent-coord').activeKey = fileKey(threeFiles[1]!);
+
+    await waitFor(() =>
+      expect(api.getCode).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'HEAD')
+    );
+    expect(api.getCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('switching the active key to an unmapped file shows the "no clone mapped" empty state, disabled, without calling getCode again', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
+
+    codeState.forHub('agent-coord').activeKey = fileKey(threeFiles[2]!); // citations.py, unmapped
 
     expect(await screen.findByText('No clone mapped for this repo')).toBeInTheDocument();
-    // The empty-state action is disabled (mapping a clone isn't wired up yet).
     expect(screen.getByText('＋ map a clone to see the code')).toBeDisabled();
-    // No new fetch happens for the unmapped file.
     expect(api.getCode).toHaveBeenCalledTimes(1);
   });
 
@@ -255,11 +181,7 @@ describe('CodeLens', () => {
   it('renders a density hook only for lines with reference hits, filtered to the active file (repo+path)', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([
-      hitOn(44),
-      hitOn(45),
-      hitOn(999, 'some/other/file.swift'), // different path — must be filtered out
-    ]);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), hitOn(45), hitOn(999, 'some/other/file.swift')]); // different path — must be filtered out
 
     const { container } = render(CodeLens, { hub: 'agent-coord' });
 
@@ -309,29 +231,12 @@ describe('CodeLens', () => {
     vi.mocked(api.getRefs).mockResolvedValue([]);
     const onOpenRefs = vi.fn();
 
-    const { container } = render(CodeLens, { hub: 'agent-coord', onOpenRefs });
+    render(CodeLens, { hub: 'agent-coord', onOpenRefs });
 
     await waitFor(() => expect(screen.queryByTestId('skeleton')).not.toBeInTheDocument());
-    expect(container.querySelectorAll('.dens.hit').length).toBe(0);
-    expect(container.querySelectorAll('.dens').length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('.dens.hit').length).toBe(0);
+    expect(document.querySelectorAll('.dens').length).toBeGreaterThan(0);
     expect(onOpenRefs).not.toHaveBeenCalled();
-  });
-
-  it('re-fetches when switching between two mapped files', async () => {
-    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
-    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([]);
-
-    render(CodeLens, { hub: 'agent-coord' });
-    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
-
-    const user = userEvent.setup();
-    await user.click(screen.getByText('plates.py'));
-
-    await waitFor(() =>
-      expect(api.getCode).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'HEAD')
-    );
-    expect(api.getCode).toHaveBeenCalledTimes(2);
   });
 
   it('fires onFileRefs with the whole-file (range:null) hits too — not just the ones that light the gutter', async () => {
@@ -356,7 +261,7 @@ describe('CodeLens', () => {
     expect(hits).toHaveLength(2);
   });
 
-  it('renders at the newest hit\'s pinned sha instead of a hardcoded HEAD', async () => {
+  it('renders at the newest hit\'s pinned sha instead of a hardcoded HEAD, and records it on the shared store (for App\'s breadcrumb)', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     const older = wholeFileHit({ msgId: 'msg_old', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ts: '2026-07-10T09:00:00Z' });
@@ -373,6 +278,7 @@ describe('CodeLens', () => {
         '6c513dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       )
     );
+    expect(codeState.forHub('agent-coord').codeSha).toBe('6c513dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   });
 
   it('falls back to HEAD when there are no hits at all (unchanged behavior)', async () => {

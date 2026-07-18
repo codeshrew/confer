@@ -3,6 +3,7 @@
   import TopBar from './lib/components/TopBar.svelte';
   import type { ConnStatus } from './lib/components/TopBar.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
+  import CodeTree from './lib/components/CodeTree.svelte';
   import FilterBar, { type StatusFilter } from './lib/components/FilterBar.svelte';
   import ChatStream from './lib/components/ChatStream.svelte';
   import Board from './lib/components/Board.svelte';
@@ -15,8 +16,9 @@
   import EmptyState from './lib/components/EmptyState.svelte';
   import CopyIdButton from './lib/components/CopyIdButton.svelte';
   import { api } from './lib/api';
-  import { appState, chatWindowCache, hubDataCache } from './lib/stores.svelte';
+  import { appState, chatWindowCache, codeState, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
+  import { breadcrumbFromTree, buildTree, collapseBreadcrumb, fileKey, type BreadcrumbNode } from './lib/codeTree';
   import {
     defaultContextMode,
     leftRailVisible,
@@ -172,10 +174,11 @@
   let fileLevelRefs = $state<{ ctx: { repo: string; path: string }; hits: RefHit[] } | null>(null);
 
   // design/43 Thread 1 — Code view's right rail is open whenever a file is
-  // active (there's always one on a non-empty hub); CodeLens reports this
-  // via onActiveFileChange since "is a file active" isn't otherwise visible
-  // up here (fileRefs/hitsByLine are internal to it).
-  let codeHasActiveFile = $state(false);
+  // active (there's always one on a non-empty hub). design/43 Phase B: this
+  // now reads straight off the shared `codeState` store instead of a
+  // callback CodeLens used to fire (`onActiveFileChange`) — CodeTree and
+  // CodeLens both write/read the same per-hub record, so App can just look.
+  const codeHasActiveFile = $derived(codeState.forHub(appState.hub).activeKey !== null);
 
   // Whether the right rail has anything to inspect for the CURRENT view —
   // the single source of truth for both the grid-column collapse and the
@@ -303,6 +306,7 @@
         // the FULL messages list (unpaginated) that RequestDetail/MetaThread
         // rely on for cross-topic trail reconstruction.
         hubDataCache.invalidate(event.hub);
+        codeState.invalidate(event.hub);
         void loadHub(appState.hub);
         // The ChatStream window, in contrast, must NOT redo a full refetch
         // here — that would both hammer a large hub's history on every tick
@@ -471,6 +475,38 @@
   }
 
   const selectedRequest = $derived(overview?.board.requests.find((r) => r.id === selectedRequestId) ?? null);
+
+  // design/43 Phase B — the unified Code breadcrumb: `hub › Code › repo ›
+  // dir › … › file @sha`, absorbing CodeLens's old standalone `repo ›
+  // path` crumb line entirely. Built from the SAME tree CodeTree renders
+  // (walking the actual compacted structure, not a raw path split) so a
+  // crumb segment always corresponds to exactly one real tree row —
+  // clicking it can reveal that exact row (see onCrumbSegmentClick below).
+  const codeCrumb = $derived.by((): { segments: BreadcrumbNode[]; full: string; sha: string | null } => {
+    const cs = codeState.forHub(appState.hub);
+    const active = cs.files.find((f) => fileKey(f) === cs.activeKey);
+    if (!active) return { segments: [], full: '', sha: null };
+    const tree = buildTree(cs.files);
+    const chain = breadcrumbFromTree(tree, active.repo, fileKey(active));
+    const full = `${active.repo}/${active.path}`;
+    return { segments: chain, full, sha: cs.codeSha !== 'HEAD' ? cs.codeSha : null };
+  });
+  const codeCrumbDisplay = $derived(collapseBreadcrumb(codeCrumb.segments, 4));
+
+  /** A breadcrumb segment (repo/dir/file) click reveals + scrolls that node
+   * in CodeTree — selection-only, no routing implication yet (design/41's
+   * `code?repo=&path=` will plug in here later). */
+  function onCrumbSegmentClick(nodeId: string | null) {
+    if (!nodeId) return;
+    codeState.forHub(appState.hub).pendingReveal = nodeId;
+  }
+
+  /** CodeTree's onActivate — a file click (or filter Enter). Closes the
+   * mobile left drawer, same contract as selectTopic: choosing something
+   * from the drawer menu means the reader is "done with the menu". */
+  function onCodeFileActivate() {
+    if (appState.drawer === 'left') appState.drawer = 'none';
+  }
 </script>
 
 <div class="app">
@@ -533,18 +569,26 @@
       >
         ✕
       </button>
-      <LeftRail
-        hubName={appState.hub}
-        topics={overview?.topics ?? []}
-        currentTopic={appState.topic}
-        agents={overview?.fleet ?? []}
-        showFleet={showFleetInRail}
-        onTopicSelect={selectTopic}
-      />
+      {#if appState.view === 'code'}
+        <!-- design/43 Thread 1/2: Code's navigator IS the file tree, not
+             topics/fleet — replaces LeftRail entirely in this view (also
+             becomes the mobile left drawer's content for free, since this
+             wrapper's drawer CSS doesn't care what's inside it). -->
+        <CodeTree hub={appState.hub} onActivate={onCodeFileActivate} />
+      {:else}
+        <LeftRail
+          hubName={appState.hub}
+          topics={overview?.topics ?? []}
+          currentTopic={appState.topic}
+          agents={overview?.fleet ?? []}
+          showFleet={showFleetInRail}
+          onTopicSelect={selectTopic}
+        />
+      {/if}
     </div>
 
     <div class="center">
-      <div class="crumb">
+      <div class="crumb" title={appState.view === 'code' && codeCrumb.full ? codeCrumb.full : undefined}>
         <span class="c">{appState.hub}</span>
         <span class="sep">›</span>
         {#if appState.view === 'chat'}
@@ -558,6 +602,17 @@
           <span class="c strong">Fleet</span>
         {:else if appState.view === 'code'}
           <span class="c strong">Code</span>
+          {#each codeCrumbDisplay as seg, i (i)}
+            <span class="sep">›</span>
+            {#if seg.nodeId}
+              <button type="button" class="c crumb-seg" onclick={() => onCrumbSegmentClick(seg.nodeId)}>{seg.label}</button>
+            {:else}
+              <span class="c crumb-ellipsis">{seg.label}</span>
+            {/if}
+          {/each}
+          {#if codeCrumb.sha}
+            <span class="ct-sha" title="Rendered at the newest reference's pinned sha">@{codeCrumb.sha.slice(0, 10)}</span>
+          {/if}
         {:else}
           <span class="c strong">Repos</span>
         {/if}
@@ -616,12 +671,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
-          <CodeLens
-            hub={appState.hub}
-            onOpenRefs={openRefsFromCode}
-            onFileRefs={onCodeFileRefs}
-            onActiveFileChange={(has) => (codeHasActiveFile = has)}
-          />
+          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>
@@ -897,6 +947,39 @@
     margin-left: auto;
     color: var(--faint);
     font: 500 11.5px/1 var(--mono);
+  }
+  /* design/43 Phase B — Code view's unified breadcrumb segments (repo/dir/
+     .../file), clickable to reveal + scroll that node in CodeTree. */
+  .crumb-seg {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 0;
+    cursor: pointer;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .crumb-seg:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .crumb-ellipsis {
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .ct-sha {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--muted);
+    background: var(--panel-3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 6px;
   }
   .rail-r {
     background: var(--panel);
