@@ -98,6 +98,13 @@ Piece 2 (hub navigation/scale) will likely want the trust-tier signal too — wo
 - **Reviewable increments:** each piece is its own commit(s) so Herald can review/merge piecewise
   for 0.8.0. Never fabricate data — if the backend doesn't project something yet, degrade honestly
   and note the backend gap here rather than faking it.
+- **Law #3 is a HARD REVIEW GATE, every piece (operator directive, 2026-07-18).** No piece is
+  approved until the reviewer has verified *in source* that every interface element is bound to real
+  data — no hardcoded placeholder state, no plausible-but-invented value. When the backend can't
+  provide something, the pattern is: (1) degrade honestly in the UI, (2) log it under "Backend gaps"
+  above, (3) turn it into a real backend ask. That loop is working — piece 1's deferred trust-tier
+  became request `MRCKY3` to Herald, who is now projecting a real `tier` field rather than us faking
+  one. A fake pixel is a bug, not a shortcut.
 - **Design fidelity:** the mockup(s) under `redesign-mockups/` are the visual spec. Match the token
   values, the appearance-encoding vocabulary, and the spacing exactly; deviate only with a noted reason.
 
