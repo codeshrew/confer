@@ -21,9 +21,14 @@
     agents: Agent[];
     hub: string;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
+    /** A lifecycle-trail row was clicked — jump to the underlying message in
+     * Chat (design/41 Phase 0, §4 "clickable lifecycle-trail rows"). `topic`
+     * is the message's own topic, so the caller can switch if it differs
+     * from whatever's currently showing. */
+    onSelectMessage?: (msgId: string, topic: string | null) => void;
   }
 
-  let { request, messages, agents, hub, onOpenRefs }: Props = $props();
+  let { request, messages, agents, hub, onOpenRefs, onSelectMessage }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
 
@@ -64,6 +69,8 @@
   });
 
   interface TrailEvent {
+    msgId: string;
+    topic: string | null;
     stateVar: string;
     label: string;
     who: string;
@@ -73,6 +80,8 @@
 
   const trail = $derived.by((): TrailEvent[] =>
     trailMsgs.map((m, i) => ({
+      msgId: m.id,
+      topic: m.topic,
       stateVar: STATE_VAR[m.type],
       label: i === 0 ? 'filed' : LABEL[m.type],
       who: agentsById.get(m.from)?.display ?? cap(m.from),
@@ -136,14 +145,19 @@
     {#each trail as ev, i (i)}
       <div class="lcev">
         <span class="lcdot" style="--st:{ev.stateVar}"></span>
-        <div class="lccard">
+        <button
+          type="button"
+          class="lccard"
+          onclick={() => onSelectMessage?.(ev.msgId, ev.topic)}
+          aria-label={`Jump to the message where this was ${ev.label}`}
+        >
           <div class="lchead">
             <span class="lclabel" style="--st:{ev.stateVar}">{ev.label}</span>
             <span class="lcwho">{ev.who}</span>
             <span class="lcts">{ev.ts}</span>
           </div>
           {#if ev.note}<div class="lcnote">{ev.note}</div>{/if}
-        </div>
+        </button>
       </div>
     {/each}
   </div>
@@ -246,10 +260,24 @@
     box-shadow: 0 0 0 3px var(--panel);
   }
   .lcev .lccard {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
     background: var(--panel-2);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 9px 11px;
+    cursor: pointer;
+    transition:
+      background 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .lcev .lccard:hover,
+  .lcev .lccard:focus-visible {
+    background: var(--panel-3);
+    border-color: var(--accent);
   }
   .lcev .lchead {
     display: flex;

@@ -5,6 +5,7 @@
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
+  import CopyIdButton from './CopyIdButton.svelte';
 
   interface Props {
     message: MessageT;
@@ -19,6 +20,11 @@
      * past the long-body threshold). Governs note/message BODY visibility
      * only — ticket cards and syslines are unaffected. */
     density?: 'summary' | 'full';
+    /** True for ~2s right after a scroll-to-message navigation (meta-thread
+     * node click, lifecycle-trail row click) lands here — plays a brief
+     * highlight pulse so the reader can find the message that was jumped
+     * to. See ChatStream's `scrollToMessageId` handling. */
+    highlight?: boolean;
     onSelect?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
@@ -33,6 +39,7 @@
     unseen = false,
     seenEntries,
     density = 'full',
+    highlight = false,
     onSelect,
     onSelectTicket,
     onOpenRefs,
@@ -86,7 +93,7 @@
 </script>
 
 {#if isSysline}
-  <div class="sysline" data-type={message.type}>
+  <div class="sysline" class:pulse={highlight} data-type={message.type} data-msg-id={message.id}>
     <span class="tick">↳</span>
     <span><b style="color:{fromColor}">{fromDisplay}</b> {message.summary}</span>
     <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)} · {message.type.toUpperCase()}</span>
@@ -97,7 +104,9 @@
     class:sel={selected}
     class:unseen
     class:has-ticket={isTicket}
+    class:pulse={highlight}
     data-type={isTicket ? 'request' : 'note'}
+    data-msg-id={message.id}
     role="button"
     tabindex="0"
     onclick={selectMessage}
@@ -111,6 +120,7 @@
         <span class="who" style="color:{fromColor}">{fromDisplay}</span>
         {#if message.host}<span class="role">{message.host}</span>{/if}
         <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)}</span>
+        <CopyIdButton id={message.id} class="msg-copy-id" />
         <SeenIndicator entries={seenEntries} />
       </div>
 
@@ -261,6 +271,37 @@
     border-radius: 2px;
     background: var(--accent);
     box-shadow: 0 0 9px -1px var(--accent);
+  }
+  /* Copy-id affordance (design/41 Phase 0): hidden until the row itself is
+     hovered/focused — CopyIdButton defaults to opacity:0 and only reveals
+     itself, always-visible on touch. `:global(...)` is required since the
+     button lives inside a CHILD component, out of reach of this file's own
+     scoped selector otherwise. */
+  .msg:hover :global(.msg-copy-id),
+  .msg:focus-within :global(.msg-copy-id) {
+    opacity: 1;
+  }
+  /* Scroll-to + highlight-pulse target (design/41 Phase 0 item 4) — a brief
+     ~2s fade so a meta-thread-node / lifecycle-trail navigation is easy to
+     spot once the stream scrolls to it. `prefers-reduced-motion` is
+     respected upstream in ChatStream (it simply never sets `highlight`
+     true), so no separate override is needed here. */
+  @keyframes msg-pulse {
+    0% {
+      box-shadow: inset 0 0 0 0px var(--accent);
+      background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+    }
+    100% {
+      box-shadow: inset 0 0 0 0px var(--accent);
+      background: transparent;
+    }
+  }
+  .msg.pulse {
+    animation: msg-pulse 2s ease-out;
+  }
+  .sysline.pulse {
+    animation: msg-pulse 2s ease-out;
+    border-radius: 6px;
   }
   .av {
     width: 26px;

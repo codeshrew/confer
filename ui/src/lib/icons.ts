@@ -48,6 +48,7 @@ export const uiIcons: Record<string, IconDef> = {
   'message-square': { viewBox: '0 0 24 24', markup: '<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />' },
   'link': { viewBox: '0 0 24 24', markup: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />' },
   'copy': { viewBox: '0 0 24 24', markup: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />' },
+  'check': { viewBox: '0 0 24 24', markup: '<path d="M20 6 9 17l-5-5" />' },
   'corner-down-left': { viewBox: '0 0 24 24', markup: '<path d="M20 4v7a4 4 0 0 1-4 4H4" /><path d="m9 10-5 5 5 5" />' },
   'x': { viewBox: '0 0 24 24', markup: '<path d="M18 6 6 18" /><path d="m6 6 12 12" />' },
   'info': { viewBox: '0 0 24 24', markup: '<circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" />' },

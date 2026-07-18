@@ -19,6 +19,8 @@
   // bug). If bodies need to be reliably available here, the clean fix is
   // having the backend's `/api/thread` include the body per node directly.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
+  import { copyToClipboard } from '../clipboard';
+  import Icon from './Icon.svelte';
   import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
 
   interface Props {
@@ -46,6 +48,28 @@
     if (next.has(msgId)) next.delete(msgId);
     else next.add(msgId);
     expandedIds = next;
+  }
+
+  // Copy-id affordance for the `.gid` line (design/41 Phase 0, §4) — the id
+  // is already displayed per node; this just makes it click-to-copy, with
+  // the same "swap to a check for ~1.2s" feedback as CopyIdButton, keyed by
+  // msgId since it's one row among many.
+  let copiedIds = $state(new Set<string>());
+  const copyResetTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  async function copyNodeId(e: MouseEvent, msgId: string) {
+    e.stopPropagation();
+    const ok = await copyToClipboard(msgId);
+    if (!ok) return;
+    copiedIds = new Set(copiedIds).add(msgId);
+    clearTimeout(copyResetTimers.get(msgId));
+    copyResetTimers.set(
+      msgId,
+      setTimeout(() => {
+        const next = new Set(copiedIds);
+        next.delete(msgId);
+        copiedIds = next;
+      }, 1200)
+    );
   }
 
   // renderMarkdown sanitizes with DOMPurify — message bodies are untrusted,
@@ -203,7 +227,17 @@
           </div>
         {/if}
         {#if row.hop}<div class="hop {row.hop.cls}">{row.hop.label}</div>{/if}
-        <div class="gid">{row.node.msgId}</div>
+        <button
+          type="button"
+          class="gid"
+          class:copied={copiedIds.has(row.node.msgId)}
+          onclick={(e) => copyNodeId(e, row.node.msgId)}
+          aria-label={copiedIds.has(row.node.msgId) ? `Copied ${row.node.msgId}` : `Copy id ${row.node.msgId}`}
+          title="Click to copy id"
+        >
+          <Icon name={copiedIds.has(row.node.msgId) ? 'check' : 'copy'} size={10} />
+          {row.node.msgId}
+        </button>
       </div>
     </div>
   {/each}
@@ -409,9 +443,28 @@
     font-weight: 400;
   }
   .gcard :global(.gid) {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 7px;
+    padding: 3px 6px 3px 5px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
     font: 500 10px/1 var(--mono);
     color: var(--faint);
-    margin-top: 7px;
+    cursor: pointer;
+  }
+  .gcard :global(.gid:hover),
+  .gcard :global(.gid:focus-visible) {
+    color: var(--text);
+    border-color: var(--border-2);
+    background: var(--panel-2);
+  }
+  .gcard :global(.gid.copied) {
+    color: var(--done);
+    border-color: var(--done);
+    background: color-mix(in srgb, var(--done) 12%, transparent);
   }
   .gcard :global(.hop) {
     display: inline-flex;

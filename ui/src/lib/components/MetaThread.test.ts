@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import MetaThread from './MetaThread.svelte';
@@ -47,6 +47,10 @@ const reader = agent('reader', 'Reader', 'var(--ag-reader)');
 const pipeline = agent('pipeline', 'Pipeline', 'var(--ag-pipeline)');
 
 describe('MetaThread', () => {
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  });
+
   it('a single-topic thread has no cross-topic hop and no "weaves across" note', () => {
     const thread = [node('m1', 'reader', 'reader'), node('m2', 'pipeline', 'reader')];
     render(MetaThread, { thread, agents: [reader, pipeline] });
@@ -190,9 +194,35 @@ describe('MetaThread', () => {
     render(MetaThread, { thread, agents: [reader, pipeline], onSelectNode });
 
     const user = userEvent.setup();
-    await user.click(screen.getByText('m2'));
+    // Click the agent name, not the `.gid` line — that's now its own
+    // click-to-copy control (see the describe block below) and must NOT
+    // also select the node.
+    await user.click(screen.getByText('Pipeline'));
 
     expect(onSelectNode).toHaveBeenCalledWith('m2');
+  });
+
+  describe('copy-id on the .gid line (design/41 Phase 0)', () => {
+    it('clicking the id copies it and swaps the icon to a check, without firing onSelectNode', async () => {
+      // userEvent.setup() installs its own navigator.clipboard stub, so our
+      // mock must be defined AFTER setup() or it gets clobbered.
+      const user = userEvent.setup();
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+        configurable: true,
+      });
+      const thread = [node('m1', 'reader', 'reader')];
+      const onSelectNode = vi.fn();
+      render(MetaThread, { thread, agents: [reader], onSelectNode });
+
+      const gidBtn = screen.getByRole('button', { name: /copy id m1/i });
+      await user.click(gidBtn);
+
+      await vi.waitFor(() => {
+        expect(gidBtn).toHaveAttribute('aria-label', 'Copied m1');
+      });
+      expect(onSelectNode).not.toHaveBeenCalled();
+    });
   });
 
   describe('full-body rendering (density + expand)', () => {

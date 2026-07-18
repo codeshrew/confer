@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Agent, RequestRow } from '../types';
   import { agePct, ageColorVar, formatAgeFromSecs } from '../format';
+  import CopyIdButton from './CopyIdButton.svelte';
 
   interface Props {
     request: RequestRow;
@@ -47,7 +48,10 @@
   <span class="bstripe"></span>
   <div class="btitle">
     <span class="bt">{request.summary}</span>
-    <span class="bid">{request.id}</span>
+    <span class="bidrow">
+      <span class="bid">{request.id}</span>
+      <CopyIdButton id={request.id} class="brow-copy-id" />
+    </span>
   </div>
   <span class="btopic">#{request.topic ?? '—'}</span>
   <div class="bhand">
@@ -105,9 +109,21 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .brow .bidrow {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
   .brow .bid {
     font: 500 10px/1 var(--mono);
     color: var(--faint);
+  }
+  /* Copy-id affordance (design/41 Phase 0) — hidden until the row is
+     hovered/focused; CopyIdButton's own `(hover: none)` media query keeps
+     it always-visible on touch. */
+  .brow:hover :global(.brow-copy-id),
+  .brow:focus-within :global(.brow-copy-id) {
+    opacity: 1;
   }
   .brow .btopic {
     font: 600 10.5px/1 var(--mono);

@@ -45,6 +45,13 @@
     onSelectMessage?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
+    /** design/41 Phase 0 item 4 — the shared scroll-to + highlight-pulse
+     * primitive that meta-thread-node clicks and lifecycle-trail-row clicks
+     * both build on. `scrollToken` must be bumped by the caller on every
+     * request (even a repeat of the same id) since Svelte's reactivity
+     * otherwise can't tell "navigate here again" from "no change". */
+    scrollToMessageId?: string | null;
+    scrollToken?: number;
   }
 
   let {
@@ -63,6 +70,8 @@
     onSelectMessage,
     onSelectTicket,
     onOpenRefs,
+    scrollToMessageId = null,
+    scrollToken = 0,
   }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
@@ -188,6 +197,64 @@
   }
 
   const showLoadingOlder = $derived(loadingOlder || loadingOlderNow);
+
+  // --- scroll-to + highlight-pulse (design/41 Phase 0 item 4) ------------
+  // The shared primitive meta-thread-node clicks and lifecycle-trail-row
+  // clicks both build on: scroll the target message into view and play a
+  // brief highlight pulse. Must cope with the paginated window — if the
+  // target isn't in the currently loaded page, load older pages (the same
+  // mechanism as scroll-up pagination above) until it shows up or there's
+  // nothing more to load; if it's truly unavailable, no-op gracefully.
+  let pulseMessageId = $state<string | null>(null);
+  // Bumped on every scroll-to request (see the $effect below) so an
+  // in-flight load-older loop from a SUPERSEDED request can tell it's stale
+  // and stop rather than fighting a newer request.
+  let scrollGen = 0;
+  const MAX_SCROLL_LOAD_ATTEMPTS = 25;
+
+  function prefersReducedMotion(): boolean {
+    return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  }
+
+  function escapeForSelector(id: string): string {
+    // CSS.escape isn't guaranteed to exist in every environment this runs
+    // in (belt-and-suspenders for older embedders) — fall back to a minimal
+    // manual escape of the two characters that would actually break the
+    // attribute-selector string.
+    return typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(id) : id.replace(/["\\]/g, '\\$&');
+  }
+
+  async function performScrollTo(msgId: string, gen: number) {
+    let attempts = 0;
+    while (!topicMessages.some((m) => m.id === msgId) && hasMore && onLoadOlder && attempts < MAX_SCROLL_LOAD_ATTEMPTS) {
+      if (gen !== scrollGen) return; // superseded by a newer scroll-to request
+      const added = await onLoadOlder();
+      if (gen !== scrollGen) return;
+      if (added === 0) break; // nothing more to load
+      attempts++;
+    }
+    await tick();
+    if (gen !== scrollGen || !streamEl) return;
+    if (!topicMessages.some((m) => m.id === msgId)) return; // truly unavailable — no-op
+    const el = streamEl.querySelector(`[data-msg-id="${escapeForSelector(msgId)}"]`) as HTMLElement | null;
+    if (!el) return;
+    const reduced = prefersReducedMotion();
+    el.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' });
+    if (!reduced) {
+      pulseMessageId = msgId;
+      setTimeout(() => {
+        if (pulseMessageId === msgId) pulseMessageId = null;
+      }, 2000);
+    }
+  }
+
+  $effect(() => {
+    const target = scrollToMessageId;
+    void scrollToken; // dependency only — forces a re-run even for a repeat id
+    if (!target) return;
+    const gen = ++scrollGen;
+    void performScrollTo(target, gen);
+  });
 </script>
 
 <div class="stream" bind:this={streamEl} onscroll={handleScroll}>
@@ -224,6 +291,7 @@
           selected={selectedMessageId === message.id}
           unseen={isUnseenByYou(message)}
           seenEntries={buildSeenEntries(message)}
+          highlight={pulseMessageId === message.id}
           {density}
           onSelect={onSelectMessage}
           onSelectTicket={onSelectTicket}

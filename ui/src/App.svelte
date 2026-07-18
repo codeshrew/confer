@@ -13,6 +13,7 @@
   import RequestDetail from './lib/components/RequestDetail.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
+  import CopyIdButton from './lib/components/CopyIdButton.svelte';
   import { api } from './lib/api';
   import { appState, chatWindowCache, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
@@ -333,6 +334,36 @@
     );
   }
 
+  // design/41 Phase 0 items 2-4: the shared "jump to a message in Chat"
+  // navigation used by MetaThread's onSelectNode (a thread node click) and
+  // RequestDetail's lifecycle-trail row clicks. Always lands in the Chat
+  // view; switches topic first (awaiting that topic's window so the
+  // pagination-chase in ChatStream's scrollToMessageId effect starts from
+  // the RIGHT topic's data, not a stale one) when the target message lives
+  // in a different topic than whatever's currently showing.
+  let scrollTargetId = $state<string | null>(null);
+  let scrollToken = $state(0);
+
+  async function navigateToMessageInChat(msgId: string, topic?: string | null) {
+    appState.view = 'chat';
+    if (topic && topic !== appState.topic) {
+      appState.topic = topic;
+      await loadChatWindow(appState.hub, topic);
+    }
+    selectMessage(msgId);
+    scrollTargetId = msgId;
+    scrollToken++;
+  }
+
+  function onMetaThreadSelectNode(msgId: string) {
+    // MetaThread's onSelectNode only carries the msgId — recover the
+    // node's own topic from the currently-loaded `thread` (the same
+    // ThreadNode[] MetaThread itself renders from) so a cross-topic node
+    // click switches topic before scrolling.
+    const node = thread.find((n) => n.msgId === msgId);
+    void navigateToMessageInChat(msgId, node?.topic ?? null);
+  }
+
   function selectMessage(id: string) {
     const found = messages.find((m) => m.id === id);
     appState.selectedMessage = found ?? null;
@@ -559,6 +590,8 @@
             {reqsOn}
             density={appState.chatDensity}
             selectedMessageId={appState.selectedMessage?.id ?? null}
+            scrollToMessageId={scrollTargetId}
+            {scrollToken}
             onSelectMessage={selectMessage}
             onSelectTicket={selectTicket}
             onOpenRefs={openRefs}
@@ -616,7 +649,12 @@
         </button>
         {#if contextMode === 'request'}
           <div class="k">Request detail</div>
-          <h2>{selectedRequest?.summary ?? selectedRequestId ?? 'Request'}</h2>
+          <h2>
+            {selectedRequest?.summary ?? selectedRequestId ?? 'Request'}
+            {#if selectedRequestId}
+              <CopyIdButton id={selectedRequestId} class="ctx-copy-id" />
+            {/if}
+          </h2>
         {:else if contextMode === 'refs'}
           <div class="k">Reverse index</div>
           <h2>Conversations about this code</h2>
@@ -627,7 +665,14 @@
       </div>
       <div class="ctx-body">
         {#if contextMode === 'request' && selectedRequest}
-          <RequestDetail request={selectedRequest} {messages} agents={overview?.fleet ?? []} hub={appState.hub} onOpenRefs={openRefs} />
+          <RequestDetail
+            request={selectedRequest}
+            {messages}
+            agents={overview?.fleet ?? []}
+            hub={appState.hub}
+            onOpenRefs={openRefs}
+            onSelectMessage={navigateToMessageInChat}
+          />
         {:else if contextMode === 'refs'}
           <ReverseIndexPanel
             hits={refHits}
@@ -638,7 +683,7 @@
             onWholeFile={backToWholeFile}
           />
         {:else if appState.selectedMessage}
-          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} />
+          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} onSelectNode={onMetaThreadSelectNode} />
         {:else}
           <EmptyState
             glyph="↩"
@@ -902,6 +947,16 @@
     margin: 8px 0 0;
     font-size: 14.5px;
     font-weight: 650;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  /* Copy-id affordance (design/41 Phase 0) on the request-detail header —
+     reveal on hover/focus of the whole header (desktop); CopyIdButton's own
+     `(hover: none)` query keeps it always-visible on touch. */
+  .ctx-head:hover :global(.ctx-copy-id),
+  .ctx-head:focus-within :global(.ctx-copy-id) {
+    opacity: 1;
   }
   .ctx-body {
     overflow-y: auto;

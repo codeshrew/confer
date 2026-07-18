@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import Message from './Message.svelte';
@@ -204,6 +204,57 @@ describe('Message', () => {
 
       expect(container.querySelector('.expand-toggle')).not.toBeInTheDocument();
       expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+    });
+  });
+
+  describe('copy-id affordance (design/41 Phase 0)', () => {
+    afterEach(() => {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+
+    it('exposes a copy-id control for the bare message id, which copies without also selecting the message', async () => {
+      // userEvent.setup() installs its own navigator.clipboard stub, so our
+      // mock must be defined AFTER setup() or it gets clobbered.
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      const onSelect = vi.fn();
+
+      render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], onSelect });
+
+      const copyBtn = screen.getByRole('button', { name: /copy id msg_01JQ001/i });
+      await user.click(copyBtn);
+
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith('msg_01JQ001');
+      });
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scroll-to highlight pulse', () => {
+    it('applies the pulse class when highlight is true, and not otherwise', () => {
+      const { container: withHighlight } = render(Message, {
+        message: noteMessage,
+        fromAgent: herald,
+        seenEntries: [],
+        highlight: true,
+      });
+      expect(withHighlight.querySelector('.msg.pulse')).toBeInTheDocument();
+
+      const { container: without } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [] });
+      expect(without.querySelector('.msg.pulse')).not.toBeInTheDocument();
+    });
+
+    it('tags the root element with data-msg-id so a scroll target can be found via querySelector', () => {
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [] });
+      expect(container.querySelector('[data-msg-id="msg_01JQ001"]')).toBeInTheDocument();
+    });
+
+    it('applies the pulse class to a sysline root too (claim/done/etc. can be scroll targets)', () => {
+      const { container } = render(Message, { message: claimMessage, fromAgent: herald, seenEntries: [], highlight: true });
+      expect(container.querySelector('.sysline.pulse')).toBeInTheDocument();
+      expect(container.querySelector('[data-msg-id="msg_01JQa10"]')).toBeInTheDocument();
     });
   });
 });

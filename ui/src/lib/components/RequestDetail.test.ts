@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import RequestDetail from './RequestDetail.svelte';
 import type { Agent, Message, RequestRow } from '../types';
 
@@ -141,5 +142,35 @@ describe('RequestDetail', () => {
     expect(screen.getByText('blocked')).toBeInTheDocument();
     expect(screen.getByText('done')).toBeInTheDocument();
     expect(screen.getByText('blocked on uid-spine contract')).toBeInTheDocument();
+  });
+
+  describe('clickable lifecycle-trail rows (design/41 Phase 0)', () => {
+    it('clicking a trail row navigates to its underlying message, passing that message\'s own topic', async () => {
+      const user = userEvent.setup();
+      const onSelectMessage = vi.fn();
+      render(RequestDetail, { request, messages, agents: [reader, pipeline], hub: 'agent-coord', onSelectMessage });
+
+      await user.click(screen.getByText('blocked on uid-spine contract'));
+
+      expect(onSelectMessage).toHaveBeenCalledWith('msg_01JQc4a', 'reader');
+    });
+
+    it('clicking the origin ("filed") row navigates to the request\'s originating message', async () => {
+      const user = userEvent.setup();
+      const onSelectMessage = vi.fn();
+      render(RequestDetail, { request, messages, agents: [reader, pipeline], hub: 'agent-coord', onSelectMessage });
+
+      await user.click(screen.getByText('filed'));
+
+      expect(onSelectMessage).toHaveBeenCalledWith('msg_01JQ8f2', 'reader');
+    });
+
+    it('renders each trail row as a real, keyboard-reachable button (interactive affordance)', () => {
+      const { container } = render(RequestDetail, { request, messages, agents: [reader, pipeline], hub: 'agent-coord' });
+
+      const buttons = container.querySelectorAll('.lccard');
+      expect(buttons.length).toBe(4);
+      buttons.forEach((b) => expect(b.tagName).toBe('BUTTON'));
+    });
   });
 });
