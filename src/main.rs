@@ -8,6 +8,8 @@
 #![warn(clippy::too_many_lines)]
 
 mod alias;
+#[cfg(feature = "serve")]
+mod api;
 mod append;
 mod autoheal;
 mod cli;
@@ -334,7 +336,7 @@ fn cmd_repos_map(slug: String, path: Option<String>) -> Result<()> {
 /// Parse a reverse-lookup target `repo[:path[@sha][#Lstart-Lend]]` into
 /// `(repo, path?, range?)`. The sha is accepted but ignored for the query — we match
 /// by file + line-range across ALL shas ("what was ever said about these lines").
-fn parse_ref_query(s: &str) -> Result<(String, Option<String>, Option<[u64; 2]>)> {
+pub(crate) fn parse_ref_query(s: &str) -> Result<(String, Option<String>, Option<[u64; 2]>)> {
     let bad = || anyhow!("invalid refs target '{s}': expected repo[:path[#Lstart-Lend]]");
     let (repo, rest) = match s.split_once(':') {
         Some((r, rest)) => (r.to_string(), Some(rest)),

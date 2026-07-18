@@ -7,7 +7,7 @@
 //! never takes a lock, never publishes presence. tiny_http is pure-Rust and
 //! synchronous (no async runtime) — the same no-tokio choice as the TUI.
 
-use crate::{presence, projection, roster};
+use crate::{api, presence, projection, roster};
 use anyhow::Result;
 use chrono::Utc;
 use std::net::{IpAddr, UdpSocket};
@@ -310,9 +310,15 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
         });
     }
 
-    let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?;
+    let server = Arc::new(tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("bind {bind}: {e}"))?);
     let n = cache.lock().map(|c| c.len()).unwrap_or(0);
-    let port = bind.rsplit(':').next().unwrap_or("8422");
+    // Report the ACTUAL bound port from the listener, not the bind string — so
+    // `--bind 127.0.0.1:0` (pick any free port) prints a usable URL instead of ":0".
+    let port = server
+        .server_addr()
+        .to_ip()
+        .map(|s| s.port().to_string())
+        .unwrap_or_else(|| bind.rsplit(':').next().unwrap_or("8422").to_string());
     eprintln!("confer serve: {n} hub(s), read-only, on:");
     eprintln!("  http://localhost:{port}");
     if let Some(ip) = lan_ip() {
@@ -320,21 +326,74 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str) -> Result<()> {
     }
     eprintln!("(Ctrl-C to stop)");
 
-    for req in server.incoming_requests() {
-        let (mut sel, closed) = parse_query(req.url());
-        let html = {
-            let snaps = cache.lock().unwrap();
-            if snaps.is_empty() {
-                "<h1>no hubs</h1>".to_string()
-            } else {
-                if sel >= snaps.len() {
-                    sel = 0;
-                }
-                page(&snaps, sel, closed)
-            }
-        };
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
-        let _ = req.respond(tiny_http::Response::from_string(html).with_header(header));
+    // A small worker pool, not the single-threaded `incoming_requests()` loop: an open
+    // `/api/events` SSE connection blocks whichever thread is holding it, so ordinary
+    // JSON/HTML requests need OTHER threads free to answer while it's held open.
+    // `Server::recv()` is safe to call from multiple threads concurrently (tiny_http's
+    // documented worker-pool pattern) — it hands each thread the next request.
+    const WORKERS: usize = 4;
+    let mut handles = Vec::with_capacity(WORKERS.saturating_sub(1));
+    for _ in 1..WORKERS {
+        let server = Arc::clone(&server);
+        let cache = Arc::clone(&cache);
+        let dirs = dirs.clone();
+        handles.push(std::thread::spawn(move || worker_loop(&server, &cache, &dirs)));
+    }
+    worker_loop(&server, &cache, &dirs);
+    for h in handles {
+        let _ = h.join();
     }
     Ok(())
+}
+
+/// One worker's request loop: pull requests off the shared server until it shuts down
+/// (`recv` errors), routing each to the JSON API, SSE, or the existing HTML render.
+fn worker_loop(server: &tiny_http::Server, cache: &Mutex<Vec<projection::Snapshot>>, dirs: &[PathBuf]) {
+    loop {
+        match server.recv() {
+            Ok(req) => handle(req, cache, dirs),
+            Err(_) => return,
+        }
+    }
+}
+
+fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dirs: &[PathBuf]) {
+    let url = req.url().to_string();
+    let path = url.split('?').next().unwrap_or("/").to_string();
+
+    if path == "/api/events" {
+        // Hijack the raw connection for a long-lived SSE stream — never touches `cache`
+        // (no lock held across the poll loop) and returns as soon as a write fails.
+        let writer = req.into_writer();
+        api::serve_sse(dirs, writer);
+        return;
+    }
+
+    if path.starts_with("/api/") {
+        let resp = api::dispatch(dirs, &path, &url);
+        let body = serde_json::to_string(&resp.body).unwrap_or_else(|_| "{}".to_string());
+        let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+        let cc = tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap();
+        let response = tiny_http::Response::from_string(body)
+            .with_status_code(resp.status)
+            .with_header(ct)
+            .with_header(cc);
+        let _ = req.respond(response);
+        return;
+    }
+
+    let (mut sel, closed) = parse_query(&url);
+    let html = {
+        let snaps = cache.lock().unwrap();
+        if snaps.is_empty() {
+            "<h1>no hubs</h1>".to_string()
+        } else {
+            if sel >= snaps.len() {
+                sel = 0;
+            }
+            page(&snaps, sel, closed)
+        }
+    };
+    let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
+    let _ = req.respond(tiny_http::Response::from_string(html).with_header(header));
 }
