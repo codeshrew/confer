@@ -539,6 +539,7 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
     let mut truncated = false;
     for hub in &hubs {
         let Ok(msgs) = store::all_messages(hub) else { continue };
+        let this_hub_id = hub_id(hub);
         let idx = projection::RefIndex::fold(&msgs);
         let repo_inv = repos::load(hub);
         let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
@@ -566,6 +567,12 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
                 "summary": sanitize_term(&h.summary, false),
                 "threadRoot": h.thread_root,
                 "requestStatus": h.request_status,
+                "hub": this_hub_id,
+                // No per-hub "private" (non-anonymous-read) fact is cached anywhere the
+                // server can read synchronously — `doctor`'s PUBLIC check is a live network
+                // probe, not stored state — so this defaults to `false` pending a real
+                // per-hub visibility source.
+                "hubPrivate": false,
             }));
         }
     }

@@ -358,17 +358,28 @@ fn refs_reverse_lookup_returns_ref_hits() {
     seed(&alpha);
     let server = start_server(&alpha);
 
+    // The hub's own id (same form `/api/hubs` reports) — refs hits must carry a
+    // matching `hub` so a cross-hub (`allHubs=1`) caller can route each hit back
+    // to the hub it came from.
+    let (hubs_status, hubs_body) = http_get(&server.addr, "/api/hubs");
+    assert_eq!(hubs_status, 200);
+    let hubs_v: serde_json::Value = serde_json::from_str(&hubs_body).unwrap();
+    let expected_hub_id = hubs_v.as_array().expect("array")[0]["id"].as_str().unwrap().to_string();
+
     let (status, body) = http_get(&server.addr, "/api/refs?target=mylib:lib.rs");
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let arr = v.as_array().expect("array");
     assert_eq!(arr.len(), 1);
     let hit = &arr[0];
-    for key in ["repo", "path", "sha", "range", "contentHash", "staleness", "msgId", "from", "msgType", "ts", "topic", "summary", "threadRoot", "requestStatus"] {
+    for key in ["repo", "path", "sha", "range", "contentHash", "staleness", "msgId", "from", "msgType", "ts", "topic", "summary", "threadRoot", "requestStatus", "hub", "hubPrivate"] {
         assert!(hit.get(key).is_some(), "missing refhit.{key} in {hit}");
     }
     assert_eq!(hit["repo"], "mylib");
     assert_eq!(hit["requestStatus"], "CLAIMED");
+    assert_eq!(hit["hub"].as_str().unwrap(), expected_hub_id, "refhit.hub must match /api/hubs's id for this hub");
+    assert!(!hit["hub"].as_str().unwrap().is_empty());
+    assert!(hit["hubPrivate"].is_boolean(), "refhit.hubPrivate must be a bool: {hit}");
 
     // A file nothing references comes back empty, not an error.
     let (status2, body2) = http_get(&server.addr, "/api/refs?target=mylib:other.rs");
