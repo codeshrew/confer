@@ -69,9 +69,34 @@ describe('App — responsive drawer structure', () => {
   });
 });
 
+describe('App — FilterBar is Chat-only', () => {
+  it('shows the FilterBar (Type + Density) in Chat view', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    render(App);
+
+    await screen.findByText('Notes');
+    expect(screen.getByText('Requests')).toBeInTheDocument();
+    expect(screen.getByTestId('density-toggle')).toBeInTheDocument();
+  });
+
+  it('hides the FilterBar entirely in Board view (Board keeps its own group-by control)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'board';
+    render(App);
+
+    // Give the view a tick to settle, then assert the FilterBar's Type
+    // chips are gone — Board no longer gets a (dead) FilterBar at all.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('density-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByText('Requests')).not.toBeInTheDocument();
+  });
+});
+
 describe('App — right-rail context mode', () => {
   it('selecting a plain note after a ticket switches the sidebar OFF "Request detail" — not stuck showing the previous ticket', async () => {
     appState.drawer = 'none';
+    appState.view = 'chat';
     const user = userEvent.setup();
     render(App);
 

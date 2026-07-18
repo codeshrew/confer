@@ -20,6 +20,7 @@
   // having the backend's `/api/thread` include the body per node directly.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { copyToClipboard } from '../clipboard';
+  import { formatClock, formatIso8601 } from '../format';
   import Icon from './Icon.svelte';
   import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
 
@@ -35,6 +36,14 @@
   }
 
   let { thread, agents, messages = [], density = 'summary', onSelectNode }: Props = $props();
+
+  // git-log-style "short sha" — msgIds are 26-char ULIDs, far too wide for
+  // a dense one-line row (the reference-graph rail is a narrow sidebar
+  // panel). Truncate the DISPLAYED text only; copyNodeId below still copies
+  // the full id, and the full id remains in the title/aria-label.
+  function shortId(msgId: string): string {
+    return msgId.length > 10 ? `${msgId.slice(0, 8)}…` : msgId;
+  }
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
   const messagesById = $derived(new Map(messages.map((m) => [m.id, m])));
@@ -180,6 +189,7 @@
     {@const agent = agentsById.get(row.node.from)}
     {@const renderedBody = renderedBodyFor(row.node.msgId)}
     {@const expanded = density === 'full' || expandedIds.has(row.node.msgId)}
+    {@const nodeTs = messagesById.get(row.node.msgId)?.ts}
     <div class="gn">
       <div class="rail">
         <span class="seg top" style="background:{row.topColor}"></span>
@@ -195,13 +205,35 @@
           if (e.key === 'Enter' || e.key === ' ') onSelectNode?.(row.node.msgId);
         }}
       >
-        <div class="grow">
+        <!-- `git log --oneline`-style density, two tight lines instead of
+             the old multi-line "big card": (1) colored author + type badge
+             + a one-line ellipsized summary; (2) a small meta row — the
+             topic (only called out on a cross-topic hop; the rail color
+             already encodes topic on every row, so repeating "#topic" on
+             every line added noise without new information), the short id,
+             the time, and the expand chevron. Splitting id/time onto their
+             own line (rather than cramming everything into one) is what
+             keeps this from overflowing the narrow reference-graph rail —
+             msgIds are 26-char ULIDs. -->
+        <div class="gline">
           <span class="gwho" style="color:{agent?.color ?? 'var(--muted)'}">{agent?.display ?? row.node.from}</span>
           <span class="gbadge {BADGE_CLASS[row.node.type]}">{row.node.type}</span>
-          <span class="gtp" class:cross={row.hop !== null}>#{topicOf(row.node)}</span>
+          <span class="gtx">{row.node.summary}</span>
         </div>
-        <div class="gtx-row">
-          <div class="gtx">{row.node.summary}</div>
+        <div class="gmeta">
+          {#if row.hop}<span class="gtp cross">#{topicOf(row.node)}</span>{/if}
+          <button
+            type="button"
+            class="gid"
+            class:copied={copiedIds.has(row.node.msgId)}
+            onclick={(e) => copyNodeId(e, row.node.msgId)}
+            aria-label={copiedIds.has(row.node.msgId) ? `Copied ${row.node.msgId}` : `Copy id ${row.node.msgId}`}
+            title={row.node.msgId}
+          >
+            <Icon name={copiedIds.has(row.node.msgId) ? 'check' : 'copy'} size={10} />
+            {shortId(row.node.msgId)}
+          </button>
+          {#if nodeTs}<span class="gts" title={formatIso8601(nodeTs)}>{formatClock(nodeTs)}</span>{/if}
           {#if renderedBody}
             <button
               type="button"
@@ -214,30 +246,18 @@
                 toggleExpanded(row.node.msgId);
               }}
             >
-              <span>{expanded ? 'Show less' : 'Show more'}</span>
               <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
                 <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
           {/if}
         </div>
+        {#if row.hop}<div class="hop {row.hop.cls}">{row.hop.label}</div>{/if}
         {#if renderedBody && expanded}
           <div class="gbody prose md" use:highlightBody>
             {@html renderedBody}
           </div>
         {/if}
-        {#if row.hop}<div class="hop {row.hop.cls}">{row.hop.label}</div>{/if}
-        <button
-          type="button"
-          class="gid"
-          class:copied={copiedIds.has(row.node.msgId)}
-          onclick={(e) => copyNodeId(e, row.node.msgId)}
-          aria-label={copiedIds.has(row.node.msgId) ? `Copied ${row.node.msgId}` : `Copy id ${row.node.msgId}`}
-          title="Click to copy id"
-        >
-          <Icon name={copiedIds.has(row.node.msgId) ? 'check' : 'copy'} size={10} />
-          {row.node.msgId}
-        </button>
       </div>
     </div>
   {/each}
@@ -309,24 +329,29 @@
     border-radius: 2px;
   }
   .gn .seg.top {
-    height: 13px;
+    height: 9px;
     flex: 0 0 auto;
   }
   .gn .seg.bot {
     flex: 1;
-    min-height: 14px;
+    min-height: 9px;
   }
   .gn .cd {
-    width: 13px;
-    height: 13px;
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
     flex: 0 0 auto;
     z-index: 1;
   }
+  /* `git log --oneline` density: one tight row per node, not a padded
+     "card". Rows are only as tall as their line-height plus a hairline of
+     breathing room — the hop indicator and expanded body (both optional)
+     add their own margin when present, so nodes without either stay as
+     compact as a real log line. */
   .gn .gcard {
     flex: 1;
     min-width: 0;
-    padding: 0 0 16px;
+    padding: 3px 0;
     display: block;
     text-align: left;
     border: 0;
@@ -338,19 +363,27 @@
   .gn:last-child .gcard {
     padding-bottom: 2px;
   }
-  .gcard :global(.grow) {
+  .gcard :global(.gline) {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    min-width: 0;
+  }
+  .gcard :global(.gmeta) {
     display: flex;
     align-items: center;
-    gap: 7px;
     flex-wrap: wrap;
-    margin-bottom: 5px;
+    gap: 5px 7px;
+    min-width: 0;
+    margin-top: 3px;
   }
   .gcard :global(.gwho) {
+    flex: 0 0 auto;
     font-weight: 650;
     font-size: 12.5px;
   }
   .gcard :global(.gtp) {
-    margin-left: auto;
+    flex: 0 0 auto;
     font: 600 9.5px/1 var(--mono);
     color: var(--faint);
   }
@@ -358,6 +391,7 @@
     color: var(--claimed);
   }
   .gcard :global(.gbadge) {
+    flex: 0 0 auto;
     font: 800 8.5px/1 var(--mono);
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -384,38 +418,38 @@
     color: var(--done);
     background: color-mix(in srgb, var(--done) 15%, transparent);
   }
-  .gcard :global(.gtx-row) {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
   .gcard :global(.gtx) {
     min-width: 0;
     flex: 1 1 auto;
     font-size: 12.5px;
     color: var(--muted);
-    line-height: 1.45;
+    line-height: 1.4;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Same unified expand/collapse pill as Message.svelte's `.expand-toggle` —
-     a text label ("Show more"/"Show less") plus a chevron that flips, not a
-     bare unlabeled glyph. Duplicated (not shared via app.css) because this
-     is real component markup, not `{@html}` content — but it's the same
-     visual language everywhere a note/node can be expanded. */
+  .gcard :global(.gts) {
+    flex: 0 0 auto;
+    font: 500 10.5px/1 var(--mono);
+    color: var(--faint);
+  }
+  /* Icon-only chevron (no text label) — the git-log-style row has no room
+     for a "Show more"/"Show less" pill on every line; the same chevron
+     glyph + open/closed rotation as Message.svelte's `.expand-toggle`
+     communicates the affordance without adding width to a line meant to
+     stay log-dense. aria-label carries the accessible name instead of
+     visible text. */
   .gcard :global(.node-expand-toggle) {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
     border: 1px solid var(--border-2);
     border-radius: 999px;
     background: var(--panel-2);
-    padding: 3px 9px 3px 10px;
     color: var(--muted);
-    font: 600 11px/1.2 var(--mono);
-    letter-spacing: 0.01em;
     cursor: pointer;
     transition:
       background 0.12s ease,
@@ -436,18 +470,18 @@
     border-color: var(--accent);
   }
   .gcard :global(.gbody) {
-    margin: 8px 0 0;
+    margin: 6px 0 2px;
     font-size: 12.5px;
     color: var(--text);
     line-height: 1.55;
     font-weight: 400;
   }
   .gcard :global(.gid) {
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    margin-top: 7px;
-    padding: 3px 6px 3px 5px;
+    padding: 2px 6px 2px 5px;
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
@@ -470,7 +504,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    margin-top: 8px;
+    margin-top: 4px;
     font: 700 9.5px/1 var(--mono);
     letter-spacing: 0.03em;
     padding: 5px 8px;

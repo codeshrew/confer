@@ -4,7 +4,7 @@
   import type { ConnStatus } from './lib/components/TopBar.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
   import CodeTree from './lib/components/CodeTree.svelte';
-  import FilterBar, { type StatusFilter } from './lib/components/FilterBar.svelte';
+  import FilterBar from './lib/components/FilterBar.svelte';
   import ChatStream from './lib/components/ChatStream.svelte';
   import Board from './lib/components/Board.svelte';
   import Fleet from './lib/components/Fleet.svelte';
@@ -115,7 +115,6 @@
     }
   }
 
-  let statusFilter = $state<StatusFilter>('all');
   let notesOn = $state(true);
   let reqsOn = $state(true);
   let selectedRequestId = $state<string | null>(null);
@@ -584,14 +583,11 @@
     onMenuToggle={() => appState.toggleDrawer('left')}
   />
 
-  {#if appState.view === 'chat' || appState.view === 'board'}
+  {#if appState.view === 'chat'}
     <FilterBar
-      {statusFilter}
       {notesOn}
       {reqsOn}
-      agents={overview?.fleet ?? []}
-      chatDensity={appState.view === 'chat' ? appState.chatDensity : undefined}
-      onStatusFilterChange={(f) => (statusFilter = f)}
+      chatDensity={appState.chatDensity}
       onToggleNotes={() => (notesOn = !notesOn)}
       onToggleReqs={() => (reqsOn = !reqsOn)}
       onChatDensityChange={(d) => (appState.chatDensity = d)}

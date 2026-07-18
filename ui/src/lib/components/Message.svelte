@@ -339,7 +339,10 @@
   }
   .summary-line {
     display: flex;
-    align-items: center;
+    /* flex-start (not center): the lead can now wrap to 2 lines, and
+       center-aligning would float the expand-toggle pill oddly between
+       them instead of pinning it to the first line. */
+    align-items: flex-start;
     gap: 8px;
     font-size: 13px;
     color: var(--text);
@@ -353,9 +356,22 @@
        instead of one undifferentiated bold wall. */
     font-weight: 650;
     min-width: 0;
+    line-height: 1.42;
+    /* Word-aware wrapping, clamped to 2 lines with an ellipsis — replaces
+       the old hard single-line `nowrap` cutoff, which could chop a word
+       mid-character. `overflow-wrap: anywhere` lets an unbreakable token
+       (a long id, a URL) still wrap rather than overflow; `word-break`
+       is the older Safari/webkit-line-clamp-adjacent property doing the
+       same job as a belt-and-braces fallback. Stays compact — 2 lines
+       max, not an unbounded paragraph — per Stefan's "tight, scannable
+       list" preference. */
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .summary-line.clickable {
     cursor: pointer;

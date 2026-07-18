@@ -1,59 +1,27 @@
 <script lang="ts">
-  import type { Agent } from '../types';
-
-  export type StatusFilter = 'all' | 'active' | 'attention' | 'blocked' | 'done' | 'backlog';
+  // Chat-only now (see App.svelte's `appState.view === 'chat'` gate on this
+  // component). Two rows were removed after a false-affordance audit found
+  // both were dead: the STATUS chip row wrote to `statusFilter` state that
+  // App.svelte never read back into Chat/Board, and the WHO chip row had no
+  // onclick at all — clicking either did nothing. What's left (Type +
+  // Density) are genuinely Chat concepts, hence the render-only-in-Chat
+  // change. Board keeps its own group-by control instead.
 
   interface Props {
-    statusFilter: StatusFilter;
     notesOn: boolean;
     reqsOn: boolean;
-    agents: Agent[];
     /** Chat density (Summary/Full segmented control) — omitted (undefined)
-     * hides the control entirely, e.g. while viewing the Board. */
+     * hides the control entirely. */
     chatDensity?: 'summary' | 'full';
-    onStatusFilterChange?: (filter: StatusFilter) => void;
     onToggleNotes?: () => void;
     onToggleReqs?: () => void;
     onChatDensityChange?: (density: 'summary' | 'full') => void;
   }
 
-  let {
-    statusFilter,
-    notesOn,
-    reqsOn,
-    agents,
-    chatDensity,
-    onStatusFilterChange,
-    onToggleNotes,
-    onToggleReqs,
-    onChatDensityChange,
-  }: Props = $props();
-
-  const statuses: { key: StatusFilter; label: string; dot?: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'active', label: 'Active', dot: 'var(--open)' },
-    { key: 'attention', label: 'Needs attention', dot: 'var(--blocked)' },
-    { key: 'blocked', label: 'Blocked', dot: 'var(--blocked)' },
-    { key: 'done', label: 'Done', dot: 'var(--done)' },
-    { key: 'backlog', label: 'Backlog', dot: 'var(--deferred)' },
-  ];
+  let { notesOn, reqsOn, chatDensity, onToggleNotes, onToggleReqs, onChatDensityChange }: Props = $props();
 </script>
 
 <div class="filterbar">
-  <span class="flabel">Status</span>
-  {#each statuses as s (s.key)}
-    <button
-      type="button"
-      class="chip"
-      class:on={statusFilter === s.key}
-      onclick={() => onStatusFilterChange?.(s.key)}
-    >
-      {#if s.dot}<span class="dot" style="background:{s.dot}"></span>{/if}
-      {s.label}
-    </button>
-  {/each}
-
-  <span class="divider"></span>
   <span class="flabel">Type</span>
   <button type="button" class="chip" class:on={notesOn} onclick={() => onToggleNotes?.()}>Notes</button>
   <button type="button" class="chip" class:on={reqsOn} onclick={() => onToggleReqs?.()}>Requests</button>
@@ -82,12 +50,6 @@
       </button>
     </div>
   {/if}
-
-  <span class="divider"></span>
-  <span class="flabel">Who</span>
-  {#each agents as agent (agent.id)}
-    <button type="button" class="chip ag" style="color:{agent.color}">{agent.abbr}</button>
-  {/each}
 </div>
 
 <style>
@@ -129,15 +91,6 @@
     background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
     border-color: var(--accent);
     color: var(--text);
-  }
-  .chip .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-  }
-  .chip.ag {
-    font-family: var(--mono);
-    font-size: 11px;
   }
   .divider {
     width: 1px;

@@ -287,6 +287,33 @@ describe('MetaThread', () => {
     });
   });
 
+  describe('git-log-style row (density + time)', () => {
+    it('shows a per-node time when the node\'s message is loaded, formatted via formatClock', () => {
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const messages = [message('m1', 'reader', 'reader', 'Short summary', 'Full body.')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages });
+
+      expect(container.querySelector('.gts')).toBeInTheDocument();
+    });
+
+    it('omits the per-node time when the node\'s message is not loaded', () => {
+      const thread = [node('m1', 'reader', 'reader', 'Short summary')];
+      const { container } = render(MetaThread, { thread, agents: [reader], messages: [] });
+
+      expect(container.querySelector('.gts')).not.toBeInTheDocument();
+    });
+
+    it('only shows the inline #topic chip on a hop (cross-topic) row, not on every row', () => {
+      const thread = [
+        node('m1', 'pipeline', 'reader'),
+        node('m2', 'reader', 'studio-markup'), // crosses in — should show #studio-markup
+      ];
+      const { container } = render(MetaThread, { thread, agents: [reader, pipeline] });
+
+      expect(container.querySelectorAll('.gtp')).toHaveLength(1);
+    });
+  });
+
   it('renders an empty thread without throwing (no nodes, no legend, zero counts)', () => {
     const { container } = render(MetaThread, { thread: [], agents: [] });
 

@@ -137,6 +137,22 @@ describe('Message', () => {
     });
   });
 
+  describe('summary-line wrapping', () => {
+    it('renders the summary as a word-aware, 2-line-clamped lead (not a hard nowrap cutoff)', () => {
+      const longSummary =
+        'A genuinely long one-sentence summary that would previously be cut off mid-word by a hard single-line nowrap truncation';
+      const message: MessageT = { ...noteMessage, id: 'msg_01JQ004', summary: longSummary };
+      const { container } = render(Message, { message, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      const lead = container.querySelector('.summary-line .lead');
+      expect(lead).toBeInTheDocument();
+      expect(lead?.textContent).toBe(longSummary);
+      // Word-aware wrapping, not the old `white-space: nowrap` single-line cut.
+      const style = lead ? getComputedStyle(lead) : null;
+      expect(style?.whiteSpace).not.toBe('nowrap');
+    });
+  });
+
   describe('summary density', () => {
     it('shows only the summary line and hides the body until expanded', () => {
       const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
