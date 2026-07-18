@@ -356,13 +356,20 @@ fn malformed_refs_target_is_400() {
 }
 
 #[test]
-fn html_root_still_renders() {
+fn root_serves_spa_and_classic_serves_server_html() {
     let hub = new_hub();
     let alpha = hub.clone("alpha");
     seed(&alpha);
     let server = start_server(&alpha);
 
+    // `/` serves the embedded single-file SPA (script-driven, self-contained).
     let (status, body) = http_get(&server.addr, "/");
     assert_eq!(status, 200);
-    assert!(body.contains("confer web view"), "body: {body}");
+    assert!(body.contains("<script"), "root should serve the SPA: {}", &body[..body.len().min(400)]);
+    assert!(!body.contains("confer web view"), "root should be the SPA, not the classic page");
+
+    // `/classic` is the no-JS server-rendered fallback.
+    let (cs, cbody) = http_get(&server.addr, "/classic");
+    assert_eq!(cs, 200);
+    assert!(cbody.contains("confer web view"), "classic body: {cbody}");
 }

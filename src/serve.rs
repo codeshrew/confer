@@ -22,6 +22,11 @@ const FG: &str = "#abb2bf";
 const DIM: &str = "#5c6370";
 const ACCENT: &str = "#61afef";
 
+/// The web dashboard — a single self-contained SPA built from `ui/`, embedded at build
+/// time (see build.rs; a placeholder if the UI wasn't built). Served at `/`; the
+/// server-rendered view remains the no-JS fallback at `/classic`.
+const DASHBOARD: &str = include_str!(concat!(env!("OUT_DIR"), "/dashboard.html"));
+
 fn status_color(status: &str) -> &'static str {
     match status {
         "OPEN" => "#e5c07b",
@@ -382,18 +387,27 @@ fn handle(req: tiny_http::Request, cache: &Mutex<Vec<projection::Snapshot>>, dir
         return;
     }
 
-    let (mut sel, closed) = parse_query(&url);
-    let html = {
-        let snaps = cache.lock().unwrap();
-        if snaps.is_empty() {
-            "<h1>no hubs</h1>".to_string()
-        } else {
-            if sel >= snaps.len() {
-                sel = 0;
+    // The server-rendered dashboard is the no-JS fallback (progressive enhancement).
+    if path == "/classic" {
+        let (mut sel, closed) = parse_query(&url);
+        let html = {
+            let snaps = cache.lock().unwrap();
+            if snaps.is_empty() {
+                "<h1>no hubs</h1>".to_string()
+            } else {
+                if sel >= snaps.len() {
+                    sel = 0;
+                }
+                page(&snaps, sel, closed)
             }
-            page(&snaps, sel, closed)
-        }
-    };
+        };
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
+        let _ = req.respond(tiny_http::Response::from_string(html).with_header(header));
+        return;
+    }
+
+    // Everything else → the embedded SPA (it does its own client-side view routing and
+    // reads data from the /api/* endpoints on this same origin).
     let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
-    let _ = req.respond(tiny_http::Response::from_string(html).with_header(header));
+    let _ = req.respond(tiny_http::Response::from_string(DASHBOARD).with_header(header));
 }
