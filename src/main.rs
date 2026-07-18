@@ -403,8 +403,15 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
                 .entry(h.repo.clone())
                 .or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo))
                 .clone();
-            let st = refcode::staleness(clone.as_deref(), &h.sha, &h.path, h.content_hash.as_deref())
-                .label();
+            let st = refcode::staleness_ex(
+                clone.as_deref(),
+                &h.sha,
+                &h.path,
+                h.content_hash.as_deref(),
+                h.base_ref.as_deref(),
+                h.fork_point.as_deref(),
+            )
+            .label();
             hits.push((label.clone(), h.clone(), st));
         }
     }
@@ -422,6 +429,27 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
             }
             if let Some(ch) = &h.content_hash {
                 refj["content_hash"] = serde_json::json!(ch);
+            }
+            if let Some(n) = &h.ref_name {
+                refj["ref_name"] = serde_json::json!(n);
+            }
+            if let Some(t) = &h.ref_type {
+                refj["ref_type"] = serde_json::json!(t);
+            }
+            if let Some(d) = &h.commit_date {
+                refj["commit_date"] = serde_json::json!(d);
+            }
+            if h.dirty {
+                refj["dirty"] = serde_json::json!(true);
+            }
+            if h.untracked {
+                refj["untracked"] = serde_json::json!(true);
+            }
+            if let Some(b) = &h.base_ref {
+                refj["base_ref"] = serde_json::json!(b);
+            }
+            if let Some(f) = &h.fork_point {
+                refj["fork_point"] = serde_json::json!(f);
             }
             let line = serde_json::json!({
                 "event": "ref-hit",
@@ -454,16 +482,27 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
         let loc = h.topic.as_deref().map(|t| format!("#{t}")).unwrap_or_else(|| "—".into());
         let status = h.request_status.map(|s| format!(" [{s}]")).unwrap_or_default();
         let rng = h.range.map(|r| format!("#L{}-{}", r[0], r[1])).unwrap_or_default();
-        // Flag drift: mark a ref whose code moved/changed under the pin (silent when
-        // "current"/"unknown" — no clone, or unchanged, needs no callout).
+        let paren = refcode::identity_paren(h.ref_name.as_deref(), h.ref_type.as_deref(), h.commit_date.as_deref());
+        // Flag drift: mark a ref whose code moved/changed under the pin, or is off the
+        // current history entirely (silent when "current"/"unknown" — no clone, or
+        // unchanged, needs no callout). "unpinned" reads as a legacy marker.
         let stmark = match *st {
             "changed" => "  ⚠changed",
             "moved" => "  ⚠moved",
-            "unpinned" => "  ⚠unpinned",
+            "reachable" => "  ⚠reachable",
+            "offline" => "  ⚠offline",
+            "squashed" => "  ⚠squashed",
+            "unpinned" => "  ⚠unpinned — legacy",
             _ => "",
         };
+        let flags = match (h.dirty, h.untracked) {
+            (true, true) => "  [dirty][untracked]",
+            (true, false) => "  [dirty]",
+            (false, true) => "  [untracked]",
+            (false, false) => "",
+        };
         println!(
-            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{rng}){stmark}",
+            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{paren}{rng}){stmark}{flags}",
             short_id(&h.msg_id),
             h.from,
             h.summary,
@@ -474,7 +513,44 @@ fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<(
     Ok(())
 }
 
-/// Compact pointer tag for the one-line view: ` ⟶ repo:path` (first ref, +N more).
+/// `confer ref-contains <sha> [<ref>] [--repo <slug>]` — plumbing predicate (design/44
+/// Addendum 1): is `<sha>` reachable from `<ref>` (default `HEAD`)? Exit 0 if yes, 1 if
+/// no — `git merge-base --is-ancestor` under the hood, a more robust liveness check
+/// than "is it still HEAD" (HEAD advances constantly; ancestry doesn't go stale on
+/// every further commit). Resolves the repo via `--repo <slug>`'s machine-local clone
+/// map, else the git working tree at the current directory — no fetch either way.
+fn cmd_ref_contains(sha: String, against: String, repo: Option<String>) -> Result<()> {
+    let dir = match repo {
+        Some(slug) => {
+            let hub = config::repo_root()?;
+            let repo_inv = repos::load(&hub);
+            refcode::clone_for(&repo_inv, &slug).ok_or_else(|| {
+                anyhow!("repo '{slug}' has no mapped clone here (`confer repos map {slug} <path>`)")
+            })?
+        }
+        None => {
+            let cwd = std::env::current_dir()?;
+            let o = gitcmd::output(&cwd, &["rev-parse", "--show-toplevel"])?;
+            if !o.status.success() {
+                return Err(anyhow!(
+                    "not inside a git working tree — pass --repo <slug> to resolve via the clone map"
+                ));
+            }
+            std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())
+        }
+    };
+    if refcode::is_ancestor(&dir, &sha, &against) {
+        println!("{sha} is reachable from {against}");
+        Ok(())
+    } else {
+        println!("{sha} is NOT reachable from {against}");
+        Err(PredicateFalse.into())
+    }
+}
+
+/// Compact pointer tag for the one-line view: ` ⟶ repo:path (branch · date)` (first
+/// ref, +N more). The parenthetical (design/44 §5.1) is omitted when neither field is
+/// present — legacy refs render exactly as before.
 fn render_refs(refs: &[schema::CodeRef]) -> String {
     let Some(first) = refs.first() else {
         return String::new();
@@ -484,7 +560,12 @@ fn render_refs(refs: &[schema::CodeRef]) -> String {
     } else {
         String::new()
     };
-    format!(" ⟶ {}:{}{more}", first.repo, first.path)
+    let paren = refcode::identity_paren(
+        first.ref_name.as_deref(),
+        first.ref_type.as_deref(),
+        first.commit_date.as_deref(),
+    );
+    format!(" ⟶ {}:{}{paren}{more}", first.repo, first.path)
 }
 
 /// Render a target list (`to`) as ` → a, b` with role display names resolved
@@ -834,6 +915,7 @@ fn run() -> Result<()> {
             None => cmd_repos(json),
         },
         Cmd::Refs { target, check, all_hubs, json } => cmd_refs(target, check, all_hubs, json),
+        Cmd::RefContains { sha, against, repo } => cmd_ref_contains(sha, against, repo),
         Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
         Cmd::Doctor { dir, fix, json, check } => cmd_doctor(dir, fix, json, check),

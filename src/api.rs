@@ -406,11 +406,32 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
     }))
 }
 
-fn coderef_json(r: &CodeRef) -> Value {
-    json!({ "repo": r.repo, "path": r.path, "sha": r.sha, "range": r.range, "contentHash": r.content_hash })
+/// design/44 §3: the temporal-identity fields carried alongside the existing ones
+/// (camelCase — the shared contract with the web frontend, built in parallel against
+/// this exact shape). `commitDate` gets the §3 legacy enrichment (best-effort,
+/// derived from a mapped clone at read time when a full-hex `sha` has no stored
+/// date) via `clone_cache` (keyed by repo, so a busy response doesn't resolve the
+/// same clone repeatedly).
+fn coderef_json(r: &CodeRef, repo_inv: &repos::Repos, clone_cache: &mut HashMap<String, Option<PathBuf>>) -> Value {
+    let clone = clone_cache.entry(r.repo.clone()).or_insert_with(|| refcode::clone_for(repo_inv, &r.repo)).clone();
+    let commit_date = refcode::enrich_commit_date(clone.as_deref(), &r.sha, r.commit_date.as_deref());
+    json!({
+        "repo": r.repo,
+        "path": r.path,
+        "sha": r.sha,
+        "range": r.range,
+        "contentHash": r.content_hash,
+        "refName": r.ref_name,
+        "refType": r.ref_type,
+        "commitDate": commit_date,
+        "dirty": r.dirty,
+        "untracked": r.untracked,
+        "baseRef": r.base_ref,
+        "forkPoint": r.fork_point,
+    })
 }
 
-fn message_json(m: &Message) -> Value {
+fn message_json(m: &Message, repo_inv: &repos::Repos, clone_cache: &mut HashMap<String, Option<PathBuf>>) -> Value {
     json!({
         "id": m.front.id,
         "from": m.front.from,
@@ -425,7 +446,7 @@ fn message_json(m: &Message) -> Value {
         "of": m.front.of,
         "replyTo": m.front.reply_to,
         "supersedes": m.front.supersedes,
-        "refs": m.front.refs.iter().map(coderef_json).collect::<Vec<_>>(),
+        "refs": m.front.refs.iter().map(|r| coderef_json(r, repo_inv, clone_cache)).collect::<Vec<_>>(),
     })
 }
 
@@ -453,7 +474,12 @@ fn messages(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
             msgs.drain(0..cut);
         }
     }
-    ApiResponse::ok(json!(msgs.iter().map(|m| message_json(m)).collect::<Vec<_>>()))
+    let repo_inv = repos::load(dir);
+    let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
+    ApiResponse::ok(json!(msgs
+        .iter()
+        .map(|m| message_json(m, &repo_inv, &mut clone_cache))
+        .collect::<Vec<_>>()))
 }
 
 fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMap<String, String>) -> ApiResponse {
@@ -471,6 +497,8 @@ fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMa
     let mut thread: Vec<&Message> =
         msgs.iter().filter(|m| projection::thread_root(msgs, m).front.id == root_id).collect();
     thread.sort_by(|a, b| a.front.id.cmp(&b.front.id));
+    let repo_inv = repos::load(dir);
+    let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
     let out: Vec<Value> = thread
         .iter()
         .map(|m| {
@@ -480,22 +508,26 @@ fn thread(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &HashMa
                 "type": m.front.msg_type,
                 "topic": m.front.topic,
                 "summary": m.summary_line(),
-                "refs": m.front.refs.iter().map(coderef_json).collect::<Vec<_>>(),
+                "refs": m.front.refs.iter().map(|r| coderef_json(r, &repo_inv, &mut clone_cache)).collect::<Vec<_>>(),
             })
         })
         .collect();
     ApiResponse::ok(json!(out))
 }
 
-/// Compute `staleness` for `key` (a `(repo, sha, path)` triple) at most once per distinct
-/// key, tracked in `cache`, and refuse to compute more than `cap` distinct keys — beyond
-/// that it returns `Unknown` (with `capped = true`) rather than calling `compute` (which,
-/// in `refs()`, shells out to `git`). Returns `(staleness, capped)`; `capped` is only ever
-/// true on the computations that got refused, so callers OR it across the whole loop.
+/// Compute `staleness` for `key` (a `(repo, sha, path, base_ref, fork_point)` tuple —
+/// the last two included because `staleness_ex`'s ancestry augmentation depends on
+/// them too, not just the pinned blob) at most once per distinct key, tracked in
+/// `cache`, and refuse to compute more than `cap` distinct keys — beyond that it
+/// returns `Unknown` (with `capped = true`) rather than calling `compute` (which, in
+/// `refs()`, shells out to `git`). Returns `(staleness, capped)`; `capped` is only
+/// ever true on the computations that got refused, so callers OR it across the whole
+/// loop.
+type StalenessKey = (String, String, String, Option<String>, Option<String>);
 fn memoized_staleness(
-    cache: &mut HashMap<(String, String, String), refcode::Staleness>,
+    cache: &mut HashMap<StalenessKey, refcode::Staleness>,
     cap: usize,
-    key: (String, String, String),
+    key: StalenessKey,
     compute: impl FnOnce() -> refcode::Staleness,
 ) -> (refcode::Staleness, bool) {
     if let Some(v) = cache.get(&key) {
@@ -543,14 +575,22 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         let idx = projection::RefIndex::fold(&msgs);
         let repo_inv = repos::load(hub);
         let mut clone_cache: HashMap<String, Option<PathBuf>> = HashMap::new();
-        let mut staleness_cache: HashMap<(String, String, String), refcode::Staleness> = HashMap::new();
+        let mut staleness_cache: HashMap<StalenessKey, refcode::Staleness> = HashMap::new();
         for h in idx.query(&repo, path.as_deref(), range) {
             let clone = clone_cache.entry(h.repo.clone()).or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo)).clone();
-            let key = (h.repo.clone(), h.sha.clone(), h.path.clone());
+            let key = (h.repo.clone(), h.sha.clone(), h.path.clone(), h.base_ref.clone(), h.fork_point.clone());
             let (st, capped) = memoized_staleness(&mut staleness_cache, MAX_STALENESS_COMPUTATIONS, key, || {
-                refcode::staleness(clone.as_deref(), &h.sha, &h.path, h.content_hash.as_deref())
+                refcode::staleness_ex(
+                    clone.as_deref(),
+                    &h.sha,
+                    &h.path,
+                    h.content_hash.as_deref(),
+                    h.base_ref.as_deref(),
+                    h.fork_point.as_deref(),
+                )
             });
             truncated |= capped;
+            let commit_date = refcode::enrich_commit_date(clone.as_deref(), &h.sha, h.commit_date.as_deref());
             let st = st.label();
             out.push(json!({
                 "repo": h.repo,
@@ -558,6 +598,13 @@ fn refs(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
                 "sha": h.sha,
                 "range": h.range,
                 "contentHash": h.content_hash,
+                "refName": h.ref_name,
+                "refType": h.ref_type,
+                "commitDate": commit_date,
+                "dirty": h.dirty,
+                "untracked": h.untracked,
+                "baseRef": h.base_ref,
+                "forkPoint": h.fork_point,
                 "staleness": st,
                 "msgId": h.msg_id,
                 "from": h.from,
@@ -660,12 +707,22 @@ fn code(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         },
         None => None,
     };
-    // Optional — a caller that already has the RefHit's contentHash can pass it through
-    // for a real staleness verdict; without it staleness degrades to unpinned/unknown.
+    // Optional — a caller that already has the RefHit's contentHash (+ base_ref/fork_point,
+    // design/44 Addenda 1+2) can pass them through for the full staleness verdict; without
+    // them staleness degrades gracefully (content-only, or unpinned/unknown).
     let content_hash = q.get("contentHash").filter(|s| !s.is_empty()).cloned();
+    let base_ref = q.get("baseRef").filter(|s| !s.is_empty()).cloned();
+    let fork_point = q.get("forkPoint").filter(|s| !s.is_empty()).cloned();
     let repo_inv = repos::load(dir);
     let clone = refcode::clone_for(&repo_inv, repo);
-    let st = refcode::staleness(clone.as_deref(), sha, path, content_hash.as_deref());
+    let st = refcode::staleness_ex(
+        clone.as_deref(),
+        sha,
+        path,
+        content_hash.as_deref(),
+        base_ref.as_deref(),
+        fork_point.as_deref(),
+    );
     let lines = refcode::snippet(clone.as_deref(), sha, path, range, 2000).unwrap_or_default();
     let lines_json: Vec<Value> = lines.into_iter().map(|(n, text)| json!({ "n": n, "text": text })).collect();
     ApiResponse::ok(json!({ "lines": lines_json, "staleness": st.label(), "lang": lang_of(path) }))
@@ -772,8 +829,8 @@ mod tests {
         assert_eq!(lang_of("README"), "text");
     }
 
-    fn key(n: usize) -> (String, String, String) {
-        ("repo".to_string(), format!("sha{n}"), "path.rs".to_string())
+    fn key(n: usize) -> StalenessKey {
+        ("repo".to_string(), format!("sha{n}"), "path.rs".to_string(), None, None)
     }
 
     #[test]

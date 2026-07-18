@@ -5265,6 +5265,52 @@ fn refs_reverse_lookup_finds_conversations_about_code() {
 }
 
 #[test]
+fn ref_contains_predicate_via_repo_flag_and_cwd() {
+    // design/44 Addendum 1: `confer ref-contains <sha> [<ref>] [--repo <slug>]` — a
+    // plumbing predicate wrapping `git merge-base --is-ancestor`.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-refcontains");
+    assert!(git(&code, &["init", "-q", "-b", "main"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let base = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c1"]).status.success());
+    let tip = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // via --repo (the machine-local clone map) — no need to stand inside the repo.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    assert!(
+        ok(&c.confer(&["ref-contains", &base, "HEAD", "--repo", "mylib"])),
+        "base commit must be an ancestor of HEAD"
+    );
+    assert!(
+        !ok(&c.confer(&["ref-contains", &tip, &base, "--repo", "mylib"])),
+        "the tip is NOT an ancestor of its own parent"
+    );
+
+    // an unmapped repo is a real error (exit 3), not a predicate-false (exit 1).
+    let bad = c.confer(&["ref-contains", &base, "HEAD", "--repo", "nomap"]);
+    assert_eq!(bad.status.code(), Some(3), "unmapped repo must be a hard error: {}", err(&bad));
+
+    // via cwd (no --repo): running from inside the code repo's working tree.
+    assert!(
+        ok(&c.confer_in(&code, &["ref-contains", &base])),
+        "cwd-resolved capture dir must find the ancestor (default ref = HEAD)"
+    );
+    assert!(!ok(&c.confer_in(&code, &["ref-contains", &tip, &base])));
+
+    // cwd outside any git repo → a real error, not a predicate-false.
+    let outside = tmp("not-a-repo");
+    let o = c.confer_in(&outside, &["ref-contains", &base]);
+    assert_eq!(o.status.code(), Some(3), "must error, not silently predicate-false: {}", err(&o));
+}
+
+#[test]
 fn ref_show_renders_snippet_and_flags_drift() {
     let c = new_hub().clone("alpha");
     let code = tmp("coderepo4");
@@ -5304,15 +5350,19 @@ fn ref_show_renders_snippet_and_flags_drift() {
     assert!(out(&s).contains("one") && out(&s).contains("two"), "snippet missing: {}", out(&s));
     assert!(out(&s).contains("current"), "expected [current] badge: {}", out(&s));
 
-    // change the file at HEAD → the pinned ref is now stale ("changed")
+    // change the file at HEAD → the pinned ref is now stale. The pinned commit is
+    // still an ancestor of HEAD (a plain forward commit on the same branch), so
+    // design/44 Addendum 1's ancestry-augmented verdict reports "reachable" (the
+    // more informative refinement of "changed" once ancestry is computable), not
+    // the bare "changed" `staleness()` alone would give.
     std::fs::write(code.join("lib.rs"), "ONE\ntwo\nthree\n").unwrap();
     assert!(git(&code, &["add", "-A"]).status.success());
     assert!(git(&code, &["commit", "-q", "-m", "c1"]).status.success());
 
     let s2 = c.confer(&["show", &id]);
-    assert!(out(&s2).contains("changed"), "show should flag drift: {}", out(&s2));
+    assert!(out(&s2).contains("reachable"), "show should flag drift: {}", out(&s2));
     let r = c.confer(&["refs", "mylib:lib.rs"]);
-    assert!(out(&r).contains("changed"), "refs should flag drift: {}", out(&r));
+    assert!(out(&r).contains("reachable"), "refs should flag drift: {}", out(&r));
     // the snippet still shows the code AS PINNED (old bytes), not HEAD's
     assert!(out(&s2).contains("one"), "snippet must read at the pinned sha: {}", out(&s2));
 }

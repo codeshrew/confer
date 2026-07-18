@@ -296,7 +296,7 @@ fn messages_filters_by_topic_and_sanitizes_body() {
     assert_eq!(m["body"], "please do the thing");
     let refs = m["refs"].as_array().expect("refs array");
     assert_eq!(refs.len(), 1);
-    for key in ["repo", "path", "sha", "range", "contentHash"] {
+    for key in ["repo", "path", "sha", "range", "contentHash", "refName", "refType", "commitDate", "dirty", "untracked", "baseRef", "forkPoint"] {
         assert!(refs[0].get(key).is_some(), "missing ref.{key}");
     }
     assert_eq!(refs[0]["repo"], "mylib");
@@ -386,6 +386,24 @@ fn refs_reverse_lookup_returns_ref_hits() {
     assert_eq!(status2, 200);
     let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
     assert_eq!(v2.as_array().unwrap().len(), 0);
+
+    // design/44 §0/§4: a bare, PATH-LESS repo target ("every conversation touching
+    // anything in this repo") must parse and return the same hits as the file-scoped
+    // query — no engine/API gap, confirming the repo-rollup query already works.
+    let (status3, body3) = http_get(&server.addr, "/api/refs?target=mylib");
+    assert_eq!(status3, 200, "body: {body3}");
+    let v3: serde_json::Value = serde_json::from_str(&body3).unwrap();
+    let arr3 = v3.as_array().expect("array");
+    assert_eq!(arr3.len(), 1, "bare-repo query must find the same hit as the file-scoped one: {arr3:?}");
+    assert_eq!(arr3[0]["repo"], "mylib");
+    assert_eq!(arr3[0]["path"], "lib.rs");
+
+    // The new design/44 fields ride along on every hit (camelCase; null when absent —
+    // legacy/never-set fields degrade gracefully rather than being omitted).
+    let hit = &arr3[0];
+    for key in ["refName", "refType", "commitDate", "dirty", "untracked", "baseRef", "forkPoint"] {
+        assert!(hit.get(key).is_some(), "missing refhit.{key} in {hit}");
+    }
 }
 
 #[test]

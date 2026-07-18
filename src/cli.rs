@@ -760,6 +760,22 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Plumbing predicate (design/44 Addendum 1): is `<sha>` reachable from `<ref>` —
+    /// `git merge-base --is-ancestor <sha> <ref>`? Exit 0 if yes, 1 if no. A more robust
+    /// liveness check than "is it still HEAD" (HEAD moves constantly; ancestry doesn't
+    /// go stale on every further commit). Runs in `--repo <slug>`'s mapped clone if
+    /// given, else the git working tree at the current directory. No fetch.
+    RefContains {
+        /// the commit to test (full or short hex; anything `git rev-parse` accepts).
+        sha: String,
+        /// the ref to test against (branch, tag, sha…) — default `HEAD`.
+        #[arg(value_name = "ref", default_value = "HEAD")]
+        against: String,
+        /// resolve the repo via the machine-local clone map instead of the cwd's
+        /// working tree (for a script that isn't standing inside the code repo).
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Verify a message's commit signature against the sender role's LOCALLY PINNED
     /// key (TOFU, ~/.confer) — attribution / anti-spoof. A PREDICATE: prints the verdict and
     /// exits 0 if the sender is cryptographically attributed (verified, or an unconfirmed
