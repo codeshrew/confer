@@ -53,6 +53,7 @@
   import { copyToClipboard } from '../clipboard';
   import { formatClock, formatIso8601 } from '../format';
   import { buildTrail, childrenOf, pathToRoot, trailRoot, type TrailNode } from '../thread';
+  import { paneFocus } from '../paneFocus.svelte';
   import Icon from './Icon.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
   import type { Agent, CodeRef, Message as MessageT, MsgType, RefHit, ThreadNode } from '../types';
@@ -172,6 +173,21 @@
     }
   }
 
+  // keyboard-architecture pass — "thread-peek", registered only while this
+  // panel is actually mounted (App.svelte renders it conditionally on the
+  // peek being open), so register/unregister just rides the component's own
+  // mount/destroy — no separate open/close bookkeeping needed here.
+  let mtEl: HTMLDivElement;
+  $effect(() => {
+    if (!mtEl) return;
+    return paneFocus.register({
+      id: 'thread-peek',
+      label: 'Reference graph',
+      el: mtEl,
+      getRect: () => mtEl.getBoundingClientRect(),
+    });
+  });
+
   // Copy-id affordance for the `.gid` line (design/41 Phase 0, §4) — the id
   // is already displayed per node; this just makes it click-to-copy, with
   // the same "swap to a check for ~1.2s" feedback as CopyIdButton, keyed by
@@ -286,7 +302,15 @@
      roving-tabindex set of keyboard-navigable controls (j/k/h/l/Enter/Esc
      over the trail's buttons) — see HubRail.svelte's own note on why this
      role rather than an unclaimed listbox/group. -->
-<div class="mt" role="toolbar" aria-orientation="vertical" tabindex="-1" onkeydown={handlePeekKeydown} data-testid="thread-peek">
+<div
+  class="mt"
+  role="toolbar"
+  aria-orientation="vertical"
+  tabindex="-1"
+  bind:this={mtEl}
+  onkeydown={handlePeekKeydown}
+  data-testid="thread-peek"
+>
   {#if focusedNode}
     <div class="crumbs" data-testid="peek-crumbs">
       {#if rootTopic}<span class="cz mono">#{rootTopic}</span><span class="sep">›</span>{/if}

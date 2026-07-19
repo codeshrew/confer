@@ -65,9 +65,26 @@ the UI. `?` gives the full grouped cheatsheet; a persistent focus chip shows the
 footnote states the model verbatim: *"Ctrl = panes · bare = content · Cmd = app · only the focused pane's keys
 fire."* It must stay **learnable in one sentence** — if it can't be, the layering is wrong.
 
-Landed so far: `⌘K` palette + `?` overlay + per-pane `j`/`k` (pieces 2–3). Remaining: retrofit the `Ctrl`
-pane-focus layer + focus chip, move views `g`+number → `⌘`+number, and the inline shortcut-chip pattern — a
-**keyboard-architecture pass** (below) before piece 4's keyboard bits.
+**Keyboard-architecture pass — done (2026-07-19).** `paneFocus.svelte.ts` is the Layer-1 engine (module
+singleton, same pattern as `appState`) — 7 named panes registered: `rail` (HubRail) · `topic-list`
+(LeftRail) · `stream` (ChatStream) · `thread-peek` (MetaThread) · `code-tree` (CodeTree) · `refs`
+(ReverseIndexPanel) · `board` (Board). `topic-list` and `stream` gained NEW bare-key vocab in this pass
+(`j`/`k`/`Enter`, matching the rail's existing pattern — neither had one before); `code-tree`/`refs`/`board`
+register as Layer-1 focus targets only (no pre-existing bare-key nav to retrofit, native Tab/scroll +
+mouse cover them, so nothing was invented from scratch there). The `g`-leader is fully retired — views are
+`⌘1`–`⌘5` (`keys.ts`'s `viewForCmdNumber`); HubRail's own *local* `g g`/`G` "first/last hub" chord is
+unaffected (it was never the retired leader, just reuses the same timeout constant). A persistent
+`FocusChip` (crumb bar, right edge) names the focused pane. `Kbd.svelte` is the shared shortcut-chip
+component — used on TopBar's view tabs (⌘1–⌘5) and a new "open in focus reader" button on each chat message
+(the mouse-parity fix for `f`, which was keyboard-only before this pass).
+
+**Browser-caveat resolution:** `Ctrl+K`/`Ctrl+L` are unconditionally reserved (address bar) in every
+tested browser — `preventDefault()` never reaches them, so `F6`/`Shift+F6` is the ONLY reliable pane-cycle
+fallback (`Ctrl+]`/`[` also works everywhere tested). `Ctrl+H`/`Ctrl+J` are reserved in Chrome (history/
+downloads) but not universally — `e.preventDefault()` is still called (works in Firefox and in Chrome once
+the page has focus in many configurations) with `F6`/`Shift+F6` as the documented fallback either way.
+`Ctrl+1`–`9` is unconditionally reserved for tab-switching, which is exactly why `viewForCmdNumber` has NO
+`Ctrl` alias — `⌘`/Cmd is the only binding for Layer 3 view switches, by design, not oversight.
 
 ---
 

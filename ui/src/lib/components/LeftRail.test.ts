@@ -72,3 +72,27 @@ describe('LeftRail', () => {
     expect(screen.getByText('Herald')).toBeInTheDocument();
   });
 });
+
+describe('LeftRail — keyboard-architecture pass: j/k + Enter (new bare-key vocab)', () => {
+  it('j moves the roving-tabindex focus forward, k moves it back, Enter selects', async () => {
+    const onTopicSelect = vi.fn();
+    const user = userEvent.setup();
+    render(LeftRail, { hubName: 'agent-coord', topics, currentTopic: 'reader', agents, onTopicSelect });
+
+    const topicButton = (slug: string) => screen.getByText(slug).closest('button')!;
+    topicButton('general').focus();
+    expect(topicButton('general')).toHaveFocus();
+
+    await user.keyboard('j');
+    expect(topicButton('reader')).toHaveFocus();
+
+    await user.keyboard('j');
+    expect(topicButton('plate-pipeline')).toHaveFocus();
+
+    await user.keyboard('k');
+    expect(topicButton('reader')).toHaveFocus();
+
+    await user.keyboard('{Enter}');
+    expect(onTopicSelect).toHaveBeenCalledWith('reader');
+  });
+});

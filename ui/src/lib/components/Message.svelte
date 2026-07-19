@@ -6,6 +6,8 @@
   import TicketCard from './TicketCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
+  import Icon from './Icon.svelte';
+  import Kbd from './Kbd.svelte';
 
   interface Props {
     message: MessageT;
@@ -28,6 +30,10 @@
     onSelect?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
+    /** keyboard-architecture pass — the mouse path for the `f` shortcut
+     * ("focus reader" — reads the currently-focused message). Before this,
+     * opening the focus reader was keyboard-only; this is that gap's fix. */
+    onOpenFocus?: (id: string) => void;
   }
 
   let {
@@ -43,6 +49,7 @@
     onSelect,
     onSelectTicket,
     onOpenRefs,
+    onOpenFocus,
   }: Props = $props();
 
   const SYSLINE_TYPES = new Set(['claim', 'done', 'error', 'defer', 'supersede']);
@@ -121,6 +128,21 @@
         {#if message.host}<span class="role">{message.host}</span>{/if}
         <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)}</span>
         <CopyIdButton id={message.id} class="msg-copy-id" />
+        {#if onOpenFocus}
+          <button
+            type="button"
+            class="msg-focus-btn"
+            title="Open in focus reader"
+            aria-label="Open in focus reader"
+            onclick={(e) => {
+              e.stopPropagation();
+              onOpenFocus?.(message.id);
+            }}
+          >
+            <Icon name="arrow-up-right" size={12} />
+            <Kbd keys="f" />
+          </button>
+        {/if}
         <SeenIndicator entries={seenEntries} />
       </div>
 
@@ -279,6 +301,31 @@
      scoped selector otherwise. */
   .msg:hover :global(.msg-copy-id),
   .msg:focus-within :global(.msg-copy-id) {
+    opacity: 1;
+  }
+  /* "Open in focus reader" — same reveal-on-hover treatment as CopyIdButton
+     above (mouse path for the `f` shortcut; the Kbd chip inside it is the
+     inline-shortcut affordance the keyboard-architecture pass asks for on
+     every actionable control). */
+  .msg-focus-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 2px 6px;
+    transition: opacity 0.12s ease;
+  }
+  .msg-focus-btn:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .msg:hover .msg-focus-btn,
+  .msg:focus-within .msg-focus-btn,
+  .msg-focus-btn:focus-visible {
     opacity: 1;
   }
   /* Scroll-to + highlight-pulse target (design/41 Phase 0 item 4) — a brief

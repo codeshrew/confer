@@ -9,6 +9,7 @@
   // here updates the code pane with no callback plumbing between them.
   import type { CodeFile } from '../types';
   import { codeState } from '../stores.svelte';
+  import { paneFocus } from '../paneFocus.svelte';
   import {
     activeFlatten,
     ancestorIdsFor,
@@ -129,6 +130,23 @@
     s.pendingReveal = null;
   });
 
+  // keyboard-architecture pass — "code-tree", one of the 7 named Layer-1
+  // panes. No pre-existing bare-key row nav to retrofit here (rows are
+  // click-only; `/` focuses the filter, `Escape` clears it — both already
+  // real DOM-focus-scoped and left untouched) — Ctrl+hjkl just needs
+  // somewhere real to land, so this registers the scrollable tree body
+  // itself, letting native Tab/arrow-key/PageUp-Down scrolling take over
+  // from there without inventing a parallel row-selection model.
+  $effect(() => {
+    if (!scrollEl) return;
+    return paneFocus.register({
+      id: 'code-tree',
+      label: 'Code tree',
+      el: scrollEl,
+      getRect: () => scrollEl!.getBoundingClientRect(),
+    });
+  });
+
   function onFilterKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       s.filter = '';
@@ -193,7 +211,7 @@
     </div>
   </div>
 
-  <div class="ct-scroll" bind:this={scrollEl}>
+  <div class="ct-scroll" tabindex="-1" bind:this={scrollEl}>
     {#if !s.loaded}
       <Skeleton rows={4} />
     {:else if s.files.length === 0}

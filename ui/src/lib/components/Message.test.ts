@@ -255,6 +255,25 @@ describe('Message', () => {
     });
   });
 
+  describe('keyboard-architecture pass: mouse path for the `f` shortcut', () => {
+    it('hides the "open in focus reader" button when onOpenFocus is not wired (no dead affordance)', () => {
+      render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [] });
+      expect(screen.queryByRole('button', { name: 'Open in focus reader' })).not.toBeInTheDocument();
+    });
+
+    it('fires onOpenFocus (not onSelect) when clicked, without also selecting via the row click handler', async () => {
+      const user = userEvent.setup();
+      const onOpenFocus = vi.fn();
+      const onSelect = vi.fn();
+      render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], onOpenFocus, onSelect });
+
+      await user.click(screen.getByRole('button', { name: 'Open in focus reader' }));
+
+      expect(onOpenFocus).toHaveBeenCalledWith('msg_01JQ001');
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+  });
+
   describe('scroll-to highlight pulse', () => {
     it('applies the pulse class when highlight is true, and not otherwise', () => {
       const { container: withHighlight } = render(Message, {

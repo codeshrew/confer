@@ -19,6 +19,7 @@
   // fetching lives in the parent (onLoadOlder).
   import { tick } from 'svelte';
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
+  import { paneFocus } from '../paneFocus.svelte';
   import MessageComponent from './Message.svelte';
   import type { SeenEntry } from './SeenIndicator.svelte';
   import { formatClock, formatDayDivider, groupByDay } from '../format';
@@ -44,6 +45,9 @@
     onLoadOlder?: () => Promise<number>;
     onSelectMessage?: (id: string) => void;
     onSelectTicket?: (id: string) => void;
+    /** keyboard-architecture pass — the mouse path for the `f` shortcut,
+     * passed straight through to each Message row. */
+    onOpenFocus?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
     /** design/41 Phase 0 item 4 — the shared scroll-to + highlight-pulse
      * primitive that meta-thread-node clicks and lifecycle-trail-row clicks
@@ -69,6 +73,7 @@
     onLoadOlder,
     onSelectMessage,
     onSelectTicket,
+    onOpenFocus,
     onOpenRefs,
     scrollToMessageId = null,
     scrollToken = 0,
@@ -310,17 +315,55 @@
     const gen = ++scrollGen;
     void performScrollTo(target, gen);
   });
+
+  // keyboard-architecture pass — "stream" is one of the 7 named Layer-1
+  // panes; it had no bare-key vocab before this pass (selection was
+  // click-only), so j/k here move `selectedMessageId` one message at a time
+  // through the same ordered, filtered `topicMessages` list the stream
+  // already renders — the natural bare-key pair given the app already has an
+  // `f`-to-open-focus-reader affordance that reads that exact selection.
+  function selectAdjacent(delta: number) {
+    if (topicMessages.length === 0) return;
+    const i = topicMessages.findIndex((m) => m.id === selectedMessageId);
+    const next = i < 0 ? (delta > 0 ? 0 : topicMessages.length - 1) : Math.min(Math.max(i + delta, 0), topicMessages.length - 1);
+    const msg = topicMessages[next];
+    if (msg) onSelectMessage?.(msg.id);
+  }
+
+  function handleStreamKeydown(e: KeyboardEvent) {
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectAdjacent(1);
+    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectAdjacent(-1);
+    }
+  }
+
+  $effect(() => {
+    if (!streamEl) return;
+    return paneFocus.register({
+      id: 'stream',
+      label: 'Chat stream',
+      el: streamEl,
+      getRect: () => streamEl!.getBoundingClientRect(),
+    });
+  });
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- This div is a scroll container, not an interactive control — the mouse
-     enter/leave pair here only pauses/resumes the stick-to-bottom
-     auto-scroll while the reader is hovering (see pointerOverStream's note
-     above); there's no keyboard-equivalent action needed. -->
+<!-- keyboard-architecture pass: now a real Layer-1/2 pane (role="toolbar",
+     same fit as HubRail/MetaThread's own roving-nav regions) — j/k move
+     the message selection, Ctrl+hjkl/F6 land real focus here. The mouse
+     enter/leave pair still only pauses/resumes stick-to-bottom auto-scroll
+     while hovering (see pointerOverStream's note above). -->
 <div
   class="stream"
+  role="toolbar"
+  aria-orientation="vertical"
+  tabindex="-1"
   bind:this={streamEl}
   onscroll={handleScroll}
+  onkeydown={handleStreamKeydown}
   onmouseenter={handlePointerEnter}
   onmouseleave={handlePointerLeave}
 >
@@ -361,6 +404,7 @@
           {density}
           onSelect={onSelectMessage}
           onSelectTicket={onSelectTicket}
+          {onOpenFocus}
           {onOpenRefs}
         />
       {/each}

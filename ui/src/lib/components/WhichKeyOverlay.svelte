@@ -31,10 +31,31 @@
     rows: { keys: string; desc: string }[];
   }
 
+  // keyboard-architecture pass (ui/REDESIGN.md, 2026-07-19) — the three-
+  // layer model. "Panes" (Layer 1) and "App" (Layer 3) work everywhere,
+  // regardless of which pane is focused; every other group is Layer 2 —
+  // bare keys that only fire while THAT pane holds real focus (the focus
+  // chip in the crumb bar always shows which one that is).
   const GROUPS: KeyGroup[] = [
     {
-      title: 'Jump',
-      rows: [{ keys: '⌘K / Ctrl+K', desc: 'command palette — fuzzy jump to a hub' }],
+      title: 'Panes (Ctrl)',
+      rows: [
+        { keys: 'Ctrl+h/j/k/l', desc: 'move focus between panes, by position' },
+        { keys: 'Ctrl+] / Ctrl+[', desc: 'cycle to the next / previous pane' },
+        { keys: 'F6 / Shift+F6', desc: 'same, browser-safe fallback' },
+      ],
+    },
+    {
+      title: 'App (Cmd)',
+      rows: [
+        { keys: '⌘K', desc: 'command palette — fuzzy jump to a hub' },
+        { keys: '⌘1', desc: 'Overview' },
+        { keys: '⌘2', desc: 'Chat' },
+        { keys: '⌘3', desc: 'Board' },
+        { keys: '⌘4', desc: 'Fleet' },
+        { keys: '⌘5', desc: 'Code' },
+        { keys: '?', desc: 'this overlay' },
+      ],
     },
     {
       title: 'Hub rail',
@@ -46,15 +67,15 @@
       ],
     },
     {
-      title: 'Views',
+      title: 'Topic list',
       rows: [
-        { keys: 'g 1', desc: 'Overview' },
-        { keys: 'g 2', desc: 'Chat' },
-        { keys: 'g 3', desc: 'Board' },
-        { keys: 'g 4', desc: 'Fleet' },
-        { keys: 'g 5', desc: 'Code' },
-        { keys: 'g o / g b / g f', desc: 'letter aliases — Overview / Board / Fleet' },
+        { keys: 'j / k', desc: 'move selection down / up' },
+        { keys: '↵ / l', desc: 'open the selected topic' },
       ],
+    },
+    {
+      title: 'Chat stream',
+      rows: [{ keys: 'j / k', desc: 'select next / previous message' }],
     },
     {
       title: 'Thread peek',
@@ -77,10 +98,7 @@
     },
     {
       title: 'General',
-      rows: [
-        { keys: '?', desc: 'this overlay' },
-        { keys: 'Esc', desc: 'close any overlay' },
-      ],
+      rows: [{ keys: 'Esc', desc: 'close any overlay' }],
     },
   ];
 </script>
@@ -114,7 +132,10 @@
           </div>
         {/each}
       </div>
-      <div class="wk-foot">Never fires while typing in a field — this overlay itself included.</div>
+      <div class="wk-foot">
+        <p>Ctrl = panes · bare = content · Cmd = app · only the focused pane's keys fire</p>
+        <p>Never fires while typing in a field — this overlay itself included.</p>
+      </div>
     </div>
   </div>
 {/if}
@@ -220,6 +241,12 @@
     font-size: 11px;
     color: var(--faint);
     flex: 0 0 auto;
+  }
+  .wk-foot p {
+    margin: 0;
+  }
+  .wk-foot p + p {
+    margin-top: 4px;
   }
   @media (max-width: 620px) {
     .wk-body {

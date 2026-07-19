@@ -24,6 +24,7 @@
   import type { HubTier } from '../types';
   import type { View } from '../stores.svelte';
   import { isCommandK, LEADER_TIMEOUT_MS } from '../keys';
+  import { paneFocus } from '../paneFocus.svelte';
   import CommandPalette from './CommandPalette.svelte';
 
   interface Props {
@@ -213,6 +214,28 @@
       paletteOpen = true;
     }
   }
+
+  // keyboard-architecture pass — registers "rail" as one of the 7 named
+  // Layer-1 panes. `el` is `.hr-list` itself, which paneFocus.focus() calls
+  // .focus() on directly — but piece 2's roving tabindex actually parks
+  // real DOM focus on the individual entry BUTTON (buttonEls[focusedIdx]),
+  // not the wrapping div, so Ctrl+hjkl landing on the div needs one extra
+  // hop: forward straight to the current button, same as `l`/Enter or j/k
+  // already do internally. Guarded by `e.target === hrListEl` so it only
+  // fires on that direct hop-in, not on every bubbled child-focus event.
+  let hrListEl: HTMLDivElement;
+  function forwardContainerFocus(e: FocusEvent) {
+    if (e.target === hrListEl) buttonEls[focusedIdx]?.focus();
+  }
+  $effect(() => {
+    if (!hrListEl) return;
+    return paneFocus.register({
+      id: 'rail',
+      label: 'Hubs',
+      el: hrListEl,
+      getRect: () => hrListEl.getBoundingClientRect(),
+    });
+  });
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -228,7 +251,16 @@
        keyboard navigation among them — without claiming selection-state
        semantics (aria-selected, role="option") this component doesn't
        implement. -->
-  <div class="hr-list" role="toolbar" aria-orientation="vertical" aria-label="hubs" tabindex="-1" onkeydown={handleNavKeydown}>
+  <div
+    class="hr-list"
+    role="toolbar"
+    aria-orientation="vertical"
+    aria-label="hubs"
+    tabindex="-1"
+    bind:this={hrListEl}
+    onkeydown={handleNavKeydown}
+    onfocus={forwardContainerFocus}
+  >
     {#if loading && domains.length === 0}
       <div class="hr-status">loading hubs…</div>
     {:else if error && domains.length === 0}

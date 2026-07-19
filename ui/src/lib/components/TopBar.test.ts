@@ -67,6 +67,16 @@ describe('TopBar', () => {
     expect(screen.queryByTestId('hamburger')).not.toBeInTheDocument();
   });
 
+  it('fires onHelp when the "?" button is clicked — the mouse path for the which-key overlay', async () => {
+    const user = userEvent.setup();
+    const onHelp = vi.fn();
+    render(TopBar, { hubs, currentHub: 'agent-coord', currentView: 'chat', onHelp });
+
+    await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
+
+    expect(onHelp).toHaveBeenCalledOnce();
+  });
+
   it('calls onThemeToggle and reflects the flipped data-theme on <html>', async () => {
     const user = userEvent.setup();
     document.documentElement.setAttribute('data-theme', 'dark');

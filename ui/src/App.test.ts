@@ -121,7 +121,7 @@ async function findHubRail() {
   return within(await screen.findByTestId('hub-rail'));
 }
 
-describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key overlay', () => {
+describe('App — keyboard-architecture pass: Layer 3 (Cmd+number), ? which-key overlay', () => {
   it('"?" opens the which-key overlay; its own Escape handling closes it', async () => {
     appState.drawer = 'none';
     appState.view = 'chat';
@@ -140,7 +140,44 @@ describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key over
     expect(screen.queryByTestId('whichkey-backdrop')).not.toBeInTheDocument();
   });
 
-  it('"g" then "3" switches to Board (the g-leader + number chord)', async () => {
+  it('the TopBar "?" button also opens it — mouse parity, not keyboard-only', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    expect(screen.queryByTestId('whichkey-backdrop')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
+    expect(await screen.findByTestId('whichkey-backdrop')).toBeInTheDocument();
+  });
+
+  it('Cmd+3 switches to Board (the g-leader is retired — views are Cmd+number now)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    await user.keyboard('{Meta>}3{/Meta}');
+    expect(appState.view).toBe('board');
+  });
+
+  it('Cmd+4 switches to Fleet', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    await user.keyboard('{Meta>}4{/Meta}');
+    expect(appState.view).toBe('fleet');
+  });
+
+  it('plain "g" (no modifier) does nothing — the g-leader is retired, not aliased', async () => {
     appState.drawer = 'none';
     appState.view = 'chat';
     appState.hub = '';
@@ -149,10 +186,10 @@ describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key over
     await findHubRail();
 
     await user.keyboard('g3');
-    expect(appState.view).toBe('board');
+    expect(appState.view).toBe('chat');
   });
 
-  it('"g" then an unambiguous letter alias also switches views (g f -> Fleet)', async () => {
+  it('Ctrl+3 does NOT switch views — Ctrl+number is reserved for browser tab-switching, deliberately not a Layer-3 alias', async () => {
     appState.drawer = 'none';
     appState.view = 'chat';
     appState.hub = '';
@@ -160,11 +197,11 @@ describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key over
     render(App);
     await findHubRail();
 
-    await user.keyboard('gf');
-    expect(appState.view).toBe('fleet');
+    await user.keyboard('{Control>}3{/Control}');
+    expect(appState.view).toBe('chat');
   });
 
-  it('never fires while typing — "g3" typed into the ⌘K palette search filters text, not a view switch', async () => {
+  it('never fires while typing — Cmd+3 typed while the ⌘K palette search has focus does not switch views', async () => {
     appState.drawer = 'none';
     appState.view = 'chat';
     appState.hub = '';
@@ -174,10 +211,62 @@ describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key over
 
     await user.keyboard('{Meta>}k{/Meta}');
     const input = await screen.findByTestId('palette-input');
-    await user.type(input, 'g3');
+    input.focus();
+    await user.keyboard('{Meta>}3{/Meta}');
 
     expect(appState.view).toBe('chat');
-    expect(input).toHaveValue('g3');
+  });
+});
+
+describe('App — keyboard-architecture pass: Layer 1 (Ctrl pane focus)', () => {
+  it('shows a persistent focus chip naming the currently-focused pane', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    render(App);
+    await findHubRail();
+
+    expect(await screen.findByTestId('focus-chip')).toBeInTheDocument();
+  });
+
+  it('clicking a pane focuses it — the chip updates to name it', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    const rail = await findHubRail();
+
+    await user.click(await rail.findByText('agent-coord'));
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).toHaveTextContent('Hubs'));
+  });
+
+  it('Ctrl+] cycles pane focus forward through the registered panes', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    const rail = await findHubRail();
+    await user.click(await rail.findByText('agent-coord'));
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).toHaveTextContent('Hubs'));
+
+    await user.keyboard('{Control>}]{/Control}');
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).not.toHaveTextContent('Hubs'));
+  });
+
+  it('F6 also cycles pane focus — the browser-safe fallback for reserved Ctrl+hjkl chords', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    const rail = await findHubRail();
+    await user.click(await rail.findByText('agent-coord'));
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).toHaveTextContent('Hubs'));
+
+    await user.keyboard('{F6}');
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).not.toHaveTextContent('Hubs'));
   });
 });
 

@@ -382,3 +382,79 @@ describe('ChatStream — stick-to-bottom vs. an active hover (design/41 copy-id 
     expect(scrollTopSetter).toHaveBeenCalled();
   });
 });
+
+describe('ChatStream — keyboard-architecture pass: j/k select the next/previous message', () => {
+  const messages = [
+    msg('m1', '2026-07-17T14:00:00Z', 'first'),
+    msg('m2', '2026-07-17T14:01:00Z', 'second'),
+    msg('m3', '2026-07-17T14:02:00Z', 'third'),
+  ];
+
+  it('j selects the first message when nothing is selected yet, then moves forward; k moves back', async () => {
+    const onSelectMessage = vi.fn();
+    const { container, rerender } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+      onSelectMessage,
+    });
+    const streamEl = container.querySelector('.stream') as HTMLElement;
+
+    await fireEvent.keyDown(streamEl, { key: 'j' });
+    expect(onSelectMessage).toHaveBeenLastCalledWith('m1');
+
+    // The real app re-renders with the new selectedMessageId — mirror that.
+    await rerender({
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+      onSelectMessage,
+      selectedMessageId: 'm1',
+    });
+
+    await fireEvent.keyDown(streamEl, { key: 'j' });
+    expect(onSelectMessage).toHaveBeenLastCalledWith('m2');
+
+    await rerender({
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+      onSelectMessage,
+      selectedMessageId: 'm2',
+    });
+
+    await fireEvent.keyDown(streamEl, { key: 'k' });
+    expect(onSelectMessage).toHaveBeenLastCalledWith('m1');
+  });
+
+  it('does not overrun the ends of the list', async () => {
+    const onSelectMessage = vi.fn();
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+      selectedMessageId: 'm3',
+      onSelectMessage,
+    });
+    const streamEl = container.querySelector('.stream') as HTMLElement;
+
+    await fireEvent.keyDown(streamEl, { key: 'j' });
+    expect(onSelectMessage).toHaveBeenLastCalledWith('m3');
+  });
+});

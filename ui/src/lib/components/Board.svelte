@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Agent, RequestRow } from '../types';
+  import { paneFocus } from '../paneFocus.svelte';
   import BoardRow from './BoardRow.svelte';
 
   interface Props {
@@ -91,9 +92,24 @@
       items: requests.filter((r) => (r.claimants[0] ?? 'unclaimed') === c),
     }));
   });
+
+  // keyboard-architecture pass — "board", one of the 7 named Layer-1 panes.
+  // Rows (BoardRow) are already individually click/Tab-reachable buttons —
+  // no pre-existing bare-key vocab to retrofit, so this registers the board
+  // root as the Ctrl+hjkl landing spot only.
+  let boardEl: HTMLDivElement;
+  $effect(() => {
+    if (!boardEl) return;
+    return paneFocus.register({
+      id: 'board',
+      label: 'Board',
+      el: boardEl,
+      getRect: () => boardEl.getBoundingClientRect(),
+    });
+  });
 </script>
 
-<div class="board-wrap" data-testid="board-view">
+<div class="board-wrap" tabindex="-1" bind:this={boardEl} data-testid="board-view">
   <div class="board-head">
     <div class="board-topline">
       <h2>Ticket board · {hubName}</h2>

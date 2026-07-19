@@ -9,6 +9,7 @@
   import type { RefHit } from '../types';
   import { formatAge, formatIsoDate } from '../format';
   import { groupRefHitsByFile } from '../codeTree';
+  import { paneFocus } from '../paneFocus.svelte';
   import EmptyState from './EmptyState.svelte';
   import Icon from './Icon.svelte';
   import FileIcon from './FileIcon.svelte';
@@ -55,9 +56,25 @@
   function cap(s: string): string {
     return s.length ? s[0]!.toUpperCase() + s.slice(1) : s;
   }
+
+  // keyboard-architecture pass — "refs", one of the 7 named Layer-1 panes.
+  // Rows here are already all real, individually-focusable buttons
+  // (Tab-reachable, click/Enter-activatable) — no pre-existing bare-key
+  // vocab to retrofit, so this just registers the panel root as the
+  // Ctrl+hjkl landing spot; native Tab then reaches every row same as ever.
+  let cvxEl: HTMLDivElement;
+  $effect(() => {
+    if (!cvxEl) return;
+    return paneFocus.register({
+      id: 'refs',
+      label: 'Conversations',
+      el: cvxEl,
+      getRect: () => cvxEl.getBoundingClientRect(),
+    });
+  });
 </script>
 
-<div class="cvx">
+<div class="cvx" tabindex="-1" bind:this={cvxEl}>
   <p class="ctx-note">
     Every <code class="mono">--ref</code> is indexed, so you can walk it backwards: given a repo, a file, or a line range,
     find every thread that discussed it — across hubs, public <b>and</b> private.

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Agent, Topic } from '../types';
   import { formatAge } from '../format';
+  import { paneFocus } from '../paneFocus.svelte';
 
   interface Props {
     hubName: string;
@@ -16,6 +17,59 @@
   }
 
   let { hubName, topics, currentTopic, agents, onTopicSelect, now = Date.now(), showFleet = true }: Props = $props();
+
+  // keyboard-architecture pass — "topic-list" is one of the 7 named Layer-1
+  // panes; it had no bare-key vocab before this pass (only click), so this
+  // adds the same roving-tabindex j/k/Enter pattern HubRail already uses for
+  // its (structurally identical) button list, rather than inventing a
+  // different convention for the same UI shape.
+  let focusedIdx = $state(0);
+  let listEl: HTMLDivElement;
+  let railEl: HTMLDivElement;
+
+  $effect(() => {
+    // topics reload on hub switch / poll — keep the roving index in range.
+    if (focusedIdx >= topics.length) focusedIdx = Math.max(0, topics.length - 1);
+  });
+
+  $effect(() => {
+    if (!railEl) return;
+    return paneFocus.register({
+      id: 'topic-list',
+      label: 'Topics',
+      el: listEl ?? railEl,
+      getRect: () => railEl.getBoundingClientRect(),
+    });
+  });
+
+  // See HubRail's identical note: real focus parks on the roving BUTTON,
+  // not this wrapping div, so a direct Ctrl+hjkl hop onto the div needs one
+  // forward-hop onto the current button.
+  function forwardContainerFocus(e: FocusEvent) {
+    if (e.target === listEl) buttonEls[focusedIdx]?.focus();
+  }
+  let buttonEls = $state<(HTMLButtonElement | null)[]>([]);
+
+  function handleListKeydown(e: KeyboardEvent) {
+    if (topics.length === 0) return;
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      focusedIdx = Math.min(focusedIdx + 1, topics.length - 1);
+      buttonEls[focusedIdx]?.focus();
+      return;
+    }
+    if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusedIdx = Math.max(focusedIdx - 1, 0);
+      buttonEls[focusedIdx]?.focus();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'l') {
+      e.preventDefault();
+      const topic = topics[focusedIdx];
+      if (topic) onTopicSelect?.(topic.slug);
+    }
+  }
 
   function stateClass(topic: Topic): string {
     if (topic.stale) return 'st-stale';
@@ -39,28 +93,42 @@
   }
 </script>
 
-<div class="rail-l">
+<div class="rail-l" bind:this={railEl}>
   <div class="rail-scroll">
     <div class="rail-head">
       <h3>{hubName}</h3>
     </div>
 
-    {#each topics as topic (topic.slug)}
-      <button
-        type="button"
-        class="topic"
-        class:active={topic.slug === currentTopic}
-        class:hasnew={hasUnread(topic)}
-        onclick={() => onTopicSelect?.(topic.slug)}
-      >
-        <span class="hash">#</span>
-        <span class="nm">{topic.slug}</span>
-        {#if hasUnread(topic)}
-          <span class="unread" title="unread"></span>
-        {/if}
-        <span class="state {stateClass(topic)}">{stateLabel(topic)}</span>
-      </button>
-    {/each}
+    <div
+      class="topic-list"
+      role="toolbar"
+      aria-orientation="vertical"
+      aria-label="topics"
+      tabindex="-1"
+      bind:this={listEl}
+      onkeydown={handleListKeydown}
+      onfocus={forwardContainerFocus}
+    >
+      {#each topics as topic, i (topic.slug)}
+        <button
+          type="button"
+          class="topic"
+          class:active={topic.slug === currentTopic}
+          class:hasnew={hasUnread(topic)}
+          tabindex={i === focusedIdx ? 0 : -1}
+          bind:this={buttonEls[i]}
+          onfocus={() => (focusedIdx = i)}
+          onclick={() => onTopicSelect?.(topic.slug)}
+        >
+          <span class="hash">#</span>
+          <span class="nm">{topic.slug}</span>
+          {#if hasUnread(topic)}
+            <span class="unread" title="unread"></span>
+          {/if}
+          <span class="state {stateClass(topic)}">{stateLabel(topic)}</span>
+        </button>
+      {/each}
+    </div>
 
     {#if showFleet}
       <div class="rail-sep"></div>
@@ -132,6 +200,10 @@
   .topic.active {
     background: var(--panel-3);
     color: var(--text);
+  }
+  .topic:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .topic .hash {
     font-family: var(--mono);

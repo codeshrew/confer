@@ -34,7 +34,9 @@
     showFleetSection,
   } from './lib/railLayout';
   import type { CodeRef, Hub, HubTier, Message, Overview, RefHit, ThreadNode } from './lib/types';
-  import { isTypingTarget, viewForLeaderKey, LEADER_TIMEOUT_MS } from './lib/keys';
+  import { isTypingTarget, viewForCmdNumber } from './lib/keys';
+  import { paneFocus } from './lib/paneFocus.svelte';
+  import FocusChip from './lib/components/FocusChip.svelte';
 
   let hubs = $state<Hub[]>([]);
   let overview = $state<Overview | null>(null);
@@ -658,17 +660,21 @@
     cs.viewMode = 'file';
   }
 
-  // piece 2's keyboard layer, app-wide slice: `?` opens the which-key
-  // overlay, and the `g` leader + a following number/letter switches views
-  // (ui/REDESIGN.md, settled 2026-07-18 — `g` because the operator's tmux
-  // prefix Ctrl+Space clashes with browser chords). HubRail owns ⌘K and its
-  // own j/k/gg/G list-nav independently (see HubRail.svelte) — both this and
-  // that handler listen on window, but neither calls stopPropagation, so a
-  // bare "g" bubbling past HubRail's own (harmless, self-timing-out) leader
-  // arm never blocks this one from also seeing it.
-  let gArmed = false;
-  let gTimer: ReturnType<typeof setTimeout> | undefined;
-
+  // The keyboard-architecture pass (ui/REDESIGN.md, 2026-07-19) — the
+  // three-layer model. `?` (help) and Layer 3 (`Cmd`+number, app-wide,
+  // "works regardless of focused pane") live here, App-wide; Layer 1
+  // (`Ctrl`+h/j/k/l pane focus) is a thin call into `paneFocus` (the actual
+  // engine — geometry, the pane registry, gotchas #1/#3/#4 — lives entirely
+  // in paneFocus.svelte.ts/keys.ts, NOT here, so this handler stays a
+  // dispatcher, not the engine itself). Layer 2 (bare keys) needs NO
+  // handling here at all — each pane's own onkeydown, scoped to its own
+  // focused subtree, already only fires when real DOM focus is inside it
+  // (pieces 2-3 built that; paneFocus.focus() just moves real DOM focus).
+  //
+  // The retired `g`-leader (piece 2) is gone: a global `g`-prefix collided
+  // with per-pane `g g` chords (HubRail's own "jump to first hub"), so views
+  // moved to Cmd+number instead — see keys.ts's `viewForCmdNumber`.
+  //
   // piece 3: `f` on the currently-focused message opens the focus reader —
   // "from anywhere" (ui/REDESIGN.md), which in this app means "wherever
   // appState.selectedMessage is set" (Chat's selectMessage/selectTicket,
@@ -685,6 +691,16 @@
     if (!appState.selectedMessage) focusReaderOpen = false;
   });
 
+  // keyboard-architecture pass — the mouse path for `f`: Message.svelte's
+  // "open in focus reader" button. Selects, then opens, in one click —
+  // `f` itself only TOGGLES because it assumes the message is already the
+  // selection (see handleGlobalKeydown below); the mouse affordance can't
+  // assume that, so it does both steps explicitly.
+  function openInFocusReader(id: string) {
+    selectMessage(id);
+    focusReaderOpen = true;
+  }
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     // Never fire while the operator is actually typing somewhere (a chat
     // note, the palette's own search field, etc.) — REDESIGN.md's hard rule.
@@ -695,16 +711,51 @@
       whichKeyOpen = true;
       return;
     }
-    if (gArmed) {
-      const view = viewForLeaderKey(e.key);
-      gArmed = false;
-      clearTimeout(gTimer);
+
+    // Layer 1 — Ctrl+h/j/k/l moves pane focus by geometry (paneFocus owns
+    // the scoring; this is just the four-direction dispatch). Chrome/Firefox
+    // reserve some of these at the browser-chrome level (Ctrl+H = history,
+    // Ctrl+J = downloads, Ctrl+K/L = address bar) and won't always honor
+    // preventDefault — we still call it (works in many configs/OSes), and
+    // F6/Shift+F6 (a standard, non-reserved "move focus between page
+    // regions" convention) plus Ctrl+]/[ are the guaranteed-reliable
+    // fallbacks, per REDESIGN.md's browser-caveat note.
+    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      const dir = { h: 'h', j: 'j', k: 'k', l: 'l' }[e.key] as 'h' | 'j' | 'k' | 'l' | undefined;
+      if (dir) {
+        e.preventDefault();
+        paneFocus.moveDirection(dir);
+        return;
+      }
+      if (e.key === ']') {
+        e.preventDefault();
+        paneFocus.cycle(true);
+        return;
+      }
+      if (e.key === '[') {
+        e.preventDefault();
+        paneFocus.cycle(false);
+        return;
+      }
+    }
+    if (e.key === 'F6') {
+      e.preventDefault();
+      paneFocus.cycle(!e.shiftKey);
+      return;
+    }
+
+    // Layer 3 — Cmd+number switches views, app-wide, regardless of which
+    // pane is focused. Ctrl+number is deliberately NOT an alias here: it's
+    // the browser's own "switch to tab N" chord and can't be intercepted.
+    if (e.metaKey && !e.ctrlKey && !e.altKey) {
+      const view = viewForCmdNumber(e.key);
       if (view) {
         e.preventDefault();
         appState.view = view;
+        return;
       }
-      return;
     }
+
     if (e.key === 'f') {
       e.preventDefault();
       if (focusReaderOpen) {
@@ -714,17 +765,13 @@
       }
       return;
     }
-    if (e.key === 'g' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      gArmed = true;
-      clearTimeout(gTimer);
-      gTimer = setTimeout(() => {
-        gArmed = false;
-      }, LEADER_TIMEOUT_MS);
-    }
   }
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window
+  onkeydown={handleGlobalKeydown}
+  onfocusin={(e) => paneFocus.syncFromFocusEvent(e)}
+/>
 
 <div class="app">
   <TopBar
@@ -739,6 +786,7 @@
     onViewChange={(view) => (appState.view = view)}
     onThemeToggle={() => appState.toggleTheme()}
     onMenuToggle={() => appState.toggleDrawer('left')}
+    onHelp={() => (whichKeyOpen = true)}
   />
 
   {#if appState.view === 'chat'}
@@ -862,6 +910,9 @@
         {:else}
           <span class="c strong">Repos</span>
         {/if}
+        <span class="crumb-focus-chip">
+          <FocusChip />
+        </span>
         {#if showRightRailToggle}
           <button
             type="button"
@@ -900,6 +951,7 @@
             {scrollToken}
             onSelectMessage={selectMessage}
             onSelectTicket={selectTicket}
+            onOpenFocus={openInFocusReader}
             onOpenRefs={openRefs}
           />
         {/if}
@@ -1298,6 +1350,14 @@
     margin-left: auto;
     color: var(--faint);
     font: 500 11.5px/1 var(--mono);
+  }
+  /* keyboard-architecture pass — pins the persistent focus chip to the
+     crumb bar's right edge in every view (only .meta, chat-only, claims
+     margin-left:auto otherwise, so most views had nothing pinning right). */
+  .crumb-focus-chip {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
   }
   /* design/43 Phase B — Code view's unified breadcrumb segments (repo/dir/
      .../file), clickable to reveal + scroll that node in CodeTree. */

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Hub } from '../types';
   import type { View } from '../stores.svelte';
+  import Kbd from './Kbd.svelte';
 
   export type ConnStatus = 'live' | 'reconnecting' | 'loading';
 
@@ -21,6 +22,9 @@
     onThemeToggle?: () => void;
     /** Hamburger tap — toggles the left-rail drawer. Only rendered/visible below 1024px. */
     onMenuToggle?: () => void;
+    /** keyboard-architecture pass — the mouse path for `?`. Before this,
+     * the which-key overlay was keyboard-only to open. */
+    onHelp?: () => void;
   }
 
   let {
@@ -35,6 +39,7 @@
     onViewChange,
     onThemeToggle,
     onMenuToggle,
+    onHelp,
   }: Props = $props();
 
   const CONN_LABEL: Record<ConnStatus, string> = {
@@ -54,6 +59,18 @@
     fleet: 'Fleet',
     code: 'Code',
     repos: 'Repos',
+  };
+
+  // keyboard-architecture pass — every actionable control shows its own
+  // shortcut inline (ui/REDESIGN.md). `repos` has no ⌘-number binding (the
+  // model only covers ⌘1-⌘5 — see keys.ts's viewForCmdNumber) so it
+  // deliberately gets no chip here, rather than showing an invented one.
+  const viewCmdKey: Partial<Record<View, string>> = {
+    overview: '⌘1',
+    chat: '⌘2',
+    board: '⌘3',
+    fleet: '⌘4',
+    code: '⌘5',
   };
 </script>
 
@@ -118,9 +135,16 @@
         onclick={() => onViewChange?.(v)}
       >
         {viewLabel[v]}
+        {#if viewCmdKey[v]}
+          <Kbd keys={viewCmdKey[v]} class="seg-kbd" />
+        {/if}
       </button>
     {/each}
   </div>
+
+  <button type="button" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => onHelp?.()}>
+    ?
+  </button>
 
   <button
     type="button"
@@ -290,6 +314,9 @@
   }
 
   .seg button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     border: 0;
     background: transparent;
     color: var(--muted);

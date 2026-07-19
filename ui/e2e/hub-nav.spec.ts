@@ -54,18 +54,45 @@ test('⌘K opens the command palette from anywhere, fuzzy-jumps to a hub, and cl
   await expect(page.getByTestId('command-palette')).not.toBeVisible();
 });
 
-test('"g" then a number switches views, and "?" opens the which-key overlay', async ({ page }) => {
+test('Cmd+number switches views (the g-leader is retired), and "?" opens the which-key overlay', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
 
+  await page.keyboard.press('Meta+3');
+  await expect(page.getByRole('tab', { name: 'Board', exact: true })).toHaveAttribute('aria-selected', 'true');
+
+  // The retired leader does nothing on its own — no accidental view switch.
+  await page.keyboard.press('Meta+2');
   await page.keyboard.press('g');
   await page.keyboard.press('3');
-  await expect(page.getByRole('tab', { name: 'Board', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toHaveAttribute('aria-selected', 'true');
 
   await page.keyboard.press('?');
   await expect(page.getByTestId('whichkey-backdrop')).toBeVisible();
+  await expect(page.getByText("Ctrl = panes · bare = content · Cmd = app · only the focused pane's keys fire")).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('whichkey-backdrop')).not.toBeVisible();
+});
+
+test('keyboard-architecture pass: Ctrl+hjkl/Ctrl+]/F6 move pane focus, shown by the focus chip', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+  await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
+
+  const chip = page.getByTestId('focus-chip');
+
+  // Click a pane to focus it — mouse parity for Layer 1.
+  await page.getByTestId('hub-rail').getByText('agent-coord').click();
+  await expect(chip).toHaveText(/Hubs/);
+
+  await page.keyboard.press('Control+]');
+  await expect(chip).not.toHaveText(/Hubs/);
+
+  await page.keyboard.press('F6');
+  const afterF6 = await chip.textContent();
+
+  await page.keyboard.press('Shift+F6');
+  await expect(chip).not.toHaveText(afterF6 ?? '');
 });
 
 test('j/k move the rail selection and Enter opens the focused hub', async ({ page }) => {
