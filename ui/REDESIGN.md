@@ -67,7 +67,7 @@ Named by the operator (2026-07-18), in priority order:
 |---|-------|------------------------------|--------|
 | 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ✅ done |
 | 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a persistent, trust-tiered rail (Home/Shared/Foreign/Unclassified, real health dots) + workspace tint; first slice of the keyboard-first layer (⌘K palette, rail j/k/gg/G, g+number views, ? which-key). Reference: `redesign-mockups/02-hub-nav.html`. | ✅ done |
-| 3 | **Thread / meta-thread nav + focus reader (P2)** | SETTLED affordance = **side-peek** (stream stays the anchor, never a page-swap) + breadcrumb trail/stack + the meta-thread drawn as a legible reference-graph trail (cross-topic hops marked, foreign nodes tinted). Plus a **focus reader** for deep single-message reading, reachable from ANY message. Reference: `redesign-mockups/03-thread-nav.html`. | ▶ in progress |
+| 3 | **Thread / meta-thread nav + focus reader (P2)** | SETTLED affordance = **side-peek** (stream stays the anchor, never a page-swap) + a REAL breadcrumb trail (from `Message.of`/`replyTo`, walked with h/l/j/k) + the meta-thread drawn as a legible reference-graph trail (cross-topic hops marked). Plus a **focus reader** (`f`, from anywhere) for deep single-message reading. Reference: `redesign-mockups/03-thread-nav.html`. | ✅ done |
 | 4 | **Chat** | Real read-state: client-side "since you last looked" watermark (localStorage) + real seen-by projected from agents' `ack` read-frontiers (kill the synthesized filler). Inline refs anchored to prose. | ○ queued |
 | 5 | **Board** | Claim / WIP / lifecycle made spatial and honest; the ack-story + claim-norm surfaced (design/48/49). | ○ queued |
 | 6 | **Code** | The ref/patch view under the shared language; density gutter, reverse index. | ○ queued |
@@ -108,6 +108,37 @@ line shown); any individual null field inside a present `sync` → that field's 
 never silently dropped or defaulted; `reachable === false` or `behind > 0` → amber warn styling
 (can't read as healthy). `tier === null` → "unclassified" label, neutral frame, never defaulted to
 "home".
+
+---
+
+## Backend gaps (found while building piece 3, open)
+
+Two things the mockup (`redesign-mockups/03-thread-nav.html`) shows that the current data model
+can't honestly back yet. Both degrade to an honest omission rather than a fabricated pixel — see
+the top-of-file comments in `MetaThread.svelte` and `FocusReader.svelte`.
+
+- **Foreign-hub trail nodes.** The mockup tints one trail node "foreign" (pulled in from
+  `confer-jarvis-orbit`, mid-trail). `/api/thread` (`src/api.rs::thread`) is hub-scoped — one `hub`
+  query param, walks only that hub's own message log via `thread_root` grouping — and neither
+  `ThreadNode` nor `Message` carries a `hub` field. A node in one hub's thread literally cannot be
+  from another hub with the current contract, so no foreign-tint rendering exists in the trail. The
+  fix would need either cross-hub reply-threading (a much bigger backend change) or, more cheaply, a
+  `hub` field on `/api/thread`'s response IF confer ever does grow cross-hub replies. Piece 2's
+  `--foreign-frame`/`--foreign-glow` tokens are already in place to receive this the moment there's a
+  real signal.
+- **The focus reader's "seen" line.** The mockup's gutter shows `seen ✓ all`. The only seen-data
+  anywhere in this app is ChatStream's own `buildSeenEntries`, which its own code comment already
+  flags as CONTRACT GAP #58 — synthesized filler, explicitly the thing piece 4 ("real seen-by
+  projected from agents' `ack` read-frontiers") is scoped to fix for real. Extending that same
+  synthesis into a brand-new piece-3 surface would be the wrong direction under law #3, so the
+  reader's gutter omits "seen" entirely for now — it becomes a small, free addition once piece 4
+  lands a real per-message roster.
+
+Piece 3's breadcrumb/h-l-j-k navigation, by contrast, needed NO new backend work: `Message.of`/
+`replyTo` (already served) plus the fact that `/api/thread` already returns the WHOLE connected
+reply-hash graph for any anchor within it (confirmed in `src/api.rs`) meant one fetch per peek
+session was enough — `thread.ts`'s `buildTrail`/`pathToRoot`/`childrenOf` do the rest client-side,
+purely, from data that already exists.
 
 ---
 

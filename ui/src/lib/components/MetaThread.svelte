@@ -1,8 +1,28 @@
 <script lang="ts">
   // The reference graph — a git-native commit graph woven across topics.
-  // Ports `.mt`/`.gn`/`.gcard` from design/serve-dashboard-v2-mockup.html:
-  // a vertical rail whose color encodes the topic, gradienting at
-  // cross-topic crossings, with agent-colored dots ringed in the topic color.
+  // Ports `.mt`/`.gn`/`.gcard` from design/serve-dashboard-v2-mockup.html: a
+  // vertical rail whose color encodes the topic, gradienting at cross-topic
+  // crossings, with agent-colored dots ringed in the topic color.
+  //
+  // Redesigned 2026-07-18 (ui/REDESIGN.md piece 3 — side-peek + trail):
+  // "peeking != navigating". Previously every row click called straight into
+  // App.svelte's navigateToMessageInChat — the exact bug piece 3 exists to
+  // fix (a peek that silently teleports your stream). Now a row click (or
+  // j/k/h/l) only moves a LOCAL "focused" pointer among nodes already loaded
+  // in `thread` — free, reversible, no App involvement, no re-fetch (backend-
+  // confirmed: src/api.rs's `thread()` handler returns every message sharing
+  // one `thread_root`, so ONE getThread() call already covers the whole
+  // connected graph any node in it belongs to — moving focus among them is
+  // just picking a different array entry). Only `onJump` (Enter, or the
+  // Focused card's explicit button) is allowed to move the real stream.
+  //
+  // The breadcrumb + h/l ("deeper"/"back") need REAL parent/child edges,
+  // which `ThreadNode` itself doesn't carry — `thread.ts`'s `buildTrail`
+  // recovers them by cross-referencing the (already-received) `messages`
+  // prop's `of`/`replyTo` fields, the same precedence RequestDetail.svelte's
+  // own lifecycle-trail reconstruction already uses. A node whose pointer
+  // doesn't resolve within THIS thread's own node set gets `parentId: null`
+  // (an honest root/orphan), never an invented edge — see thread.ts's header.
   //
   // CONTRACT GAP: `ThreadNode` carries no timestamp, so the mockup's "40m
   // span" stat can't be reproduced from the thread alone — an optional
@@ -18,24 +38,39 @@
   // When that happens we fall back to `summary` (graceful degradation, not a
   // bug). If bodies need to be reliably available here, the clean fix is
   // having the backend's `/api/thread` include the body per node directly.
+  //
+  // BACKEND GAP (piece 3, logged in ui/REDESIGN.md): the mockup shows a
+  // trail node tinted "foreign" (pulled in from a different hub). `/api/thread`
+  // is hub-scoped (one `hub` query param, walks only that hub's own log) and
+  // neither `ThreadNode` nor `Message` carries a `hub` field — a node in this
+  // thread literally cannot be from another hub with the current contract.
+  // No foreign-tint rendering here; law #3 (never fabricate a graph edge).
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { copyToClipboard } from '../clipboard';
   import { formatClock, formatIso8601 } from '../format';
+  import { buildTrail, childrenOf, pathToRoot, trailRoot, type TrailNode } from '../thread';
   import Icon from './Icon.svelte';
-  import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
+  import CodeRefCard from './CodeRefCard.svelte';
+  import type { Agent, CodeRef, Message as MessageT, MsgType, RefHit, ThreadNode } from '../types';
 
   interface Props {
     thread: ThreadNode[];
     agents: Agent[];
     messages?: MessageT[];
-    /** `'summary'` (default) shows each node's summary line, collapsed, with
-     * a chevron to expand the full rendered body when it's loaded (see the
-     * CONTRACT GAP note above); `'full'` shows the body by default. */
-    density?: 'summary' | 'full';
-    onSelectNode?: (msgId: string) => void;
+    hub?: string;
+    /** The message this peek session was opened on — the trail's initial
+     * focus. Resets local navigation whenever it changes (a genuinely NEW
+     * peek session, not a within-panel move). */
+    focusedMsgId: string;
+    /** Enter (or the Focused card's explicit button) — the ONE deliberate
+     * action that actually moves the stream, per "peeking != navigating". */
+    onJump?: (msgId: string, topic: string | null) => void;
+    /** Esc — close the whole peek. */
+    onClose?: () => void;
+    onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
   }
 
-  let { thread, agents, messages = [], density = 'summary', onSelectNode }: Props = $props();
+  let { thread, agents, messages = [], hub = '', focusedMsgId, onJump, onClose, onOpenRefs }: Props = $props();
 
   // git-log-style "short sha" — msgIds are 26-char ULIDs, far too wide for
   // a dense one-line row (the reference-graph rail is a narrow sidebar
@@ -48,15 +83,89 @@
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
   const messagesById = $derived(new Map(messages.map((m) => [m.id, m])));
 
-  // Per-node expand state, independent of every other node and of the
-  // global `density` toggle — mirrors Message.svelte's own `expanded`
-  // pattern (keyed by msgId here since this is a list, not a single node).
-  let expandedIds = $state(new Set<string>());
-  function toggleExpanded(msgId: string) {
-    const next = new Set(expandedIds);
-    if (next.has(msgId)) next.delete(msgId);
-    else next.add(msgId);
-    expandedIds = next;
+  // The real parent/child trail (thread.ts) — recomputed whenever the
+  // fetched thread or the message cross-reference changes.
+  const trail = $derived(buildTrail(thread, messages));
+
+  // Local focus — moves freely via click/j/k/h/l, never touching anything
+  // outside this panel. Resets to the prop whenever a NEW peek session opens
+  // (the prop itself changing means App.svelte loaded a different thread).
+  let localFocusedId = $state('');
+  $effect(() => {
+    localFocusedId = focusedMsgId;
+  });
+
+  const focusedNode = $derived(trail.find((n) => n.msgId === localFocusedId) ?? trailRoot(trail));
+  const breadcrumbPath = $derived(focusedNode ? pathToRoot(trail, focusedNode.msgId) : []);
+  const rootTopic = $derived(trailRoot(trail)?.topic ?? null);
+  // `{@const}` can't sit inside a plain element (only inside a block like
+  // {#if}/{#each}) — these live here instead of inline in the Focused card.
+  const focusedAgent = $derived(focusedNode ? agentsById.get(focusedNode.from) : undefined);
+  const focusedBody = $derived(focusedNode ? renderedBodyFor(focusedNode.msgId) : null);
+
+  // Roving DOM focus, one element per trail row — keeps real keyboard focus
+  // in sync with `localFocusedId` so j/k/h/l work the instant a peek opens
+  // (or the focused node changes) without the reader having to Tab in or
+  // click first.
+  let rowEls = $state<Record<string, HTMLElement | null>>({});
+  $effect(() => {
+    const id = focusedNode?.msgId;
+    if (id) rowEls[id]?.focus();
+  });
+
+  function focusNode(msgId: string) {
+    if (trail.some((n) => n.msgId === msgId)) localFocusedId = msgId;
+  }
+
+  function jump() {
+    if (focusedNode) onJump?.(focusedNode.msgId, focusedNode.topic);
+  }
+
+  function moveFlat(delta: number) {
+    const i = trail.findIndex((n) => n.msgId === localFocusedId);
+    const next = trail[i + delta];
+    if (next) localFocusedId = next.msgId;
+  }
+
+  function stepDeeper() {
+    if (!focusedNode) return;
+    const kids = childrenOf(trail, focusedNode.msgId);
+    if (kids.length > 0) localFocusedId = kids[0]!.msgId;
+  }
+
+  function stepBack() {
+    if (focusedNode?.parentId) localFocusedId = focusedNode.parentId;
+  }
+
+  function handlePeekKeydown(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'j':
+      case 'ArrowDown':
+        e.preventDefault();
+        moveFlat(1);
+        break;
+      case 'k':
+      case 'ArrowUp':
+        e.preventDefault();
+        moveFlat(-1);
+        break;
+      case 'l':
+        e.preventDefault();
+        stepDeeper();
+        break;
+      case 'h':
+        e.preventDefault();
+        stepBack();
+        break;
+      case 'Enter':
+        e.preventDefault();
+        jump();
+        break;
+      case 'Escape':
+        e.preventDefault();
+        onClose?.();
+        break;
+    }
   }
 
   // Copy-id affordance for the `.gid` line (design/41 Phase 0, §4) — the id
@@ -103,7 +212,7 @@
 
   const TOPIC_PALETTE = ['var(--accent)', '#8b8bf0', 'var(--ag-jarvis)', 'var(--ag-orbit)', 'var(--ag-compositor)'];
 
-  function topicOf(node: ThreadNode): string {
+  function topicOf(node: ThreadNode | TrailNode): string {
     return node.topic ?? '—';
   }
 
@@ -125,30 +234,30 @@
   };
 
   interface Row {
-    node: ThreadNode;
+    node: TrailNode;
     topColor: string;
     botColor: string;
     hop: { label: string; cls: string } | null;
   }
 
   const rows = $derived.by((): Row[] => {
-    const rootTopic = thread.length ? topicOf(thread[0]!) : null;
-    return thread.map((node, i) => {
+    const rootTopicLocal = trail.length ? topicOf(trail[0]!) : null;
+    return trail.map((node, i) => {
       const topic = topicOf(node);
       const color = colorFor(topic);
       const topColor = i === 0 ? 'transparent' : color;
-      const nextTopic = i < thread.length - 1 ? topicOf(thread[i + 1]!) : null;
+      const nextTopic = i < trail.length - 1 ? topicOf(trail[i + 1]!) : null;
       const botColor =
-        i === thread.length - 1
+        i === trail.length - 1
           ? 'transparent'
           : nextTopic === topic
             ? color
             : `linear-gradient(180deg, ${color}, ${colorFor(nextTopic!)})`;
-      const prevTopic = i > 0 ? topicOf(thread[i - 1]!) : null;
+      const prevTopic = i > 0 ? topicOf(trail[i - 1]!) : null;
       let hop: Row['hop'] = null;
       if (i > 0 && topic !== prevTopic) {
         hop =
-          topic === rootTopic
+          topic === rootTopicLocal
             ? { label: `↩ resolves back in #${topic}`, cls: 'hop-back' }
             : { label: `↗ thread crosses into #${topic}`, cls: 'hop-in' };
       }
@@ -156,25 +265,70 @@
     });
   });
 
-  const agentCount = $derived(new Set(thread.map((n) => n.from)).size);
+  const agentCount = $derived(new Set(trail.map((n) => n.from)).size);
   const span = $derived.by(() => {
-    if (!thread.length) return null;
-    const first = messagesById.get(thread[0]!.msgId);
-    const last = messagesById.get(thread[thread.length - 1]!.msgId);
+    if (!trail.length) return null;
+    const first = messagesById.get(trail[0]!.msgId);
+    const last = messagesById.get(trail[trail.length - 1]!.msgId);
     if (!first || !last) return null;
     const mins = Math.round((new Date(last.ts).getTime() - new Date(first.ts).getTime()) / 60_000);
     return mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`;
   });
+
+  const focusedRefs = $derived(focusedNode?.refs ?? []);
 </script>
 
-<div class="mt">
+<!-- role="toolbar": the same WAI-ARIA fit piece 2's HubRail used for a
+     roving-tabindex set of keyboard-navigable controls (j/k/h/l/Enter/Esc
+     over the trail's buttons) — see HubRail.svelte's own note on why this
+     role rather than an unclaimed listbox/group. -->
+<div class="mt" role="toolbar" aria-orientation="vertical" tabindex="-1" onkeydown={handlePeekKeydown} data-testid="thread-peek">
+  {#if focusedNode}
+    <div class="crumbs" data-testid="peek-crumbs">
+      {#if rootTopic}<span class="cz mono">#{rootTopic}</span><span class="sep">›</span>{/if}
+      {#each breadcrumbPath as seg, i (seg.msgId)}
+        {#if i > 0}<span class="sep">›</span>{/if}
+        <button type="button" class="cz mono" class:here={seg.msgId === focusedNode.msgId} onclick={() => focusNode(seg.msgId)}>
+          {shortId(seg.msgId)}
+        </button>
+      {/each}
+    </div>
+
+    <div class="focused" data-testid="peek-focused">
+      <div class="ft">
+        <span class="av" style="color:{focusedAgent?.color ?? 'var(--muted)'};background:color-mix(in srgb, {focusedAgent?.color ?? 'var(--muted)'} 18%, transparent)">
+          {focusedAgent?.abbr ?? focusedNode.from.slice(0, 2).toUpperCase()}
+        </span>
+        <span class="fwho">{focusedAgent?.display ?? focusedNode.from}</span>
+        {#if messagesById.get(focusedNode.msgId)}
+          <span class="fts mono" title={formatIso8601(messagesById.get(focusedNode.msgId)!.ts)}>{formatClock(messagesById.get(focusedNode.msgId)!.ts)}</span>
+        {/if}
+        <button type="button" class="jumpbtn" onclick={jump} data-testid="peek-jump">↵ open here ›</button>
+      </div>
+      <div class="fx prose md" use:highlightBody>
+        {#if focusedBody}
+          {@html focusedBody}
+        {:else}
+          {focusedNode.summary}
+        {/if}
+      </div>
+      {#if focusedRefs.length}
+        <div class="frefs">
+          {#each focusedRefs as ref (ref.repo + ':' + ref.path + '@' + ref.sha)}
+            <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <p class="ctx-note">
     Walked from <code class="mono">of</code>/<code class="mono">reply_to</code> hashes — every node is a signed commit.
     {#if uniqueTopics.length > 1}This thread weaves across {uniqueTopics.length} topics.{/if}
   </p>
   <div class="mt-stats">
     <span class="stat"><b>{uniqueTopics.length}</b> topics</span>
-    <span class="stat"><b>{thread.length}</b> messages</span>
+    <span class="stat"><b>{trail.length}</b> messages</span>
     <span class="stat"><b>{agentCount}</b> agents</span>
     {#if span}<span class="stat"><b>{span}</b> span</span>{/if}
   </div>
@@ -187,38 +341,40 @@
 
   {#each rows as row (row.node.msgId)}
     {@const agent = agentsById.get(row.node.from)}
-    {@const renderedBody = renderedBodyFor(row.node.msgId)}
-    {@const expanded = density === 'full' || expandedIds.has(row.node.msgId)}
-    {@const nodeTs = messagesById.get(row.node.msgId)?.ts}
-    <div class="gn">
+    {@const isHere = row.node.msgId === focusedNode?.msgId}
+    <div class="gn" class:here={isHere}>
       <div class="rail">
         <span class="seg top" style="background:{row.topColor}"></span>
         <span class="cd" style="background:{agent?.color ?? 'var(--muted)'};box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px {colorFor(topicOf(row.node))}"></span>
         <span class="seg bot" style="background:{row.botColor}"></span>
       </div>
+      <!-- A `div`, not a `button` — it nests the copy-id button below;
+           real buttons can't nest. role=button + Enter/Space keydown makes
+           it just as keyboard-reachable (matches the original row's own
+           pattern, kept unchanged by this redesign). -->
       <div
         class="gcard"
+        class:here={isHere}
         role="button"
         tabindex="0"
-        onclick={() => onSelectNode?.(row.node.msgId)}
+        bind:this={rowEls[row.node.msgId]}
+        onclick={() => focusNode(row.node.msgId)}
         onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') onSelectNode?.(row.node.msgId);
+          if (e.key === 'Enter' || e.key === ' ') focusNode(row.node.msgId);
         }}
+        data-testid="peek-node"
       >
-        <!-- `git log --oneline`-style density, two tight lines instead of
-             the old multi-line "big card": (1) colored author + type badge
-             + a one-line ellipsized summary; (2) a small meta row — the
-             topic (only called out on a cross-topic hop; the rail color
-             already encodes topic on every row, so repeating "#topic" on
-             every line added noise without new information), the short id,
-             the time, and the expand chevron. Splitting id/time onto their
-             own line (rather than cramming everything into one) is what
-             keeps this from overflowing the narrow reference-graph rail —
-             msgIds are 26-char ULIDs. -->
+        <!-- `git log --oneline`-style density, two tight lines: (1) colored
+             author + type badge + a one-line ellipsized summary — the full
+             body only ever shows in the Focused card above, clicking a row
+             just moves focus there; (2) a small meta row — the topic (only
+             called out on a cross-topic hop; the rail color already encodes
+             topic on every row), the short id, and the time. -->
         <div class="gline">
           <span class="gwho" style="color:{agent?.color ?? 'var(--muted)'}">{agent?.display ?? row.node.from}</span>
           <span class="gbadge {BADGE_CLASS[row.node.type]}">{row.node.type}</span>
           <span class="gtx">{row.node.summary}</span>
+          {#if isHere}<span class="heretag">◂ here</span>{/if}
         </div>
         <div class="gmeta">
           {#if row.hop}<span class="gtp cross">#{topicOf(row.node)}</span>{/if}
@@ -233,40 +389,119 @@
             <Icon name={copiedIds.has(row.node.msgId) ? 'check' : 'copy'} size={10} />
             {shortId(row.node.msgId)}
           </button>
-          {#if nodeTs}<span class="gts" title={formatIso8601(nodeTs)}>{formatClock(nodeTs)}</span>{/if}
-          {#if renderedBody}
-            <button
-              type="button"
-              class="node-expand-toggle"
-              class:open={expanded}
-              aria-expanded={expanded}
-              aria-label={expanded ? 'Collapse message' : 'Expand message'}
-              onclick={(e) => {
-                e.stopPropagation();
-                toggleExpanded(row.node.msgId);
-              }}
-            >
-              <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-          {/if}
+          {#if row.node.ts}<span class="gts" title={formatIso8601(row.node.ts)}>{formatClock(row.node.ts)}</span>{/if}
         </div>
         {#if row.hop}<div class="hop {row.hop.cls}">{row.hop.label}</div>{/if}
-        {#if renderedBody && expanded}
-          <div class="gbody prose md" use:highlightBody>
-            {@html renderedBody}
-          </div>
-        {/if}
       </div>
     </div>
   {/each}
+
+  <div class="pk-keys">
+    <span><span class="kk">j</span><span class="kk">k</span> move</span>
+    <span><span class="kk">l</span> deeper</span>
+    <span><span class="kk">h</span> back</span>
+    <span><span class="kk">↵</span> jump to it</span>
+    <span><span class="kk">esc</span> close</span>
+  </div>
 </div>
 
 <style>
   .mt {
     text-align: left;
   }
+
+  /* ── breadcrumb — the REAL root->focused path (thread.ts's pathToRoot),
+       however many hops deep it actually is ── */
+  .crumbs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 12px;
+    font-size: 11px;
+  }
+  .crumbs .cz {
+    color: var(--muted);
+    white-space: nowrap;
+    border: 0;
+    background: transparent;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font: inherit;
+  }
+  button.cz:hover {
+    color: var(--text);
+    background: var(--panel-2);
+  }
+  button.cz:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .crumbs .cz.here {
+    color: var(--text);
+    font-weight: 650;
+  }
+  .crumbs .sep {
+    color: var(--faint);
+  }
+
+  /* ── the Focused card — the currently-focused node's full content ── */
+  .focused {
+    background: var(--panel);
+    border: 1px solid var(--border-2);
+    border-radius: 10px;
+    padding: 11px 12px;
+    margin-bottom: 16px;
+  }
+  .focused .ft {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .focused .av {
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    font: 700 10px/1 var(--mono);
+  }
+  .focused .fwho {
+    font-weight: 650;
+    font-size: 13px;
+  }
+  .focused .fts {
+    font-size: 10.5px;
+    color: var(--faint);
+  }
+  .focused .jumpbtn {
+    margin-left: auto;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--accent);
+    font: 600 11px/1 var(--mono);
+    padding: 5px 9px;
+    border-radius: 7px;
+  }
+  .focused .jumpbtn:hover {
+    background: var(--panel-3);
+    border-color: var(--accent);
+  }
+  .focused .jumpbtn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .focused .fx {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.55;
+  }
+  .focused .frefs {
+    margin-top: 8px;
+  }
+
   .ctx-note {
     color: var(--muted);
     font-size: 12.5px;
@@ -345,20 +580,29 @@
   }
   /* `git log --oneline` density: one tight row per node, not a padded
      "card". Rows are only as tall as their line-height plus a hairline of
-     breathing room — the hop indicator and expanded body (both optional)
-     add their own margin when present, so nodes without either stay as
-     compact as a real log line. */
+     breathing room — the hop indicator (optional) adds its own margin when
+     present. */
   .gn .gcard {
     flex: 1;
     min-width: 0;
     padding: 3px 0;
     display: block;
     text-align: left;
-    border: 0;
-    background: transparent;
-    font: inherit;
-    color: inherit;
     cursor: pointer;
+    border-radius: 6px;
+  }
+  .gn .gcard:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* The currently-focused node — appearance-encodes state the same way
+     piece 1's agent nodes do (position is stable, appearance shows "how/
+     which one right now"). */
+  .gn.here .gcard {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    padding-left: 6px;
+    padding-right: 6px;
   }
   .gn:last-child .gcard {
     padding-bottom: 2px;
@@ -428,46 +672,15 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .gcard :global(.heretag) {
+    flex: 0 0 auto;
+    font: 700 9.5px/1 var(--mono);
+    color: var(--accent);
+  }
   .gcard :global(.gts) {
     flex: 0 0 auto;
     font: 500 10.5px/1 var(--mono);
     color: var(--faint);
-  }
-  /* Icon-only chevron (no text label) — the git-log-style row has no room
-     for a "Show more"/"Show less" pill on every line; the same chevron
-     glyph + open/closed rotation as Message.svelte's `.expand-toggle`
-     communicates the affordance without adding width to a line meant to
-     stay log-dense. aria-label carries the accessible name instead of
-     visible text. */
-  .gcard :global(.node-expand-toggle) {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border: 1px solid var(--border-2);
-    border-radius: 999px;
-    background: var(--panel-2);
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .gcard :global(.node-expand-toggle .chev) {
-    transform: rotate(0deg);
-    transition: transform 0.15s ease;
-  }
-  .gcard :global(.node-expand-toggle.open .chev) {
-    transform: rotate(180deg);
-  }
-  .gcard :global(.node-expand-toggle:hover),
-  .gcard :global(.node-expand-toggle:focus-visible) {
-    color: var(--text);
-    background: var(--panel-3);
-    border-color: var(--accent);
   }
   .gcard :global(.gbody) {
     margin: 6px 0 2px;
@@ -519,5 +732,24 @@
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
     border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+
+  /* ── keyboard legend ── */
+  .pk-keys {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 11px;
+    font: 500 10.5px/1 var(--mono);
+    color: var(--muted);
+  }
+  .pk-keys .kk {
+    color: var(--text);
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-right: 2px;
   }
 </style>

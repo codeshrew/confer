@@ -4,6 +4,7 @@
   import type { ConnStatus } from './lib/components/TopBar.svelte';
   import HubRail from './lib/components/HubRail.svelte';
   import WhichKeyOverlay from './lib/components/WhichKeyOverlay.svelte';
+  import FocusReader from './lib/components/FocusReader.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
   // Aliased — this file also imports the `Overview` TYPE (the /api/overview
   // JSON shape) from ./lib/types, and the two names would collide.
@@ -380,13 +381,16 @@
     );
   }
 
-  // design/41 Phase 0 items 2-4: the shared "jump to a message in Chat"
-  // navigation used by MetaThread's onSelectNode (a thread node click) and
-  // RequestDetail's lifecycle-trail row clicks. Always lands in the Chat
-  // view; switches topic first (awaiting that topic's window so the
-  // pagination-chase in ChatStream's scrollToMessageId effect starts from
-  // the RIGHT topic's data, not a stale one) when the target message lives
-  // in a different topic than whatever's currently showing.
+  // design/41 Phase 0 items 2-4, extended by piece 3's onJump: the shared
+  // "jump to a message in Chat" navigation — the ONE deliberate action
+  // MetaThread's peek is allowed to trigger (Enter / the Focused card's
+  // "open here" button), distinct from its own internal h/l/j/k focus moves
+  // (which never call this — "peeking != navigating", ui/REDESIGN.md piece
+  // 3). Also used by RequestDetail's lifecycle-trail row clicks. Always
+  // lands in the Chat view; switches topic first (awaiting that topic's
+  // window so the pagination-chase in ChatStream's scrollToMessageId effect
+  // starts from the RIGHT topic's data, not a stale one) when the target
+  // message lives in a different topic than whatever's currently showing.
   let scrollTargetId = $state<string | null>(null);
   let scrollToken = $state(0);
 
@@ -401,13 +405,13 @@
     scrollToken++;
   }
 
-  function onMetaThreadSelectNode(msgId: string) {
-    // MetaThread's onSelectNode only carries the msgId — recover the
-    // node's own topic from the currently-loaded `thread` (the same
-    // ThreadNode[] MetaThread itself renders from) so a cross-topic node
-    // click switches topic before scrolling.
-    const node = thread.find((n) => n.msgId === msgId);
-    void navigateToMessageInChat(msgId, node?.topic ?? null);
+  /** Esc on the peek — closes the whole thing (ui/REDESIGN.md piece 3: the
+   * stream never moved in the first place, so "closing" just means clearing
+   * the selection back to the right rail's empty state). */
+  function closePeek() {
+    appState.selectedMessage = null;
+    thread = [];
+    if (appState.drawer === 'right') appState.drawer = 'none';
   }
 
   function selectMessage(id: string) {
@@ -440,6 +444,12 @@
   function selectBoardRow(id: string) {
     selectedRequestId = id;
     contextMode = 'request';
+    // piece 3's `f`-from-anywhere focus reader keys off `appState.selectedMessage`
+    // — mirrors selectTicket's own resolution (same `req_`/`msg_` id
+    // convention) so a Board row is just as focus-reader-reachable as a
+    // Chat ticket, without a second "what's focused" concept to keep in sync.
+    const asMsgId = id.replace(/^req_/, 'msg_');
+    appState.selectedMessage = messages.find((m) => m.id === asMsgId) ?? null;
     appState.drawer = 'right';
   }
 
@@ -659,6 +669,22 @@
   let gArmed = false;
   let gTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // piece 3: `f` on the currently-focused message opens the focus reader —
+  // "from anywhere" (ui/REDESIGN.md), which in this app means "wherever
+  // appState.selectedMessage is set" (Chat's selectMessage/selectTicket,
+  // Board's selectBoardRow — all three already funnel into the same field,
+  // so this needs no separate per-view wiring). App owns the open/close
+  // toggle exclusively (see FocusReader.svelte's own note) rather than
+  // letting two window-level listeners race on the same keypress.
+  let focusReaderOpen = $state(false);
+
+  $effect(() => {
+    // A peek close (Esc, clearing appState.selectedMessage) while the
+    // reader happened to be open must not leave it showing a message
+    // that's no longer "the focused one" anywhere in the app.
+    if (!appState.selectedMessage) focusReaderOpen = false;
+  });
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     // Never fire while the operator is actually typing somewhere (a chat
     // note, the palette's own search field, etc.) — REDESIGN.md's hard rule.
@@ -676,6 +702,15 @@
       if (view) {
         e.preventDefault();
         appState.view = view;
+      }
+      return;
+    }
+    if (e.key === 'f') {
+      e.preventDefault();
+      if (focusReaderOpen) {
+        focusReaderOpen = false;
+      } else if (appState.selectedMessage) {
+        focusReaderOpen = true;
       }
       return;
     }
@@ -951,7 +986,16 @@
             onSelectFile={selectFileFromRepoMode}
           />
         {:else if appState.selectedMessage}
-          <MetaThread {thread} agents={overview?.fleet ?? []} {messages} density={appState.chatDensity} onSelectNode={onMetaThreadSelectNode} />
+          <MetaThread
+            {thread}
+            agents={overview?.fleet ?? []}
+            {messages}
+            hub={appState.hub}
+            focusedMsgId={appState.selectedMessage.id}
+            onJump={(msgId, topic) => void navigateToMessageInChat(msgId, topic)}
+            onClose={closePeek}
+            onOpenRefs={openRefs}
+          />
         {:else}
           <EmptyState
             glyph="↩"
@@ -968,6 +1012,18 @@
 </div>
 
 <WhichKeyOverlay open={whichKeyOpen} onClose={() => (whichKeyOpen = false)} />
+
+<FocusReader
+  open={focusReaderOpen}
+  msgId={appState.selectedMessage?.id ?? null}
+  {messages}
+  agents={overview?.fleet ?? []}
+  {thread}
+  hub={appState.hub}
+  onNavigate={(id) => (appState.selectedMessage = messages.find((m) => m.id === id) ?? null)}
+  onOpenRefs={openRefs}
+  onClose={() => (focusReaderOpen = false)}
+/>
 
 <style>
   .app {

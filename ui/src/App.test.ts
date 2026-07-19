@@ -227,6 +227,94 @@ describe('App — piece 2 workspace tint: the active hub\'s real tier', () => {
   });
 });
 
+describe('App — piece 3: side-peek preserves the stream, Esc closes it', () => {
+  // A plain note (not a ticket) is what opens the meta-thread PEEK
+  // (contextMode='meta') — clicking a ticket opens Request Detail instead
+  // (contextMode='request', see the "right-rail context mode" describe
+  // block below). Reuses the same fixture note that block already relies on.
+  const noteText = /canaried 0.7.3/;
+
+  it('opening a peek does not remove the stream from the DOM — it stays mounted, untouched, behind the peek', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    await user.click(await screen.findByText(noteText));
+
+    // The peek opened (meta-thread pane) AND the exact same stream row is
+    // still right there in the DOM — this is the whole point of a
+    // side-peek over the old page-swap.
+    expect(await screen.findByTestId('thread-peek')).toBeInTheDocument();
+    expect(screen.getByText(noteText)).toBeInTheDocument();
+  });
+
+  it('Escape in the peek closes it back to the empty state, without touching the stream', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    await user.click(await screen.findByText(noteText));
+    const peek = await screen.findByTestId('thread-peek');
+    peek.focus();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByTestId('thread-peek')).not.toBeInTheDocument();
+    expect(screen.getByText('Select a message to trace its thread')).toBeInTheDocument();
+    // The stream itself never moved.
+    expect(screen.getByText(noteText)).toBeInTheDocument();
+  });
+});
+
+describe('App — piece 3: the focus reader, reachable from anywhere', () => {
+  it('"f" does nothing when nothing is focused yet (a fresh Chat load, no click)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await screen.findByTestId('hub-rail');
+
+    await user.keyboard('f');
+    expect(screen.queryByTestId('focus-reader')).not.toBeInTheDocument();
+  });
+
+  it('"f" opens the focus reader on the currently-selected Chat message, and "f" again closes it', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    const ticketText = 'Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader';
+    await user.click(await screen.findByText(ticketText));
+
+    await user.keyboard('f');
+    expect(await screen.findByTestId('focus-reader')).toBeInTheDocument();
+
+    await user.keyboard('f');
+    expect(screen.queryByTestId('focus-reader')).not.toBeInTheDocument();
+  });
+
+  it('"f" from a selected Board ticket also opens the reader — selectBoardRow sets the same focus appState.selectedMessage does', async () => {
+    appState.drawer = 'none';
+    appState.view = 'board';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    const ticketText = 'Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader';
+    await user.click(await screen.findByText(ticketText));
+
+    await user.keyboard('f');
+    expect(await screen.findByTestId('focus-reader')).toBeInTheDocument();
+  });
+});
+
 describe('App — right-rail context mode', () => {
   it('selecting a plain note after a ticket switches the sidebar OFF "Request detail" — not stuck showing the previous ticket', async () => {
     appState.drawer = 'none';
