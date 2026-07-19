@@ -39,12 +39,16 @@
   // bug). If bodies need to be reliably available here, the clean fix is
   // having the backend's `/api/thread` include the body per node directly.
   //
-  // BACKEND GAP (piece 3, logged in ui/REDESIGN.md): the mockup shows a
-  // trail node tinted "foreign" (pulled in from a different hub). `/api/thread`
-  // is hub-scoped (one `hub` query param, walks only that hub's own log) and
-  // neither `ThreadNode` nor `Message` carries a `hub` field — a node in this
-  // thread literally cannot be from another hub with the current contract.
-  // No foreign-tint rendering here; law #3 (never fabricate a graph edge).
+  // DESIGN DECISION (piece 3, logged in ui/REDESIGN.md — not a backend gap):
+  // the mockup tinted one trail node "foreign" (pulled in from a different
+  // hub), but that overreached past what this graph can mean — a confer
+  // thread is a reply-hash root within ONE hub's own git log, and two hubs
+  // are two separate repos, so a reply chain literally cannot span hubs
+  // today (confirmed in src/api.rs::thread — hub-scoped, one `thread_root`
+  // grouping). No foreign-tint rendering here, on purpose; what's real and
+  // IS kept is cross-TOPIC hops (one hub, many topics) — see the `hop`
+  // rows below. Revisit only if cross-hub reply-threading ever becomes a
+  // real capability.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { copyToClipboard } from '../clipboard';
   import { formatClock, formatIso8601 } from '../format';

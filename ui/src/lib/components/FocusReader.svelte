@@ -14,13 +14,15 @@
   // renderer) — "code blocks render in the code view" means the same Shiki
   // tokenizer, not a bespoke one.
   //
-  // BACKEND GAP (piece 3, logged in ui/REDESIGN.md): the mockup's gutter
-  // shows a "seen" line. The only seen-data anywhere in this app is
-  // ChatStream's own documented CONTRACT GAP #58 — synthesized filler,
-  // explicitly the thing piece 4 is scoped to fix for real. Extending that
-  // same synthesis into a new surface here would be the wrong direction
-  // under law #3; the gutter omits "seen" entirely until piece 4 lands a
-  // real per-message roster.
+  // DEFERRED TO PIECE 4 BY DESIGN (piece 3, logged in ui/REDESIGN.md — not
+  // blocked): the mockup's gutter shows a "seen" line. Real per-message
+  // `seenBy` now EXISTS (Herald shipped it, b776c94, design/48 #62, from the
+  // published read-frontier) — so this isn't ChatStream's old CONTRACT GAP
+  // #58 synthesized-filler problem. It's simply not wired HERE: read-state
+  // (this line, Chat's synthesis, any "since you last looked" watermark)
+  // belongs together in piece 4, done holistically rather than scattered as
+  // a one-off. The gutter keeps author + refs (both real); "seen" lands for
+  // free once piece 4 wires the real projection app-wide.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { formatClock, formatIso8601 } from '../format';
   import { buildTrail, type TrailNode } from '../thread';

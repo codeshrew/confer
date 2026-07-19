@@ -111,28 +111,31 @@ never silently dropped or defaulted; `reachable === false` or `behind > 0` → a
 
 ---
 
-## Backend gaps (found while building piece 3, open)
+## Piece 3 open items (one design question, one deferred-by-design)
 
-Two things the mockup (`redesign-mockups/03-thread-nav.html`) shows that the current data model
-can't honestly back yet. Both degrade to an honest omission rather than a fabricated pixel — see
-the top-of-file comments in `MetaThread.svelte` and `FocusReader.svelte`.
+Two things the mockup (`redesign-mockups/03-thread-nav.html`) shows that piece 3 doesn't render —
+neither is a missing backend field to request; see the resolution below each, and the top-of-file
+comments in `MetaThread.svelte`/`FocusReader.svelte`.
 
-- **Foreign-hub trail nodes.** The mockup tints one trail node "foreign" (pulled in from
-  `confer-jarvis-orbit`, mid-trail). `/api/thread` (`src/api.rs::thread`) is hub-scoped — one `hub`
-  query param, walks only that hub's own message log via `thread_root` grouping — and neither
-  `ThreadNode` nor `Message` carries a `hub` field. A node in one hub's thread literally cannot be
-  from another hub with the current contract, so no foreign-tint rendering exists in the trail. The
-  fix would need either cross-hub reply-threading (a much bigger backend change) or, more cheaply, a
-  `hub` field on `/api/thread`'s response IF confer ever does grow cross-hub replies. Piece 2's
-  `--foreign-frame`/`--foreign-glow` tokens are already in place to receive this the moment there's a
-  real signal.
-- **The focus reader's "seen" line.** The mockup's gutter shows `seen ✓ all`. The only seen-data
-  anywhere in this app is ChatStream's own `buildSeenEntries`, which its own code comment already
-  flags as CONTRACT GAP #58 — synthesized filler, explicitly the thing piece 4 ("real seen-by
-  projected from agents' `ack` read-frontiers") is scoped to fix for real. Extending that same
-  synthesis into a brand-new piece-3 surface would be the wrong direction under law #3, so the
-  reader's gutter omits "seen" entirely for now — it becomes a small, free addition once piece 4
-  lands a real per-message roster.
+- **Foreign-hub trail nodes — a DESIGN question, not a backend gap.** The mockup tinted one trail
+  node "foreign" (pulled in from `confer-jarvis-orbit`, mid-trail) — but on reflection this was the
+  mockup overreaching past what the model can mean: a confer thread is a reply-hash root within ONE
+  hub's own git log, and two hubs are two separate repos, so a reply chain literally cannot span
+  hubs today (confirmed in `src/api.rs::thread` — hub-scoped, walks one hub's `thread_root`
+  grouping). `--ref` code references already link across hubs (`RefHit.hub`), but a THREAD that
+  spans hubs would be a genuinely new capability, not a missing projection. **Resolution: omit
+  foreign-tint entirely — it isn't a real dimension of this graph.** What piece 3 DOES keep, and is
+  real: cross-TOPIC hops (one hub, many topics) — those are the actual legibility win the mockup was
+  reaching for, and they're fully wired (`↗ thread crosses into #topic` / `↩ resolves back in
+  #topic`). Revisit foreign-tint only if cross-hub reply-threading ever becomes a real capability.
+- **The focus reader's "seen" line — deferred to piece 4 by design, not blocked.** The mockup's
+  gutter shows `seen ✓ all`. Real per-message `seenBy` now EXISTS — Herald shipped it (`b776c94`,
+  design/48 #62, "real per-message seen-by on /api/messages from the published read-frontier") — so
+  this isn't the CONTRACT GAP #58 synthesized-filler problem it looked like when piece 3 started.
+  It's simply not wired here: read-state (the reader's "seen" line, Chat's synthesized filler, any
+  "since you last looked" watermark) belongs together in piece 4, done holistically, not scattered
+  as a one-off in piece 3. The gutter keeps author + refs (both real); "seen" lands for free once
+  piece 4 wires the real projection app-wide.
 
 Piece 3's breadcrumb/h-l-j-k navigation, by contrast, needed NO new backend work: `Message.of`/
 `replyTo` (already served) plus the fact that `/api/thread` already returns the WHOLE connected
