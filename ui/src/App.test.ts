@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import App from './App.svelte';
 import { appState } from './lib/stores.svelte';
@@ -109,6 +109,121 @@ describe('App — FilterBar is Chat-only', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId('density-toggle')).not.toBeInTheDocument();
     expect(screen.queryByText('Requests')).not.toBeInTheDocument();
+  });
+});
+
+// TopBar's hub-pill row is still in the DOM below 1024px (see TopBar.svelte)
+// — jsdom has no real viewport, so BOTH it and HubRail render simultaneously
+// here, and a plain screen.getByText('agent-coord') is ambiguous between
+// them. Every test below that needs to find/click a hub scopes to HubRail
+// specifically via this helper.
+async function findHubRail() {
+  return within(await screen.findByTestId('hub-rail'));
+}
+
+describe('App — piece 2 keyboard layer: g-leader view switch, ? which-key overlay', () => {
+  it('"?" opens the which-key overlay; its own Escape handling closes it', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = ''; // fresh-app default — see stores.svelte.ts
+    const user = userEvent.setup();
+    render(App);
+    // Wait for HubRail's own fetch to land — avoids a flaky race where a
+    // keypress fires before anything meaningful is mounted.
+    await findHubRail();
+
+    expect(screen.queryByTestId('whichkey-backdrop')).not.toBeInTheDocument();
+    await user.keyboard('?');
+    expect(await screen.findByTestId('whichkey-backdrop')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('whichkey-backdrop')).not.toBeInTheDocument();
+  });
+
+  it('"g" then "3" switches to Board (the g-leader + number chord)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    await user.keyboard('g3');
+    expect(appState.view).toBe('board');
+  });
+
+  it('"g" then an unambiguous letter alias also switches views (g f -> Fleet)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    await user.keyboard('gf');
+    expect(appState.view).toBe('fleet');
+  });
+
+  it('never fires while typing — "g3" typed into the ⌘K palette search filters text, not a view switch', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    await user.keyboard('{Meta>}k{/Meta}');
+    const input = await screen.findByTestId('palette-input');
+    await user.type(input, 'g3');
+
+    expect(appState.view).toBe('chat');
+    expect(input).toHaveValue('g3');
+  });
+});
+
+describe('App — piece 2 workspace tint: the active hub\'s real tier', () => {
+  it('tints the workspace "home" for the own-tier default hub, with no world-pill (home is the silent default)', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    render(App);
+
+    await findHubRail();
+    const center = document.querySelector('.center')!;
+    await waitFor(() => expect(center).toHaveClass('tint-home'));
+    expect(screen.queryByTestId('world-pill')).not.toBeInTheDocument();
+  });
+
+  it('switching to the foreign hub (via HubRail) tints the workspace foreign and shows the world-pill', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    const rail = await findHubRail();
+    await user.click(await rail.findByText('jarvis-orbit'));
+
+    const center = document.querySelector('.center')!;
+    await waitFor(() => expect(center).toHaveClass('tint-foreign'));
+    expect(await screen.findByTestId('world-pill')).toHaveTextContent('foreign hub');
+
+    // Leave the shared appState.hub singleton as later tests in this file
+    // expect it (unset — resolved fresh by whichever test runs next).
+    appState.hub = '';
+  });
+
+  it('Overview never tints — it has no single current hub', async () => {
+    appState.drawer = 'none';
+    appState.view = 'overview';
+    appState.hub = '';
+    render(App);
+    await screen.findByTestId('overview-view');
+
+    const center = document.querySelector('.center')!;
+    expect(center).not.toHaveClass('tint-home');
+    expect(center).not.toHaveClass('tint-foreign');
+    expect(center).not.toHaveClass('tint-neutral');
   });
 });
 

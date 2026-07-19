@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateAttention, deriveLiveness, deriveTrust } from './attention';
+import { aggregateAttention, deriveLiveness, deriveTrust, hubHealthReason } from './attention';
 import type { Agent, Hub, Overview, RequestRow } from './types';
 
-function hub(id: string, label = id): Hub {
-  return { id, label, name: label, current: false, agentCount: 0 };
+function hub(id: string, label = id, overrides: Partial<Hub> = {}): Hub {
+  return { id, label, name: label, current: false, agentCount: 0, ...overrides };
 }
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -263,5 +263,68 @@ describe('metrics — ambient context strip', () => {
     const rollupB = result.metrics.perHub.find((r) => r.hub === 'confer-lab')!;
     expect(rollupA.live).toBe(1);
     expect(rollupB.live).toBe(0);
+  });
+});
+
+describe('domains — real per-hub tier/sync carried through unchanged, health computed honestly', () => {
+  it('carries a null tier/sync through as null, never defaulting to "own" or a fake healthy sync', () => {
+    const h = hub('sandbox', 'sandbox', { tier: null, sync: null });
+    const ov = overview([agent()], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.tier).toBeNull();
+    expect(domain!.sync).toBeNull();
+  });
+
+  it('health: a known problem (down agent) outranks an unknown sync — never demoted to "unknown"', () => {
+    const h = hub('orbit', 'orbit', { tier: 'foreign', sync: null });
+    const ov = overview([agent({ live: false })], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('critical');
+    expect(hubHealthReason(domain!)).toBe('Reader down');
+  });
+
+  it('health: a mismatched trust is critical even with a fully healthy sync', () => {
+    const h = hub('lab', 'lab', { sync: { lastFetchedSecs: 5, behind: 0, pending: 0, reachable: true } });
+    const ov = overview([agent({ trust: 'mismatch' })], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('critical');
+    expect(hubHealthReason(domain!)).toBe('Reader key mismatch');
+  });
+
+  it('health: an unreachable sync is critical even with an otherwise-clean fleet', () => {
+    const h = hub('lab', 'lab', { sync: { lastFetchedSecs: 5, behind: 0, pending: 0, reachable: false } });
+    const ov = overview([agent()], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('critical');
+  });
+
+  it('health: a stuck/coordination item (not agent-derived) is warn, not critical', () => {
+    const h = hub('lab', 'lab', { sync: { lastFetchedSecs: 5, behind: 0, pending: 0, reachable: true } });
+    const ov = overview([agent()], [row({ status: 'CLAIMED', claimants: ['reader'], stale: true })], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('warn');
+  });
+
+  it('health: nothing known wrong + unprobed sync reads as UNKNOWN, never a fake "ok"', () => {
+    const h = hub('sandbox', 'sandbox', { tier: null, sync: null });
+    const ov = overview([agent()], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('unknown');
+    expect(hubHealthReason(domain!)).toBe('sync unknown');
+  });
+
+  it('health: reachable:null (probed for other fields, but reachability itself unknown) also reads unknown', () => {
+    const h = hub('lab', 'lab', { sync: { lastFetchedSecs: 5, behind: 0, pending: 0, reachable: null } });
+    const ov = overview([agent()], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('unknown');
+  });
+
+  it('health: a fully healthy fleet + fully known, clean sync is ok — and only then', () => {
+    const h = hub('lab', 'lab', { sync: { lastFetchedSecs: 5, behind: 0, pending: 0, reachable: true } });
+    const ov = overview([agent()], [], h);
+    const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
+    expect(domain!.health).toBe('ok');
+    expect(hubHealthReason(domain!)).toBe('healthy');
   });
 });

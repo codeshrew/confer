@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import TopBar from './lib/components/TopBar.svelte';
   import type { ConnStatus } from './lib/components/TopBar.svelte';
+  import HubRail from './lib/components/HubRail.svelte';
+  import WhichKeyOverlay from './lib/components/WhichKeyOverlay.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
   // Aliased — this file also imports the `Overview` TYPE (the /api/overview
   // JSON shape) from ./lib/types, and the two names would collide.
@@ -30,13 +32,21 @@
     rightRailVisible as computeRightRailVisible,
     showFleetSection,
   } from './lib/railLayout';
-  import type { CodeRef, Hub, Message, Overview, RefHit, ThreadNode } from './lib/types';
+  import type { CodeRef, Hub, HubTier, Message, Overview, RefHit, ThreadNode } from './lib/types';
+  import { isTypingTarget, viewForLeaderKey, LEADER_TIMEOUT_MS } from './lib/keys';
 
   let hubs = $state<Hub[]>([]);
   let overview = $state<Overview | null>(null);
   let messages = $state<Message[]>([]);
   let thread = $state<ThreadNode[]>([]);
   let connStatus = $state<ConnStatus>('loading');
+
+  // piece 2 (ui/REDESIGN.md) — the current hub's REAL trust tier, reported
+  // up by HubRail (which already fetches it for the rail's own grouping/
+  // health dots — one fetch, not a second copy here) and used to tint the
+  // workspace so "which world am I in" is ambient, not a label you go read.
+  let activeHubTier = $state<HubTier | null>(null);
+  let whichKeyOpen = $state(false);
 
   // --- ChatStream's windowed message page ---------------------------------
   // Distinct from `messages` above (the full, unpaginated hub fetch still
@@ -336,6 +346,29 @@
 
   const currentTopic = $derived(overview?.topics.find((t) => t.slug === appState.topic) ?? null);
 
+  // piece 2 — the workspace tint (ui/redesign-mockups/02-hub-nav.html): the
+  // active hub's REAL tier tints the whole content area so "which world am
+  // I in" is ambient. Overview has no single current hub (it's cross-hub,
+  // same special-casing the crumb bar already does below), so it never
+  // tints. own/shared share the same "home" treatment as Overview's domain
+  // framing (piece 1) — the workspace tint is the coarser 2-bucket cue;
+  // HubRail's rail groups keep the finer 3-way Home/Shared/Foreign split.
+  const workspaceTintClass = $derived.by((): 'home' | 'foreign' | 'neutral' | null => {
+    if (appState.view === 'overview') return null;
+    if (activeHubTier === 'own' || activeHubTier === 'shared') return 'home';
+    if (activeHubTier === 'foreign') return 'foreign';
+    return 'neutral';
+  });
+  // The pill only calls out states worth a second look — a home hub is the
+  // unmarked default, so it stays silent (matches the mockup's own example,
+  // which only ever shows the pill on the foreign case).
+  const worldPillLabel = $derived.by((): string | null => {
+    if (activeHubTier === 'shared') return 'shared hub';
+    if (activeHubTier === 'foreign') return 'foreign hub';
+    if (workspaceTintClass === 'neutral') return 'unclassified hub';
+    return null;
+  });
+
   function loadThread(msgId: string) {
     api.getThread(appState.hub, msgId).then(
       (th) => {
@@ -614,7 +647,49 @@
     cs.activeKey = fileKey({ repo, path });
     cs.viewMode = 'file';
   }
+
+  // piece 2's keyboard layer, app-wide slice: `?` opens the which-key
+  // overlay, and the `g` leader + a following number/letter switches views
+  // (ui/REDESIGN.md, settled 2026-07-18 — `g` because the operator's tmux
+  // prefix Ctrl+Space clashes with browser chords). HubRail owns ⌘K and its
+  // own j/k/gg/G list-nav independently (see HubRail.svelte) — both this and
+  // that handler listen on window, but neither calls stopPropagation, so a
+  // bare "g" bubbling past HubRail's own (harmless, self-timing-out) leader
+  // arm never blocks this one from also seeing it.
+  let gArmed = false;
+  let gTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    // Never fire while the operator is actually typing somewhere (a chat
+    // note, the palette's own search field, etc.) — REDESIGN.md's hard rule.
+    if (isTypingTarget(e.target)) return;
+
+    if (e.key === '?') {
+      e.preventDefault();
+      whichKeyOpen = true;
+      return;
+    }
+    if (gArmed) {
+      const view = viewForLeaderKey(e.key);
+      gArmed = false;
+      clearTimeout(gTimer);
+      if (view) {
+        e.preventDefault();
+        appState.view = view;
+      }
+      return;
+    }
+    if (e.key === 'g' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      gArmed = true;
+      clearTimeout(gTimer);
+      gTimer = setTimeout(() => {
+        gArmed = false;
+      }, LEADER_TIMEOUT_MS);
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="app">
   <TopBar
@@ -647,6 +722,14 @@
     data-view={appState.view}
     style={`${leftRailHidden ? '--rail-l-w:0px;' : ''}${!rightRailOpen ? '--rail-r-w:0px;' : ''}`}
   >
+    <HubRail
+      currentHub={appState.hub}
+      currentView={appState.view}
+      onHubChange={(hubId) => (appState.hub = hubId)}
+      onAllHubs={() => (appState.view = 'overview')}
+      onActiveTierChange={(tier) => (activeHubTier = tier)}
+    />
+
     <!-- Scrim: only rendered visually (via CSS) below 1024px, dims + blocks
          clicks through to the tri-pane while a drawer is open, and closes
          whichever drawer is open when tapped. -->
@@ -691,7 +774,12 @@
       {/if}
     </div>
 
-    <div class="center">
+    <div
+      class="center"
+      class:tint-home={workspaceTintClass === 'home'}
+      class:tint-foreign={workspaceTintClass === 'foreign'}
+      class:tint-neutral={workspaceTintClass === 'neutral'}
+    >
       <div class="crumb" title={appState.view === 'code' && codeCrumb.full ? codeCrumb.full : undefined}>
         {#if appState.view === 'overview'}
           <!-- Overview is cross-hub (design/47 §3) — no single hub name
@@ -701,6 +789,9 @@
         {:else}
           <span class="c">{appState.hub}</span>
           <span class="sep">›</span>
+          {#if worldPillLabel}
+            <span class="world-pill world-pill-{workspaceTintClass}" data-testid="world-pill">◇ {worldPillLabel}</span>
+          {/if}
         {/if}
         {#if appState.view === 'overview'}
           <!-- The masthead inside Overview.svelte itself carries the health
@@ -876,6 +967,8 @@
   </div>
 </div>
 
+<WhichKeyOverlay open={whichKeyOpen} onClose={() => (whichKeyOpen = false)} />
+
 <style>
   .app {
     display: flex;
@@ -888,10 +981,15 @@
      otherwise unset so each breakpoint's own fallback below applies. The
      transition animates Board's collapsed→open slide and any view switch's
      rail appearance/disappearance; reduced-motion gets a hard snap instead. */
+  /* piece 2 (ui/REDESIGN.md): a fourth, LEADING track for the persistent
+     HubRail — `--rail-hub-w` defaults to its desktop width and collapses to
+     0px at the same two breakpoints HubRail itself uses `display:none` at
+     (see HubRail.svelte), so hiding the component there actually reclaims
+     the space instead of leaving a blank reserved column. */
   .main {
     flex: 1;
     display: grid;
-    grid-template-columns: var(--rail-l-w, 248px) 1fr var(--rail-r-w, 320px);
+    grid-template-columns: var(--rail-hub-w, 208px) var(--rail-l-w, 248px) 1fr var(--rail-r-w, 320px);
     min-height: 0;
     position: relative;
     transition: grid-template-columns 0.2s ease;
@@ -908,10 +1006,12 @@
      this grid entirely — only the left rail's track matters here); the left
      rail (topics/fleet) stays put — only its width shrinks slightly, unless
      the current view hides it (`--rail-l-w: 0px` overrides the 220px fallback
-     the same as it does 248px at desktop). ── */
+     the same as it does 248px at desktop). HubRail also drops out (its own
+     desktop-only nav — mobile keeps TopBar's hub-pill fallback instead, see
+     TopBar.svelte). ── */
   @media (max-width: 1023.98px) {
     .main {
-      grid-template-columns: var(--rail-l-w, 220px) 1fr;
+      grid-template-columns: 0px var(--rail-l-w, 220px) 1fr;
     }
   }
 
@@ -1030,6 +1130,74 @@
        BoardRow, CodeLens, etc.) are what's left to decide, not this. */
     min-width: 0;
     background: var(--bg);
+    position: relative;
+  }
+  /* piece 2 workspace tint (ui/redesign-mockups/02-hub-nav.html): the active
+     hub's real tier as a persistent, ambient "which world am I in" cue — an
+     edge box-shadow (a glow-as-fade top wash, not a hard band — see the
+     domain-glow fix in Overview.svelte's history) plus, for the non-home
+     states, a labeled pill in the crumb bar above. Never rendered on
+     Overview (no single current hub there — see workspaceTintClass). */
+  .center::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 96px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .center::before {
+      transition: none;
+    }
+  }
+  .center.tint-home {
+    box-shadow: inset 3px 0 0 var(--home-frame);
+  }
+  .center.tint-home::before {
+    opacity: 1;
+    background: linear-gradient(180deg, var(--home-glow), transparent);
+  }
+  .center.tint-foreign {
+    box-shadow: inset 3px 0 0 var(--foreign-frame);
+  }
+  .center.tint-foreign::before {
+    opacity: 1;
+    background: linear-gradient(180deg, var(--foreign-glow), transparent);
+  }
+  .center.tint-neutral {
+    box-shadow: inset 3px 0 0 var(--neutral-frame);
+  }
+  .center.tint-neutral::before {
+    opacity: 1;
+    background: linear-gradient(180deg, var(--neutral-glow), transparent);
+  }
+  .world-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 700 10px/1 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 3px 7px;
+    border-radius: 5px;
+    margin-left: 4px;
+  }
+  .world-pill-home {
+    color: var(--home-frame);
+    background: color-mix(in srgb, var(--home-frame) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--home-frame) 40%, transparent);
+  }
+  .world-pill-foreign {
+    color: var(--foreign-frame);
+    background: color-mix(in srgb, var(--foreign-frame) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreign-frame) 40%, transparent);
+  }
+  .world-pill-neutral {
+    color: var(--neutral-frame);
+    background: color-mix(in srgb, var(--neutral-frame) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--neutral-frame) 40%, transparent);
   }
   /* One wrapper per Chat/Board/Fleet/Code/Repos pane. Only the active view's
      wrapper participates in layout (display:flex, matching what `.center`'s

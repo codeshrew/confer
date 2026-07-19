@@ -121,18 +121,56 @@ export interface DomainWorkItem {
   ageSecs: number;
 }
 
+/** A hub's overall health, for anything that needs ONE glance at a hub
+ * before drilling in (piece 2's rail health dot, the ⌘K palette's hint).
+ * `unknown` is a real, distinct value — never collapsed into `ok` just
+ * because nothing else is known to be wrong (design/48, law #3: "a null
+ * would read unknown (grey), never a fake green"). */
+export type HubHealth = 'ok' | 'warn' | 'critical' | 'unknown';
+
 /** One hub, as a place on the map — real per-hub agents + work, plus the
  * server's own trust tier + sync freshness (design/48 §2-3, `Hub.tier`/
  * `Hub.sync`). Both carried through UNCHANGED (including `null`) — this
  * layer doesn't get to decide "unclassified" means "home" or "unknown"
- * means "fine"; that's Overview.svelte's rendering job, done honestly. */
+ * means "fine"; that's the render layer's job, done honestly. */
 export interface HubDomain {
   hub: string;
   label: string;
   tier: HubTier | null;
   sync: HubSync | null;
+  health: HubHealth;
   agents: DomainAgent[];
   workInFlight: DomainWorkItem[];
+}
+
+/** `computeHubHealth`'s inputs are already-real facts (agent liveness/trust,
+ * the SAME per-hub attention count the overlay/rollup use, real sync) — a
+ * KNOWN problem always outranks an unknown one: a down agent is real
+ * information even if this hub's sync status happens to be unprobed. Only
+ * once nothing is known to be wrong does a missing/partial sync signal
+ * demote the verdict from "ok" to "unknown" rather than asserting calm. */
+function computeHubHealth(agents: DomainAgent[], attentionCount: number, sync: HubSync | null): HubHealth {
+  if (agents.some((a) => a.liveness === 'down' || a.trust === 'mismatch')) return 'critical';
+  if (sync?.reachable === false) return 'critical';
+  if (attentionCount > 0) return 'warn';
+  if (!sync || sync.reachable === null) return 'unknown';
+  return 'ok';
+}
+
+/** A short, real reason for a hub's health dot/pip — for a tooltip or the
+ * ⌘K palette's hint column. Never invents detail beyond what's already
+ * known; `ok`/`unknown` get a plain one-word gloss since there's nothing
+ * more specific to report. */
+export function hubHealthReason(domain: HubDomain): string {
+  if (domain.health === 'unknown') return 'sync unknown';
+  if (domain.health === 'ok') return 'healthy';
+  const down = domain.agents.find((a) => a.liveness === 'down');
+  if (down) return `${down.display} down`;
+  const mismatch = domain.agents.find((a) => a.trust === 'mismatch');
+  if (mismatch) return `${mismatch.display} key mismatch`;
+  if (domain.sync?.reachable === false) return 'unreachable';
+  if (domain.health === 'critical') return 'critical';
+  return 'needs attention';
 }
 
 export interface Attention {
@@ -487,12 +525,8 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
 
   const fleet = buildFleetCards(hubOverviews);
 
-  const domains: HubDomain[] = hubOverviews.map(({ hub, overview }) => ({
-    hub: hub.id,
-    label: hub.label,
-    tier: hub.tier ?? null,
-    sync: hub.sync ?? null,
-    agents: overview.fleet.map((a) => ({
+  const domains: HubDomain[] = hubOverviews.map(({ hub, overview }) => {
+    const agents: DomainAgent[] = overview.fleet.map((a) => ({
       id: a.id,
       display: a.display,
       color: a.color,
@@ -502,11 +536,24 @@ export function aggregateAttention(hubOverviews: { hub: Hub; overview: Overview 
       hbAgeSecs: a.hbAgeSecs ?? null,
       trust: deriveTrust(a),
       wip: a.wip.filter((w) => w.status === 'CLAIMED').length,
-    })),
-    workInFlight: overview.board.requests
-      .filter((r) => r.status !== 'DONE' && r.status !== 'ERROR' && r.status !== 'SUPERSEDED' && !r.deferred)
-      .map((r) => ({ id: r.id, summary: r.summary, status: r.status, stale: r.stale, claimants: r.claimants, ageSecs: r.ageSecs })),
-  }));
+    }));
+    const sync = hub.sync ?? null;
+    // Same per-hub count the ambient rollup (`perHub` below) reports — one
+    // formula for "does this hub have anything needing you," not two that
+    // could quietly drift apart.
+    const attentionCount = needsYou.filter((i) => i.hub === hub.id).length + coordination.filter((i) => i.hub === hub.id).length;
+    return {
+      hub: hub.id,
+      label: hub.label,
+      tier: hub.tier ?? null,
+      sync,
+      health: computeHubHealth(agents, attentionCount, sync),
+      agents,
+      workInFlight: overview.board.requests
+        .filter((r) => r.status !== 'DONE' && r.status !== 'ERROR' && r.status !== 'SUPERSEDED' && !r.deferred)
+        .map((r) => ({ id: r.id, summary: r.summary, status: r.status, stale: r.stale, claimants: r.claimants, ageSecs: r.ageSecs })),
+    };
+  });
 
   const perHub: HubRollup[] = hubOverviews.map(({ hub, overview }) => ({
     hub: hub.id,

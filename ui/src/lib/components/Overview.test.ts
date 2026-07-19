@@ -35,6 +35,7 @@ const EMPTY: Attention = {
       label: 'agent-coord',
       tier: 'own',
       sync: { lastFetchedSecs: 12, behind: 0, pending: 0, reachable: true },
+      health: 'ok',
       agents: [
         {
           id: 'reader',
@@ -94,6 +95,7 @@ const BUSY: Attention = {
       // Genuinely behind — the field-level warn case (not the whole-sync-
       // unknown case DOWN below exercises).
       sync: { lastFetchedSecs: 940, behind: 2, pending: 0, reachable: true },
+      health: 'warn',
       agents: [
         {
           id: 'jarvis',
@@ -155,6 +157,9 @@ const DOWN: Attention = {
       // cases this fixture exists to exercise.
       tier: null,
       sync: null,
+      // A DOWN agent is real, known information — it outranks "unknown"
+      // even though sync itself is null (computeHubHealth's stated priority).
+      health: 'critical',
       agents: [
         {
           id: 'work-orbit',

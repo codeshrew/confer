@@ -60,17 +60,24 @@
   --phi3: 2.618rem;
   --phi4: 4.236rem;
 
-  /* Trust-domain framing (ui/redesign-mockups/01-overview.html) — derived
-     from the existing accent/deferred tokens rather than new hex values, so
-     both themes stay in sync automatically. NOT used for a home/foreign
-     visual split yet: the web API doesn't project a hub's trust tier
-     (`confer trust own|shared|foreign` is local-only, see src/tiers.rs), so
-     Overview renders one neutral domain frame today and these wait for
-     piece 2+ / the backend gap noted in ui/REDESIGN.md. */
+  /* Trust-domain framing (ui/redesign-mockups/01-overview.html,
+     02-hub-nav.html) — derived from existing tokens rather than new hex
+     values, so both themes stay in sync automatically. Backed by the real
+     `Hub.tier` (design/48 §2, shipped) since piece 1: `own`/`shared` render
+     home, `foreign` renders foreign, `null` (never classified) renders
+     neutral — never defaulted to home. `--shared-frame` is piece 2's own
+     THIRD tier (the hub-nav rail groups Home/Shared/Foreign separately,
+     unlike Overview's coarser two-bucket home/foreign card framing) —
+     reuses `--claimed` (already this palette's blue) rather than inventing
+     a new hue. `--neutral-frame` is the "unclassified" bucket's color. */
   --home-frame: var(--accent);
   --home-glow: color-mix(in srgb, var(--accent) 13%, transparent);
+  --shared-frame: var(--claimed);
+  --shared-glow: color-mix(in srgb, var(--claimed) 13%, transparent);
   --foreign-frame: var(--deferred);
   --foreign-glow: color-mix(in srgb, var(--deferred) 10%, transparent);
+  --neutral-frame: var(--muted);
+  --neutral-glow: color-mix(in srgb, var(--muted) 8%, transparent);
 
   color-scheme: dark;
 }

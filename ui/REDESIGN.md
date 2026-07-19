@@ -66,7 +66,7 @@ Named by the operator (2026-07-18), in priority order:
 | # | Piece | What it establishes / fixes | Status |
 |---|-------|------------------------------|--------|
 | 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ✅ done |
-| 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a model that scales to N hubs and keeps trust-domain orientation. Design the switcher (grouped by tier? command-palette? persistent rail?). | ○ queued |
+| 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a persistent, trust-tiered rail (Home/Shared/Foreign/Unclassified, real health dots) + workspace tint; first slice of the keyboard-first layer (⌘K palette, rail j/k/gg/G, g+number views, ? which-key). Reference: `redesign-mockups/02-hub-nav.html`. | ✅ done |
 | 3 | **Thread / meta-thread nav (P2)** | Redesign the affordance so you never lose your place — side-peek / pop-over / inline expand + breadcrumb + back. The meta-thread (reference-graph) becomes legible. | ○ queued |
 | 4 | **Chat** | Real read-state: client-side "since you last looked" watermark (localStorage) + real seen-by projected from agents' `ack` read-frontiers (kill the synthesized filler). Inline refs anchored to prose. | ○ queued |
 | 5 | **Board** | Claim / WIP / lifecycle made spatial and honest; the ack-story + claim-norm surfaced (design/48/49). | ○ queued |
@@ -75,6 +75,11 @@ Named by the operator (2026-07-18), in priority order:
 
 Later phases (backend, out of this branch's frontend scope but noted): real `/api/attention`,
 per-hub sync-health projection, seen-by projection, shadow-repo surfacing.
+
+**Piece 2 scope note:** HubRail (the persistent rail) and the workspace tint are desktop-only
+(≥1024px) — below that, TopBar's original horizontal hub-pill row is kept as-is, unredesigned, as
+the mobile fallback (see TopBar.svelte). Mobile hub-switching wasn't in piece 2's brief; revisit if
+a later piece needs it.
 
 ---
 

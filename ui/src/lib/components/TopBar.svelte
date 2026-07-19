@@ -176,10 +176,21 @@
     padding: 3px 5px;
   }
 
+  /* piece 2 (ui/REDESIGN.md): the persistent, trust-tiered HubRail replaces
+     this row at desktop widths (≥1024px, where HubRail is visible). Below
+     that HubRail hides itself (no room for a whole extra rail on tablet/
+     phone — see HubRail.svelte's own media query), so this row stays as the
+     mobile hub-switch fallback rather than leaving mobile with no way to
+     change hubs at all. */
   .hubs {
-    display: flex;
+    display: none;
     gap: 4px;
     margin-left: 6px;
+  }
+  @media (max-width: 1023.98px) {
+    .hubs {
+      display: flex;
+    }
   }
 
   .hub {
