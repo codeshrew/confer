@@ -22,6 +22,7 @@ const herald: Agent = {
   version: null,
   watchState: null,
   keyFingerprint: null,
+  profileMarkdown: null,
   color: 'var(--ag-herald)',
   abbr: 'HE',
   wip: [],

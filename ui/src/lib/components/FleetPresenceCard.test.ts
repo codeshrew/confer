@@ -19,6 +19,7 @@ const jarvis: Agent = {
   version: null,
   watchState: null,
   keyFingerprint: null,
+  profileMarkdown: null,
   color: '#7dcfff',
   abbr: 'JA',
   wip: [{ id: 'req_1', summary: 'x', status: 'CLAIMED' }],

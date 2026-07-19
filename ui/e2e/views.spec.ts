@@ -170,7 +170,7 @@ test('the agent dossier shows real confer version, watch state, and a shortened 
   await expect(dossier).toBeVisible();
   await expect(dossier.getByText('confer version')).toBeVisible();
   await expect(dossier.getByText('0.7.3 (a3f1c9d)')).toBeVisible();
-  await expect(dossier.getByText('watch')).toBeVisible();
+  await expect(dossier.getByText('watch', { exact: true })).toBeVisible();
   await expect(dossier.getByText('● armed · reactive')).toBeVisible();
   // The fingerprint is shortened on screen, full value only in the title.
   const fp = dossier.locator('.fp');
@@ -191,4 +191,31 @@ test('an agent with no confer version/watch/key data honestly omits those rows �
   await expect(dossier.locator('.fp')).not.toBeVisible();
   // The signing key row itself still shows — just the trust label, no fingerprint.
   await expect(dossier.getByText('signing key')).toBeVisible();
+});
+
+test('the agent dossier shows the real roles/<id>.md profile as About when the agent has one', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Fleet', exact: true }).click();
+  const fleetView = page.getByTestId('fleet-view');
+  await fleetView.getByText('Herald', { exact: true }).click();
+
+  const dossier = page.getByTestId('agent-dossier');
+  await expect(dossier).toBeVisible();
+  await expect(dossier.getByText('roles/herald.md')).toBeVisible();
+  await expect(dossier.getByRole('heading', { name: 'Herald', level: 2 })).toBeVisible();
+  await expect(dossier.getByText(/Git integrity \+ PR review lane/)).toBeVisible();
+});
+
+test('the agent dossier falls back to the one-line desc, captioned plain "about", when no profile is written', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Fleet', exact: true }).click();
+  const fleetView = page.getByTestId('fleet-view');
+  await fleetView.getByText('Reader', { exact: true }).click();
+
+  const dossier = page.getByTestId('agent-dossier');
+  await expect(dossier).toBeVisible();
+  await expect(dossier.getByText('about', { exact: true })).toBeVisible();
+  await expect(dossier.getByText(/roles\//)).not.toBeVisible();
+  // Scoped to the About block itself — 'reader' also legitimately appears
+  // in the side panel's host row (id and lastHost are both 'reader' for
+  // this fixture).
+  await expect(dossier.locator('.about').getByText('reader', { exact: true })).toBeVisible();
 });

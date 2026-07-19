@@ -6,13 +6,14 @@
   // 5/6/7 popovers. Wired from the Fleet deck, an Overview AgentNode, and a
   // message's seen-by roster (App.svelte).
   //
-  // Law #3, per the brief's own flags: confer version, watch/armed state,
-  // and a signing-key fingerprint are NOT on the `Agent` shape today — this
-  // component simply doesn't render those rows rather than fabricate them
-  // (a genuine small backend ask, noted in the piece's own commit/report,
-  // not invented here). Everything else — trust state, host-match, WIP,
-  // carrying/asking, real cross-hub presence, real activity buckets — is a
-  // fold of data already served.
+  // Law #3: confer version, watch/armed state, a signing-key fingerprint,
+  // and the full roles/<id>.md profile were ALL flagged as backend asks at
+  // launch and honestly omitted rather than faked — Herald shipped all four
+  // same-night (src/api.rs commits 32ef9a4, 1318664), and every row below is
+  // now real and wired, still honestly omitted per-agent when the
+  // underlying signal is genuinely null. Trust state, host-match, WIP,
+  // carrying/asking, real cross-hub presence, real activity buckets were
+  // already a fold of data served from day one.
   import type { Agent, Message, RequestRow } from '../types';
   import { fetchHubOverviews } from '../api';
   import { agentPresence, deriveLiveness, deriveTrust, type AgentHubPresence } from '../attention';
@@ -79,14 +80,16 @@
     if (presenceLoadedFor !== agent.id) void loadPresence(agent.id);
   });
 
-  // The brief asks for "the agent's own roles/<role>.md profile" — `Agent.desc`
-  // is the only server-provided free-text field that could BE that, but its
-  // real provenance isn't confirmed (the mock fixtures fill it with short
-  // slugs, not prose), so this deliberately does NOT claim a `roles/*.md`
-  // source in the UI — just "about", rendered through the real markdown
-  // pipeline when present. Whether `desc` genuinely carries the role
-  // profile is worth confirming with Herald; noted, not guessed at here.
-  const aboutHtml = $derived(agent?.desc ? renderMarkdown(agent.desc) : null);
+  // profileMarkdown (Herald, src/api.rs's `agent_row_json`, commit 1318664)
+  // is the REAL `roles/<id>.md` body — `desc` stays the one-line frontmatter
+  // fallback for a card that has no prose below it. Three-way honest chain:
+  // real profile -> one-line desc -> nothing rendered at all. Both are
+  // peer-authored, untrusted prose (server-sanitized the same way a message
+  // body is), so both go through the SAME markdown pipeline a message body
+  // does — no separate rendering path for "about" text.
+  const aboutSource = $derived(agent?.profileMarkdown ?? agent?.desc ?? null);
+  const aboutIsProfile = $derived(!!agent?.profileMarkdown);
+  const aboutHtml = $derived(aboutSource ? renderMarkdown(aboutSource) : null);
   let aboutEl: HTMLElement | undefined = $state();
   $effect(() => {
     void aboutHtml;
@@ -186,9 +189,9 @@
 
       <div class="ad-grid">
         <div class="ad-main">
-          {#if agent.desc}
+          {#if aboutSource}
             <div class="ad-block">
-              <span class="lab">about</span>
+              <span class="lab">{aboutIsProfile ? `roles/${agent.id}.md` : 'about'}</span>
               <div class="about prose md" bind:this={aboutEl}>
                 {#if aboutHtml}{@html aboutHtml}{/if}
               </div>

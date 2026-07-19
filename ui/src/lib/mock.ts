@@ -166,6 +166,12 @@ export const mockAgents: Agent[] = [
     version: '0.7.3 (a3f1c9d)',
     watchState: 'armed',
     keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbC',
+    // A real roles/herald.md body (Herald, src/api.rs commit 1318664) —
+    // `desc` above stays the short frontmatter slug; this is the actual
+    // card prose, sanitized server-side like a message body and rendered
+    // through the same markdown pipeline as one.
+    profileMarkdown:
+      '## Herald\n\nGit integrity + PR review lane. Watches repo state across the fleet — clone status, reference density, shadow-repo detection — and signs every card it posts.\n\n**Owns:** `confer` repo housekeeping, PR gates, integrity audits.\n**Won\'t:** merge without a green build, or speak for a repo it hasn\'t cloned.',
     color: 'var(--ag-herald)',
     abbr: 'HE',
     wip: [],
@@ -182,6 +188,9 @@ export const mockAgents: Agent[] = [
     version: '0.7.3 (a3f1c9d)',
     watchState: 'armed',
     keyFingerprint: 'SHA256:9fK2mNpQ4rS6tUvWxYzAbCdEfGhIjKlMnOpQrStUvWx',
+    // No roles/reader.md body written yet — the dossier's About falls back
+    // to the one-line `desc` above rather than showing nothing.
+    profileMarkdown: null,
     color: 'var(--ag-reader)',
     abbr: 'RE',
     wip: [{ id: 'req_01JQ8f2', summary: 'plate-bundle endpoint', status: 'DONE' }],
@@ -198,6 +207,8 @@ export const mockAgents: Agent[] = [
     version: '0.7.3 (a3f1c9d)',
     watchState: 'armed',
     keyFingerprint: 'SHA256:aB3cD5eF7gH9iJkLmNoPqRsTuVwXyZ1aB3cD5eF7gH9',
+    profileMarkdown:
+      '## Pipeline\n\nPlate-restoration pipeline agent on `studio`. Owns the `/plate-bundle` and alignment endpoints Reader depends on.\n\n**Owns:** plate ingest, alignment passes, bundle assembly.\n**Won\'t:** ship an endpoint without Reader\'s shape sign-off.',
     color: 'var(--ag-pipeline)',
     abbr: 'PI',
     wip: [{ id: 'req_01JQa91', summary: 'alignment pass', status: 'CLAIMED' }],
@@ -217,6 +228,7 @@ export const mockAgents: Agent[] = [
     version: '0.7.2 (f00dfee)',
     watchState: 'armed',
     keyFingerprint: 'SHA256:qR7sT9uV1wX3yZ5aB7cD9eF1gH3iJ5kL7mN9oP1qR3s',
+    profileMarkdown: null,
     color: 'var(--ag-compositor)',
     abbr: 'CO',
     wip: [{ id: 'req_01JQc4a', summary: 'CSL schema decision', status: 'BLOCKED' }],
@@ -237,6 +249,7 @@ export const mockAgents: Agent[] = [
     version: '0.7.3 (a3f1c9d)',
     watchState: 'armed',
     keyFingerprint: 'SHA256:zY8xW6vU4tS2rQ0pO8nM6lK4jI2hG0fE8dC6bA4zY2x',
+    profileMarkdown: null,
     color: 'var(--ag-jarvis)',
     abbr: 'JA',
     wip: [],
@@ -253,9 +266,12 @@ export const mockAgents: Agent[] = [
     // down (no trusted beat) + unverified (no confirmed card) — every new
     // field is honestly null, not guessed: no basis for a version, no
     // basis for an armed/idle watch state, no confirmed key to fingerprint.
+    // profileMarkdown isn't trust-gated, but this fixture simply has no
+    // card body written — the About falls back to `desc` like reader's.
     version: null,
     watchState: null,
     keyFingerprint: null,
+    profileMarkdown: null,
     color: 'var(--ag-orbit)',
     abbr: 'OR',
     wip: [{ id: 'req_01JQe88', summary: 'plate-pipeline follow-up', status: 'OPEN' }],
@@ -568,6 +584,7 @@ const mockConferLabOverview: Overview = overviewOf(
       version: null,
       watchState: null,
       keyFingerprint: null,
+      profileMarkdown: null,
       color: 'var(--ag-jarvis)',
       abbr: 'SE',
       wip: [],
@@ -584,6 +601,7 @@ const mockConferLabOverview: Overview = overviewOf(
       version: '0.7.3 (a3f1c9d)',
       watchState: 'armed',
       keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbC',
+      profileMarkdown: null,
       color: 'var(--ag-herald)',
       abbr: 'HE',
       wip: [{ id: 'req_02LAB1', summary: 'review the patch', status: 'CLAIMED' }],
@@ -621,6 +639,7 @@ const mockJarvisOrbitOverview: Overview = overviewOf(
       version: '0.7.3 (a3f1c9d)',
       watchState: 'armed',
       keyFingerprint: 'SHA256:mN4oP6qR8sT0uV2wX4yZ6aB8cD0eF2gH4iJ6kL8mN0o',
+      profileMarkdown: null,
       color: 'var(--ag-orbit)',
       abbr: 'OR',
       wip: [],

@@ -25,6 +25,7 @@ const jarvis: Agent = {
   version: null,
   watchState: null,
   keyFingerprint: null,
+  profileMarkdown: null,
   color: '#7dcfff',
   abbr: 'JA',
   wip: [{ id: 'req_98xcnf', summary: '0.8.0 review', status: 'CLAIMED' }],
@@ -45,8 +46,35 @@ const herald: Agent = {
   version: '0.6.9 (45a9c04)',
   watchState: 'armed',
   keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbGwUBn4',
+  // No roles/herald.md body written — desc is also null, so this fixture is
+  // ALSO the "neither" case for the About three-way fallback (already
+  // covered by the "no profile written" test below).
+  profileMarkdown: null,
   color: '#9ece6a',
   abbr: 'HE',
+  wip: [],
+};
+
+const pipeline: Agent = {
+  id: 'pipeline',
+  display: 'Pipeline',
+  desc: 'studio',
+  expectedHost: 'studio',
+  lastTs: '2026-07-19T08:00:00Z',
+  lastHost: 'studio',
+  live: true,
+  verified: 'signed',
+  liveness: 'live',
+  hbAgeSecs: 30,
+  trust: 'signed',
+  version: '0.7.3 (a3f1c9d)',
+  watchState: 'armed',
+  keyFingerprint: 'SHA256:aB3cD5eF7gH9iJkLmNoPqRsTuVwXyZ1aB3cD5eF7gH9',
+  // A real roles/pipeline.md body — `desc` above ('studio') stays the
+  // short frontmatter slug; the dossier's About should prefer this.
+  profileMarkdown: '## Pipeline\n\nPlate-restoration pipeline agent on `studio`.\n\n**Owns:** plate ingest, alignment passes.',
+  color: '#e0af68',
+  abbr: 'PI',
   wip: [],
 };
 
@@ -204,6 +232,36 @@ describe('AgentDossier', () => {
       // — only the fingerprint sub-line is honestly absent.
       expect(screen.getByText('signing key')).toBeInTheDocument();
       expect(container.querySelector('.fp')).toBeNull();
+    });
+  });
+
+  describe('piece 8c follow-up — real roles/<id>.md profile prose for About (src/api.rs 1318664)', () => {
+    it('renders profileMarkdown as About, captioned with the real roles/<id>.md path, when the agent has one', async () => {
+      const { container } = render(AgentDossier, { open: true, agentId: 'pipeline', agents: [pipeline], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.getByText('roles/pipeline.md')).toBeInTheDocument();
+      // The full profile prose rendered as real markdown (an h2 + a
+      // paragraph), not `desc` ('studio') shown as flat unstyled text — the
+      // heading itself only exists in profileMarkdown, proving the real
+      // profile is what's rendered.
+      expect(screen.getByRole('heading', { name: 'Pipeline', level: 2 })).toBeInTheDocument();
+      expect(screen.getByText(/Plate-restoration pipeline agent/)).toBeInTheDocument();
+      expect(container.querySelector('.about')?.querySelector('h2')).not.toBeNull();
+    });
+
+    it('falls back to the one-line desc, captioned plain "about", when profileMarkdown is null', async () => {
+      render(AgentDossier, { open: true, agentId: 'jarvis', agents: [jarvis], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.getByText('about')).toBeInTheDocument();
+      expect(screen.queryByText(/roles\//)).not.toBeInTheDocument();
+      expect(screen.getByText(/design-review partner/)).toBeInTheDocument();
+    });
+
+    it('omits the About block entirely when both profileMarkdown and desc are null — never a fake placeholder', async () => {
+      render(AgentDossier, { open: true, agentId: 'herald', agents: [herald], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.queryByText('about')).not.toBeInTheDocument();
+      expect(screen.queryByText(/roles\//)).not.toBeInTheDocument();
     });
   });
 });

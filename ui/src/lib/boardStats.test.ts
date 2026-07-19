@@ -32,6 +32,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     version: null,
     watchState: null,
     keyFingerprint: null,
+    profileMarkdown: null,
     color: '#7dcfff',
     abbr: 'JA',
     wip: [],

@@ -169,6 +169,17 @@ export interface Agent {
   /** The pinned signing key's SHA256 fingerprint from the verified role
    * card (`"SHA256:…"`) — `null` for unverified/mismatch/no card. */
   keyFingerprint: string | null;
+  // The real `roles/<id>.md` prose body (Herald, src/api.rs's
+  // `agent_row_json`, commit 1318664) — `desc` is only the one-line
+  // frontmatter summary, this is everything below it. Sanitized server-side
+  // the SAME way a message body is (multiline `sanitize_term`), and NOT
+  // trust-gated — card prose is peer-authored content like `desc`/message
+  // bodies, not a liveness/identity claim (contrast version/watchState/
+  // keyFingerprint above, which ARE gated).
+  /** The agent's full role-card markdown body, rendered through the same
+   * markdown pipeline as a message body — `null` for a frontmatter-only or
+   * bodyless card, in which case `desc` is the fallback. */
+  profileMarkdown: string | null;
   color: string;
   abbr: string;
   wip: { id: string; summary: string; status: RequestStatus }[];

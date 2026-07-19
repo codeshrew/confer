@@ -22,6 +22,7 @@ function agent(id: string, display: string): Agent {
     version: null,
     watchState: null,
     keyFingerprint: null,
+    profileMarkdown: null,
     color: 'var(--ag-reader)',
     abbr: display.slice(0, 2).toUpperCase(),
     wip: [],
