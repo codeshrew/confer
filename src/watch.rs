@@ -4,9 +4,10 @@
 //! interval. A `notify` filesystem watch on `threads/` wakes us early on any local
 //! change (a co-resident write, or a pull landing) for sub-interval latency.
 
+use crate::machineconfig::{self, WatchPrefs};
 use crate::schema::{is_actionable, Message};
 use crate::{config, cursor, gitcmd, hint, roster, store, watchlock, BUILD_SHA};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::io::Write;
 use std::path::Path;
@@ -31,6 +32,10 @@ pub struct WatchOpts {
     /// A chatty agent can set `--min-priority high` to only wake on urgent items;
     /// lower-priority ones still land, seen on the next `poll`/sweep.
     pub min_priority: u8,
+    /// minimum intrinsic wake-rung that pages me — a SECOND, orthogonal gate on top of
+    /// `min_priority`/addressing (design/51). Below-floor events still land (poll/inbox), same
+    /// land-vs-wake split as `min_priority`. Default: `Notice` (mutes only claim/ack/defer).
+    pub wake_on: WakeRung,
     /// suppress the one-shot "a newer confer is on this hub — update" wake. On by default; set to
     /// true (`--no-version-notice`) if you don't want the watch to nudge you about version drift.
     pub no_version_notice: bool,
@@ -64,6 +69,141 @@ fn stdout_is_discarded() -> Option<&'static str> {
 #[cfg(not(unix))]
 fn stdout_is_discarded() -> Option<&'static str> {
     None
+}
+
+/// Intrinsic urgency rung of an event (design/51 §3), ascending. Computed receiver-side from
+/// (message type, whether the underlying request is MINE, sender priority) — orthogonal to
+/// *whether* the event is addressed to me at all (that's `should_wake`'s existing
+/// addressed-to-me/firehose gate; this is the second, independent axis, log-level style).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WakeRung {
+    /// pure board mechanics: `claim` / `ack` / `defer`.
+    Transactional,
+    /// substantive but not urgent: a `note`→me, a `done` on MY request, `supersede`.
+    Notice,
+    /// act-now: a `request`→me, an `error`/`blocked` on MY request, or anything sent at
+    /// sender `--priority high` (which promotes ANY event to alert — the break-through override).
+    Alert,
+}
+
+/// Compute an event's intrinsic wake-rung. `all_msgs` is the FULL log (not just the incremental
+/// batch being emitted this cycle) so a `done`/`error`/`blocked` can be traced back via `of` to its
+/// request's author — the request itself may have landed (and been read) many cycles ago.
+fn wake_rung(m: &Message, me: &str, grps: &crate::groups::Groups, all_msgs: &[Message]) -> WakeRung {
+    // Escalation always breaks through: sender `--priority high` promotes ANY event to alert,
+    // regardless of type/relevance — keeps `high` meaningful as a deliberate sender override.
+    if priority_rank(m.front.priority.as_deref()) >= 2 {
+        return WakeRung::Alert;
+    }
+    let is_mine_request = || {
+        m.front
+            .of
+            .as_deref()
+            .and_then(|of| crate::projection::request_author(all_msgs, of))
+            .is_some_and(|author| author == me)
+    };
+    match m.front.msg_type.as_str() {
+        "claim" | "ack" | "defer" => WakeRung::Transactional,
+        "request" => {
+            if crate::groups::addressed(m, me, grps) {
+                WakeRung::Alert
+            } else {
+                WakeRung::Notice
+            }
+        }
+        "error" | "blocked" => {
+            if is_mine_request() {
+                WakeRung::Alert
+            } else {
+                WakeRung::Transactional // a break/stall on a request I merely observe
+            }
+        }
+        "done" => {
+            if is_mine_request() {
+                WakeRung::Notice
+            } else {
+                WakeRung::Transactional // a resolution on a request I merely observe
+            }
+        }
+        "note" | "supersede" => WakeRung::Notice,
+        _ => WakeRung::Notice, // conservative default for any future/unclassified type
+    }
+}
+
+/// Parse `--min-priority`'s string form. Shared by the CLI parse path and by preference resolution
+/// (below), so a saved value round-trips through the exact same validation as a freshly-typed flag.
+pub fn parse_min_priority(s: &str) -> Result<u8> {
+    match s {
+        "low" => Ok(0),
+        "normal" => Ok(1),
+        "high" => Ok(2),
+        other => Err(anyhow!("invalid --min-priority '{other}': expected low | normal | high")),
+    }
+}
+
+/// Parse `--wake-on`'s string form, applying the `verbose` = "lowest floor + whole-board scope" sugar
+/// (design/51 §4) on top of the incoming `all` baseline (which may itself already be true from an
+/// explicit `--all` or a saved preference). Shared by the CLI parse path and preference resolution.
+pub fn parse_wake_on(s: &str, all_in: bool) -> Result<(WakeRung, bool)> {
+    match s {
+        "alert" => Ok((WakeRung::Alert, all_in)),
+        "notice" => Ok((WakeRung::Notice, all_in)),
+        "all" => Ok((WakeRung::Transactional, all_in)),
+        "verbose" => Ok((WakeRung::Transactional, true)),
+        other => Err(anyhow!("invalid --wake-on '{other}': expected alert | notice | all | verbose")),
+    }
+}
+
+/// Resolve `wake_on` / `min_priority` / `topic` / `all` for one (hub, role) `watch`/`arm` invocation
+/// (design/51 §6/Phase B). Resolution order per field: **explicit CLI flag > saved machine config for
+/// this (hub, role) > built-in default** (notice / low / no topic / false). `cli_*` are `None`/`false`
+/// when the flag wasn't passed this run — that's what lets "explicitly notice" be told apart from
+/// "defaulted to notice" (an `Option<String>` CLI flag with no clap default, not a defaulted plain
+/// value; see cli.rs). If ANY flag was explicit this run, the full resolved bundle is saved back —
+/// replacing the prior record — so the next bare invocation for this (hub, role) reproduces it exactly
+/// without re-deciding. A bare invocation with nothing saved just returns the built-in defaults and
+/// writes nothing.
+pub fn resolve_watch_prefs(
+    hub_key: &str,
+    role: &str,
+    cli_wake_on: Option<&str>,
+    cli_min_priority: Option<&str>,
+    cli_topic: Option<&str>,
+    cli_all: bool,
+) -> Result<(WakeRung, u8, Option<String>, bool)> {
+    let saved = machineconfig::get_watch_prefs(hub_key, role);
+
+    let wake_on_str = cli_wake_on
+        .map(str::to_string)
+        .or_else(|| saved.wake_on.clone())
+        .unwrap_or_else(|| "notice".to_string());
+    let min_priority_str = cli_min_priority
+        .map(str::to_string)
+        .or_else(|| saved.min_priority.clone())
+        .unwrap_or_else(|| "low".to_string());
+    let topic = cli_topic.map(str::to_string).or_else(|| saved.topic.clone());
+    // A bool store-true flag can never be explicitly "false" — its only explicit state is present/true —
+    // so folding cli_all into the baseline before parsing is the correct (and only possible) resolution.
+    let all_baseline = cli_all || saved.all.unwrap_or(false);
+
+    let min_priority = parse_min_priority(&min_priority_str)?;
+    let (wake_on, all) = parse_wake_on(&wake_on_str, all_baseline)?;
+
+    let explicit = cli_wake_on.is_some() || cli_min_priority.is_some() || cli_topic.is_some() || cli_all;
+    if explicit {
+        let _ = machineconfig::save_watch_prefs(
+            hub_key,
+            role,
+            WatchPrefs {
+                wake_on: Some(wake_on_str),
+                min_priority: Some(min_priority_str),
+                topic: topic.clone(),
+                all: Some(all),
+                extra: Default::default(),
+            },
+        );
+    }
+    Ok((wake_on, min_priority, topic, all))
 }
 
 pub fn run(opts: WatchOpts) -> Result<()> {
@@ -163,6 +303,17 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         crate::hint(format!(
             "waking only on {}+ priority; lower-priority items still land (see them via `poll`).",
             if opts.min_priority >= 2 { "high" } else { "normal" }
+        ));
+    }
+    if opts.wake_on != WakeRung::Notice {
+        crate::hint(format!(
+            "wake-rung floor is {}; below-floor events still land (see them via `poll`/`inbox`). \
+             `--priority high` always breaks through.",
+            match opts.wake_on {
+                WakeRung::Alert => "alert (act-now only — notes/dones on your own requests are muted)",
+                WakeRung::Notice => unreachable!(),
+                WakeRung::Transactional => "all (board mechanics — claim/ack/defer — now wake too)",
+            }
         ));
     }
     // Rolling wake-volume advisory (throttled): high sustained volume suggests
@@ -305,7 +456,14 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 if let Ok(all) = store::all_messages(&root) {
                     let grps = crate::groups::load(&root);
                     let st = crate::inbox::load_state(&hub, &me);
-                    let unread = crate::inbox::unread_for_me(&all, &me, &grps, &st);
+                    // The footer is itself a stdout line a Monitor host treats as a wake — so it
+                    // must honor the SAME wake-rung floor as per-event emission, or a muted
+                    // transactional item (a claim/ack/defer) would leak through here instead
+                    // (design/51). It still LANDS — `poll`/`inbox` are unfiltered by rung.
+                    let unread: Vec<&Message> = crate::inbox::unread_for_me(&all, &me, &grps, &st)
+                        .into_iter()
+                        .filter(|m| wake_rung(m, &me, &grps, &all) >= opts.wake_on)
+                        .collect();
                     if unread.is_empty() {
                         last_inbox_key.clear(); // cleared — re-show if new mail arrives
                     } else {
@@ -376,7 +534,17 @@ fn next_wait(current: Duration, base: Duration, ok: bool) -> Duration {
 /// (to/cc/group/`all`). `firehose` (opt-in `--all`, or an unroled observer) also
 /// wakes on any actionable board message. Never wake on my own messages; honor a
 /// topic filter. This predicate is the token-cost knob — see emit_new.
-fn should_wake(m: &Message, me: &str, grps: &crate::groups::Groups, firehose: bool, topic: Option<&str>, min_priority: u8) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn should_wake(
+    m: &Message,
+    me: &str,
+    grps: &crate::groups::Groups,
+    firehose: bool,
+    topic: Option<&str>,
+    min_priority: u8,
+    wake_on: WakeRung,
+    all_msgs: &[Message],
+) -> bool {
     if m.front.from.as_str() == me {
         return false; // never wake on my own echo
     }
@@ -387,6 +555,9 @@ fn should_wake(m: &Message, me: &str, grps: &crate::groups::Groups, firehose: bo
     }
     if priority_rank(m.front.priority.as_deref()) < min_priority {
         return false; // below the wake threshold — still readable via poll/sweep
+    }
+    if wake_rung(m, me, grps, all_msgs) < wake_on {
+        return false; // below the wake-rung floor — still readable via poll/sweep (design/51)
     }
     crate::groups::addressed(m, me, grps) || (firehose && is_actionable(m))
 }
@@ -435,9 +606,31 @@ fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>)
     // "not for me". Requests to `all` (work-stealing) still match via addressing,
     // so nothing legitimate is lost by default.
     let firehose = opts.all || me.is_empty();
+    // `done`/`error`/`blocked` need the FULL log to trace `of` back to the request's author (the
+    // request itself may be long-since read, outside this incremental batch) — only pay for that
+    // extra load when the batch actually contains one of those types (design/51 wake-rung gate).
+    let need_all = msgs
+        .iter()
+        .any(|m| matches!(m.front.msg_type.as_str(), "done" | "error" | "blocked"));
+    let all_msgs: Vec<Message> = if need_all {
+        store::all_messages(root).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let new: Vec<&Message> = msgs
         .iter()
-        .filter(|m| should_wake(m, me, &grps, firehose, opts.topic.as_deref(), opts.min_priority))
+        .filter(|m| {
+            should_wake(
+                m,
+                me,
+                &grps,
+                firehose,
+                opts.topic.as_deref(),
+                opts.min_priority,
+                opts.wake_on,
+                &all_msgs,
+            )
+        })
         .collect();
 
     let mut out = std::io::stdout().lock();
@@ -496,32 +689,39 @@ mod tests {
         }
     }
 
+    /// `should_wake` wrapper defaulting the two design/51 params to "don't gate on rung, no full
+    /// log needed" — the pre-design/51 test surface below only exercises addressing/topic/firehose.
+    #[allow(clippy::too_many_arguments)]
+    fn sw(m: &Message, me: &str, g: &crate::groups::Groups, firehose: bool, topic: Option<&str>, min_priority: u8) -> bool {
+        should_wake(m, me, g, firehose, topic, min_priority, WakeRung::Transactional, &[])
+    }
+
     #[test]
     fn wake_only_on_my_mail_by_default_firehose_opt_in() {
         let g = crate::groups::Groups::new();
         // A request aimed at ANOTHER agent must NOT wake me by default — this is
         // the fix for every-agent-wakes-on-every-request token burn.
         let other = m("bob", "request", &["carol"]);
-        assert!(!should_wake(&other, "alice", &g, false, None, 0), "must not wake on peer-to-peer request");
+        assert!(!sw(&other, "alice", &g, false, None, 0), "must not wake on peer-to-peer request");
         // …but the firehose (overseer / --all) still sees it.
-        assert!(should_wake(&other, "alice", &g, true, None, 0), "firehose should surface it");
+        assert!(sw(&other, "alice", &g, true, None, 0), "firehose should surface it");
 
         // Addressed to me → wake regardless of firehose.
         let mine = m("bob", "request", &["alice"]);
-        assert!(should_wake(&mine, "alice", &g, false, None, 0), "must wake on my own mail");
+        assert!(sw(&mine, "alice", &g, false, None, 0), "must wake on my own mail");
 
         // Broadcast to `all` → wake (work-stealing still works without firehose).
         let broadcast = m("bob", "request", &["all"]);
-        assert!(should_wake(&broadcast, "alice", &g, false, None, 0), "must wake on `all`");
+        assert!(sw(&broadcast, "alice", &g, false, None, 0), "must wake on `all`");
 
         // Never wake on my own echo.
         let echo = m("alice", "request", &["all"]);
-        assert!(!should_wake(&echo, "alice", &g, false, None, 0), "must not wake on own message");
+        assert!(!sw(&echo, "alice", &g, false, None, 0), "must not wake on own message");
 
         // Topic filter still gates.
         let mut off_topic = m("bob", "request", &["alice"]);
         off_topic.front.topic = Some("other".into());
-        assert!(!should_wake(&off_topic, "alice", &g, false, Some("general"), 0), "topic filter must gate");
+        assert!(!sw(&off_topic, "alice", &g, false, Some("general"), 0), "topic filter must gate");
     }
 
     #[test]
@@ -547,10 +747,134 @@ mod tests {
         let mut high = m("bob", "note", &["alice"]);
         high.front.priority = Some("high".into());
         // min=high (2): only high wakes; normal is held (still readable via poll).
-        assert!(!should_wake(&normal, "alice", &g, false, None, 2), "normal must not wake at min=high");
-        assert!(should_wake(&high, "alice", &g, false, None, 2), "high must wake at min=high");
+        assert!(!sw(&normal, "alice", &g, false, None, 2), "normal must not wake at min=high");
+        assert!(sw(&high, "alice", &g, false, None, 2), "high must wake at min=high");
         // min=low (0): both wake.
-        assert!(should_wake(&normal, "alice", &g, false, None, 0), "min=low wakes on all");
+        assert!(sw(&normal, "alice", &g, false, None, 0), "min=low wakes on all");
+    }
+
+    /// Build a request from `req_from`, plus its `done`/`error`/`blocked` reply from `reply_from`
+    /// (all addressed to `me` so the addressing gate itself never trips these tests — only the
+    /// wake-rung gate is under test).
+    fn req_and_reply(req_from: &str, req_id: &str, reply_from: &str, reply_ty: &str, me: &str) -> (Message, Message) {
+        let mut req = m(req_from, "request", &[me]);
+        req.front.id = req_id.into();
+        let mut reply = m(reply_from, reply_ty, &[me]);
+        reply.front.id = "01J8Z9K3QH7Y".into();
+        reply.front.of = Some(req_id.into());
+        (req, reply)
+    }
+
+    #[test]
+    fn wake_rung_computation_matches_design_51() {
+        let g = crate::groups::Groups::new();
+        let all: Vec<Message> = Vec::new();
+
+        // Board mechanics: always transactional.
+        for ty in ["claim", "ack", "defer"] {
+            let e = m("bob", ty, &["alice"]);
+            assert_eq!(wake_rung(&e, "alice", &g, &all), WakeRung::Transactional, "{ty} must be transactional");
+        }
+
+        // A request addressed to me: alert. Not addressed to me: notice.
+        let to_me = m("bob", "request", &["alice"]);
+        assert_eq!(wake_rung(&to_me, "alice", &g, &all), WakeRung::Alert, "request to me is alert");
+        let to_other = m("bob", "request", &["carol"]);
+        assert_eq!(wake_rung(&to_other, "alice", &g, &all), WakeRung::Notice, "request to someone else is notice");
+
+        // note / supersede: notice.
+        assert_eq!(wake_rung(&m("bob", "note", &["alice"]), "alice", &g, &all), WakeRung::Notice);
+        assert_eq!(wake_rung(&m("bob", "supersede", &["alice"]), "alice", &g, &all), WakeRung::Notice);
+
+        // done/error/blocked on MY request → notice/alert; on someone else's request I merely
+        // observe → transactional.
+        let (req_mine, done_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "done", "alice");
+        let all_with_mine = vec![req_mine.clone()];
+        assert_eq!(wake_rung(&done_mine, "alice", &g, &all_with_mine), WakeRung::Notice, "done on my request is notice");
+
+        let (req_theirs, done_theirs) = req_and_reply("carol", "01J8Z9K3QH80", "bob", "done", "alice");
+        let all_with_theirs = vec![req_theirs.clone()];
+        assert_eq!(
+            wake_rung(&done_theirs, "alice", &g, &all_with_theirs),
+            WakeRung::Transactional,
+            "done on someone else's request I merely observe is transactional"
+        );
+
+        let (_, error_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "error", "alice");
+        assert_eq!(wake_rung(&error_mine, "alice", &g, &all_with_mine), WakeRung::Alert, "error on my request is alert");
+        let (_, error_theirs) = req_and_reply("carol", "01J8Z9K3QH80", "bob", "error", "alice");
+        assert_eq!(
+            wake_rung(&error_theirs, "alice", &g, &all_with_theirs),
+            WakeRung::Transactional,
+            "error on someone else's request I merely observe is transactional"
+        );
+
+        // `--priority high` always breaks through, even on a transactional type.
+        let mut high_claim = m("bob", "claim", &["alice"]);
+        high_claim.front.priority = Some("high".into());
+        assert_eq!(wake_rung(&high_claim, "alice", &g, &all), WakeRung::Alert, "priority high always promotes to alert");
+    }
+
+    #[test]
+    fn wake_on_default_notice_mutes_transactional_only() {
+        let g = crate::groups::Groups::new();
+        let all: Vec<Message> = Vec::new();
+        // default floor = notice
+        let claim = m("bob", "claim", &["alice"]);
+        assert!(
+            !should_wake(&claim, "alice", &g, false, None, 0, WakeRung::Notice, &all),
+            "claim must NOT wake at default (notice) floor"
+        );
+        let ack = m("bob", "ack", &["alice"]);
+        assert!(!should_wake(&ack, "alice", &g, false, None, 0, WakeRung::Notice, &all));
+        let defer = m("bob", "defer", &["alice"]);
+        assert!(!should_wake(&defer, "alice", &g, false, None, 0, WakeRung::Notice, &all));
+
+        // a note to me and a done on MY request DO wake at the default.
+        let note = m("bob", "note", &["alice"]);
+        assert!(should_wake(&note, "alice", &g, false, None, 0, WakeRung::Notice, &all), "note must wake at notice floor");
+
+        let (req_mine, done_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "done", "alice");
+        let all_with_mine = vec![req_mine];
+        assert!(
+            should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Notice, &all_with_mine),
+            "done on my request must wake at notice floor"
+        );
+    }
+
+    #[test]
+    fn wake_on_alert_mutes_notice_too() {
+        let g = crate::groups::Groups::new();
+        // a done on MY request does NOT wake at the alert floor…
+        let (req_mine, done_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "done", "alice");
+        let all_with_mine = vec![req_mine];
+        assert!(
+            !should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Alert, &all_with_mine),
+            "done on my request must NOT wake at alert floor"
+        );
+        // …but a request to me and an error on my request DO.
+        let req_to_me = m("bob", "request", &["alice"]);
+        assert!(should_wake(&req_to_me, "alice", &g, false, None, 0, WakeRung::Alert, &[]), "request to me wakes at alert floor");
+
+        let (req2, error_mine) = req_and_reply("alice", "01J8Z9K3QH81", "bob", "error", "alice");
+        let all_with_error = vec![req2];
+        assert!(
+            should_wake(&error_mine, "alice", &g, false, None, 0, WakeRung::Alert, &all_with_error),
+            "error on my request wakes at alert floor"
+        );
+    }
+
+    #[test]
+    fn priority_high_breaks_through_wake_on_alert() {
+        let g = crate::groups::Groups::new();
+        // A `claim` (normally transactional) sent at --priority high must wake even at the
+        // strictest floor (--wake-on alert) — the deliberate sender override (design/51 §4).
+        let mut high_claim = m("bob", "claim", &["alice"]);
+        high_claim.front.priority = Some("high".into());
+        assert!(
+            should_wake(&high_claim, "alice", &g, false, None, 0, WakeRung::Alert, &[]),
+            "priority high must break through even --wake-on alert"
+        );
     }
 }
 

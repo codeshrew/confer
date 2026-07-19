@@ -1032,20 +1032,25 @@ fn run() -> Result<()> {
             replace,
             all,
             min_priority,
+            wake_on,
             no_version_notice,
             delivery,
             ..
         } => {
-            let min_priority = match min_priority.as_str() {
-                "low" => 0,
-                "normal" => 1,
-                "high" => 2,
-                other => {
-                    return Err(anyhow!(
-                        "invalid --min-priority '{other}': expected low | normal | high"
-                    ))
-                }
-            };
+            // Resolve wake_on/min_priority/topic/all: explicit CLI flag > saved per-(hub,role)
+            // machine-config preference > built-in default (design/51 §6/Phase B). Saves the
+            // resolved bundle back when any flag on this run was explicit.
+            let root = config::repo_root()?;
+            let hub_key = config::hub_key(&root);
+            let resolved_role = config::resolve_role(role.clone(), &root).unwrap_or_default();
+            let (wake_on, min_priority, topic, all) = watch::resolve_watch_prefs(
+                &hub_key,
+                &resolved_role,
+                wake_on.as_deref(),
+                min_priority.as_deref(),
+                topic.as_deref(),
+                all,
+            )?;
             watch::run(watch::WatchOpts {
                 topic,
                 role,
@@ -1055,11 +1060,14 @@ fn run() -> Result<()> {
                 replace,
                 all,
                 min_priority,
+                wake_on,
                 no_version_notice,
                 delivery,
             })
         }
-        Cmd::Arm { role } => arm::run(role),
+        Cmd::Arm { role, topic, all, min_priority, wake_on } => {
+            arm::run(role, topic, all, min_priority, wake_on)
+        }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]

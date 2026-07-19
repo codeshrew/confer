@@ -58,22 +58,44 @@ fn resolve_clone(role: &Option<String>) -> Result<PathBuf> {
 /// Arm (or re-arm) the watcher the one correct way. Locates the clone, enters it, and streams
 /// wakes with `--replace` + `--delivery monitor` baked in. Long-lived: returns only when the
 /// watch loop ends (killed / replaced).
-pub fn run(role: Option<String>) -> Result<()> {
+///
+/// `topic`/`all`/`min_priority`/`wake_on` resolve exactly like `confer watch`'s own flags — explicit
+/// CLI > saved per-(hub,role) machine-config preference > built-in default — and an explicit flag here
+/// saves the resolved bundle, so the NEXT bare `arm` (including the post-compaction auto-heal re-arm)
+/// reloads it without re-deciding (design/51 §6/Phase B).
+pub fn run(
+    role: Option<String>,
+    topic: Option<String>,
+    all: bool,
+    min_priority: Option<String>,
+    wake_on: Option<String>,
+) -> Result<()> {
     let clone = resolve_clone(&role)?;
     std::env::set_current_dir(&clone)
         .map_err(|e| anyhow!("confer arm: cannot enter clone {}: {e}", clone.display()))?;
+    let hub_key = config::hub_key(&clone);
+    let resolved_role = config::resolve_role(role.clone(), &clone).unwrap_or_default();
+    let (wake_on, min_priority, topic, all) = watch::resolve_watch_prefs(
+        &hub_key,
+        &resolved_role,
+        wake_on.as_deref(),
+        min_priority.as_deref(),
+        topic.as_deref(),
+        all,
+    )?;
     // The one right way, baked in so it can't be forgotten: take over any orphan (`--replace`),
     // and stamp the delivery method so `watch-status` can affirm we actually deliver wakes. Every
     // other option is the plain `watch` default.
     watch::run(watch::WatchOpts {
-        topic: None,
+        topic,
         role,
         json: false,
         poll_secs: 10,
         advance: true,
         replace: true,
-        all: false,
-        min_priority: 0,
+        all,
+        min_priority,
+        wake_on,
         no_version_notice: false,
         delivery: Some("monitor".to_string()),
     })

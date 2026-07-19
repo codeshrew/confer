@@ -42,6 +42,15 @@ pub struct Config {
     pub tuning: Tuning,
     #[serde(default)]
     pub hubs: BTreeMap<String, Hub>,
+    /// Per-(hub, role) `confer watch`/`arm` preferences (design/51 §6/Phase B), keyed by
+    /// [`watch_prefs_key`] (`"<hub_key>:<role>"`, where `hub_key` is the topology-proof root-commit
+    /// SHA from [`crate::config::hub_key`] — NOT the human-chosen `hubs.<name>` routing key above,
+    /// which an operator may never set). Saved automatically whenever a run passes an explicit
+    /// `--wake-on`/`--min-priority`/`--topic`/`--all`, so the next bare `watch`/`arm` for the same
+    /// (hub, role) — including the post-compaction auto-heal re-arm — reloads the choice without
+    /// re-deciding it.
+    #[serde(default)]
+    pub watch_prefs: BTreeMap<String, WatchPrefs>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -144,6 +153,57 @@ impl WatchMode {
             _ => None,
         }
     }
+}
+
+/// Saved `confer watch`/`arm` preferences for one (hub, role) (design/51 §6/Phase B). Every field is
+/// stored as the same string/bool the CLI flag would take (`wake_on`: `alert`|`notice`|`all`|`verbose`;
+/// `min_priority`: `low`|`normal`|`high`) rather than a typed enum, so an older binary that doesn't
+/// recognize a newer rung name still round-trips the file instead of failing to parse it — the same
+/// closed-set-at-use, open-at-storage treatment as `auth.method`/`hub.watch` above. `None` means "no
+/// saved preference for this field" — distinct from a saved value that happens to equal the built-in
+/// default, which is why resolution reads `Option`, not a defaulted plain value.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+pub struct WatchPrefs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The `watch_prefs` map key for a (hub, role) pair — the hub's `hub_key` (topology-proof root-commit
+/// SHA), not the human-chosen `hubs.<name>` routing key, so persistence works even for a hub the
+/// operator never named in `config.json`.
+pub fn watch_prefs_key(hub_key: &str, role: &str) -> String {
+    format!("{hub_key}:{role}")
+}
+
+/// Load the saved watch preferences for this (hub, role), or an all-`None` default if nothing was ever
+/// saved (a bare `watch`/`arm` with nothing saved falls through to the built-in defaults untouched).
+pub fn get_watch_prefs(hub_key: &str, role: &str) -> WatchPrefs {
+    load()
+        .watch_prefs
+        .get(&watch_prefs_key(hub_key, role))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Save the resolved watch preferences for this (hub, role), replacing whatever was there. Called only
+/// when a run passed at least one explicit flag; the caller resolves CLI > saved > default FIRST, so
+/// the bundle being written already carries forward any prior saved fields the explicit flags didn't
+/// touch (a partial `--min-priority high` on top of a previously-saved `--wake-on alert` doesn't lose
+/// the `alert`).
+pub fn save_watch_prefs(hub_key: &str, role: &str, prefs: WatchPrefs) -> Result<()> {
+    let key = watch_prefs_key(hub_key, role);
+    update_with(|cfg| {
+        cfg.watch_prefs.insert(key, prefs);
+        Ok(())
+    })
 }
 
 fn yes() -> bool {

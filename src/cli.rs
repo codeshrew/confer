@@ -424,8 +424,20 @@ pub(crate) enum Cmd {
         all: bool,
         /// only wake on messages at/above this priority: low (default, all) |
         /// normal | high. Lower-priority items still land — seen via `poll`.
-        #[arg(long = "min-priority", default_value = "low")]
-        min_priority: String,
+        /// Unset uses the saved per-(hub,role) preference if any, else `low`
+        /// (design/51 §6); passing this explicitly saves it for next time.
+        #[arg(long = "min-priority")]
+        min_priority: Option<String>,
+        /// only wake on events at/above this intrinsic wake-rung: alert (act-now
+        /// only) | notice (default — mutes only board mechanics: claim/ack/defer)
+        /// | all (today's behavior — every event addressed to you) | verbose (the
+        /// WHOLE board, every rung — implies --all scope; the overseer firehose).
+        /// Below-threshold events still land — seen via `poll`/`inbox`. A sender's
+        /// `--priority high` always breaks through and wakes regardless of this floor.
+        /// Unset uses the saved per-(hub,role) preference if any, else `notice`
+        /// (design/51 §6); passing this explicitly saves it for next time.
+        #[arg(long = "wake-on")]
+        wake_on: Option<String>,
         /// don't emit the one-shot "a newer confer is on this hub — update" wake (it's on by
         /// default; version drift is otherwise only seen at watch startup / `confer status`).
         #[arg(long = "no-version-notice")]
@@ -446,6 +458,21 @@ pub(crate) enum Cmd {
         /// watch target this session owns (disambiguate a multi-role machine with this).
         #[arg(long)]
         role: Option<String>,
+        /// same as `watch --topic` — unset uses the saved per-(hub,role) preference if any, else
+        /// no filter. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long)]
+        topic: Option<String>,
+        /// same as `watch --all` (firehose scope) — saved when passed explicitly (design/51 §6).
+        #[arg(long)]
+        all: bool,
+        /// same as `watch --min-priority` — unset uses the saved per-(hub,role) preference if
+        /// any, else `low`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long = "min-priority")]
+        min_priority: Option<String>,
+        /// same as `watch --wake-on` — unset uses the saved per-(hub,role) preference if any,
+        /// else `notice`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long = "wake-on")]
+        wake_on: Option<String>,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether

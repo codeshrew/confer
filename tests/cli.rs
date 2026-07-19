@@ -3191,12 +3191,19 @@ fn e2e_filtered_poll_does_not_advance_read_frontier() {
 /// Spawn a role's watch, let it run briefly, then kill it and return its stdout.
 /// The watch EMITS (delivery) but must never advance the READ frontier.
 fn watch_briefly(c: &Clone, secs: u64) -> String {
+    watch_briefly_args(c, secs, &[])
+}
+
+/// Like `watch_briefly`, but with extra CLI args (e.g. `--wake-on alert`).
+fn watch_briefly_args(c: &Clone, secs: u64, extra: &[&str]) -> String {
     use std::io::Read;
+    let mut args = vec!["watch", "--role", &c.role, "--poll", "1", "--no-advance"];
+    args.extend_from_slice(extra);
     let mut child = Command::new(BIN)
         .env("HOME", &c.home)
         .env("CONFER_HUB", &c.dir)
         .env("CONFER_ROLE", &c.role)
-        .args(["watch", "--role", &c.role, "--poll", "1", "--no-advance"])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -3238,6 +3245,106 @@ fn e2e_watch_emit_does_not_mark_read() {
         b.unread_count(),
         1,
         "a watch emit must NOT advance the read frontier"
+    );
+}
+
+/// design/51 — the wake-class severity gate. Default `--wake-on notice` mutes ONLY the
+/// transactional trio (claim/ack/defer): a `claim` addressed to me doesn't wake, but a `note` to
+/// me and a `done` on MY OWN request do. Muted events still land unread (poll/inbox), same
+/// delivery-vs-wake split `--min-priority` already uses — never advances the read frontier.
+#[test]
+fn e2e_wake_on_default_notice_mutes_transactional() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // alpha opens a request that beta will claim — the claim auto-addresses back to alpha
+    // (the requester), so it lands directly in alpha's inbox. beta's clone predates the
+    // request (cloned before alpha sent it), so pull first — its own auto-addressing reads
+    // the LOCAL tree, and a stale one would resolve `of` without finding the request's author.
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "please claim me", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claim");
+    // beta also sends alpha a plain note (should wake at the default) and resolves the request
+    // with `done` (a resolution on ALPHA's OWN request — also should wake at the default).
+    b.send(&["--type", "note", "--to", "alpha", "--summary", "a substantive note", "--text", "n"]);
+    assert!(ok(&b.confer(&["done", "--of", &r])), "beta done");
+
+    let w = watch_briefly(&a, 3); // default --wake-on notice
+    assert!(!w.contains("claiming"), "the claim (transactional) must NOT wake at the default: {w}");
+    assert!(w.contains("substantive note"), "a note to me must wake at the default: {w}");
+    assert!(
+        w.contains("done") || w.contains("watch me") || w.contains("please claim me"),
+        "a done on MY OWN request must wake at the default: {w}"
+    );
+
+    // Muted (and woken) events alike are DELIVERY, never consumption — none of them advanced
+    // alpha's read frontier. alpha has 3 direct messages: the claim, the note, and the done.
+    assert_eq!(
+        a.unread_count(),
+        3,
+        "watch — muted or not — must never advance the read frontier"
+    );
+}
+
+/// `--wake-on alert` mutes `notice` too: a `done` on MY OWN request no longer wakes, but a
+/// `request` addressed to me and an `error` on MY OWN request still do (they're `alert`).
+#[test]
+fn e2e_wake_on_alert_mutes_notice_but_not_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // A request alpha authors, resolved by beta with `done` — notice, muted at --wake-on alert.
+    // beta's clone predates the request, so pull first (see the notice-floor test above).
+    let r1 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "resolve me quietly", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r1])), "beta claim r1");
+    assert!(ok(&b.confer(&["done", "--of", &r1])), "beta done r1");
+
+    // A second request alpha authors, that beta errors out on — alert, must still wake.
+    let r2 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "this one breaks", "--text", "b",
+    ]);
+    assert!(ok(&b.confer(&["claim", "--of", &r2])), "beta claim r2");
+    assert!(ok(&b.confer(&["error", "--of", &r2])), "beta error r2");
+
+    // A brand-new request FROM beta TO alpha — alert (request addressed to me).
+    b.send(&[
+        "--type", "request", "--to", "alpha", "--summary", "please handle this", "--text", "b",
+    ]);
+
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        !w.contains("DONE "),
+        "done on MY request must NOT wake at --wake-on alert: {w}"
+    );
+    assert!(w.contains("please handle this"), "a request addressed to me must wake at --wake-on alert: {w}");
+    assert!(w.contains("failed"), "an error on MY request must wake at --wake-on alert: {w}");
+}
+
+/// `--priority high` breaks through even the strictest floor: a `claim` (normally
+/// transactional) sent at high priority wakes even under `--wake-on alert`.
+#[test]
+fn e2e_priority_high_breaks_through_wake_on_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "urgent claim test", "--text", "b",
+    ]);
+    b.pull(); // beta's clone predates the request (see the notice-floor test above)
+    b.send(&[
+        "--type", "claim", "--of", &r, "--priority", "high", "--summary", "claiming",
+    ]);
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        w.contains("claiming") || w.contains("urgent claim test"),
+        "a high-priority claim must break through --wake-on alert: {w}"
     );
 }
 
@@ -3376,6 +3483,151 @@ fn e2e_lifecycle_verbs_accept_append_addressing() {
     assert!(
         !a.inbox_peek().contains("routed to gamma"),
         "explicit --to overrides the opener auto-address"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-claim on resolve: `done`/`error`/`blocked` must leave the board's
+// ownership state truthful — if the RESOLVING role has no claim of its own on
+// the request, a real `claim` (self) is auto-emitted BEFORE the resolve lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Read a thread's messages as (type, from) pairs, oldest-first (mirrors the file's
+/// existing `thread --json` usage — NDJSON of `to_json` objects).
+fn thread_events(c: &Clone, id: &str) -> Vec<(String, String)> {
+    let o = c.confer(&["thread", id, "--json"]);
+    assert!(ok(&o), "thread --json: {}", err(&o));
+    out(&o)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("thread --json line must parse ({e}): {l}"));
+            (
+                v["type"].as_str().unwrap().to_string(),
+                v["from"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn done_on_unclaimed_request_auto_claims_then_closes() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed") && err(&d).contains("was unclaimed"),
+        "a transparent auto-claim notice must be printed: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    assert_eq!(
+        events,
+        vec![
+            ("request".to_string(), "alpha".to_string()),
+            ("claim".to_string(), "beta".to_string()),
+            ("done".to_string(), "beta".to_string()),
+        ],
+        "the auto-claim (beta) must land BEFORE the done, in order: {events:?}"
+    );
+}
+
+#[test]
+fn done_after_a_manual_claim_never_double_claims() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    a.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        !err(&d).contains("auto-claimed"),
+        "must NOT auto-claim when the resolver already holds a claim: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<_> = events.iter().filter(|(t, _)| t == "claim").collect();
+    assert_eq!(
+        claims,
+        vec![&("claim".to_string(), "beta".to_string())],
+        "exactly one claim message, never a duplicate: {events:?}"
+    );
+}
+
+#[test]
+fn auto_claim_is_attributed_to_the_resolver_never_another_role() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma"); // present in the hub, uninvolved — must never appear as the claimant
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["done", "--of", &r, "--summary", "did it"])));
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(claims, vec!["beta"], "the auto-claim's author must be exactly the resolver (beta): {events:?}");
+    assert!(!claims.contains(&"alpha"), "must never fabricate a claim on the requester's behalf");
+    assert!(!claims.contains(&"gamma"), "must never fabricate a claim on an uninvolved role's behalf");
+    let _ = g; // only needed to exist in the hub, never acted on
+}
+
+/// Contested/handoff case: gamma resolves a request beta already claimed. gamma
+/// has no claim of its own, so it auto-claims too — `claimants()` is a list
+/// (head = owner, tail = contested), so gamma joining as a second claimant
+/// doesn't steal or overwrite beta's (first/owner) attribution; it just
+/// truthfully records that gamma also touched the request while closing it.
+#[test]
+fn done_by_a_different_role_adds_its_own_claim_without_overwriting_the_existing_one() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    g.pull();
+    let d = g.confer(&["done", "--of", &r, "--summary", "cleaning up for beta"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed"),
+        "gamma has no claim of its own on this request, so it must auto-claim too: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(
+        claims,
+        vec!["beta", "gamma"],
+        "beta's original claim stays first/owner; gamma is appended as a second, \
+         contested claimant rather than overwriting beta's attribution: {events:?}"
     );
 }
 
@@ -6639,4 +6891,148 @@ fn append_requires_summary_or_summary_file() {
     let o = c.append(&["--type", "note", "--to", "beta", "--text", "b"]);
     assert!(!ok(&o), "append with neither --summary nor --summary-file must be rejected");
     assert!(err(&o).contains("--summary"), "{}", err(&o));
+}
+
+// ── design/51 §6/Phase B: per-(hub, role) watch preferences persist in machine config ──────────
+
+/// Spawn `confer <args>` briefly (long enough to pass the startup hints, before the poll loop),
+/// kill it, and return its stderr — where `--wake-on`'s floor hint (or its absence) is emitted.
+fn spawn_and_capture_stderr(home: &Path, hub_dir: &Path, role: &str, args: &[&str]) -> String {
+    use std::io::Read;
+    let mut child = Command::new(BIN)
+        .env("HOME", home)
+        .env("CONFER_HUB", hub_dir)
+        .env("CONFER_ROLE", role)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    let _ = child.kill();
+    let mut s = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut s);
+    }
+    let _ = child.wait();
+    s
+}
+
+#[test]
+fn watch_prefs_persist_per_hub_role_and_reload_on_bare_rearm() {
+    // An explicit --wake-on is saved for this (hub, role) in machine config; a LATER bare
+    // re-arm for the SAME (hub, role) must reload it without the flag being re-passed.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "explicit --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `watch` must reload the saved wake-on=alert preference for this (hub, role): {reloaded}"
+    );
+}
+
+#[test]
+fn confer_arm_persists_wake_on_and_a_bare_rearm_reloads_it() {
+    // Same persistence contract, through `confer arm` (the paved-path re-arm command) rather
+    // than raw `watch` — the post-compaction auto-heal re-arm goes through `arm`.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["arm", "--role", "alpha"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "confer arm --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `confer arm` must reload the saved wake-on=alert preference: {reloaded}"
+    );
+}
+
+#[test]
+fn explicit_watch_flag_overrides_a_saved_preference() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let _ = run(&["--wake-on", "alert"]);
+    let overridden = run(&["--wake-on", "all"]);
+    assert!(
+        overridden.contains("all (board mechanics"),
+        "an explicit --wake-on on a later run must override the saved preference, not defer to it: {overridden}"
+    );
+}
+
+#[test]
+fn watch_prefs_are_scoped_per_hub_and_role_not_shared() {
+    // alpha and beta are two DIFFERENT roles on the SAME hub (same hub_key) — beta's bare watch
+    // must not inherit alpha's saved --wake-on.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    let _ = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1", "--wake-on", "alert"],
+    );
+    let beta_bare = spawn_and_capture_stderr(
+        &b.home,
+        &b.dir,
+        "beta",
+        &["watch", "--role", "beta", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !beta_bare.contains("wake-rung floor"),
+        "a different role on the same hub must NOT inherit alpha's saved wake-on preference: {beta_bare}"
+    );
+}
+
+#[test]
+fn bare_watch_with_nothing_saved_defaults_to_notice() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let s = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !s.contains("wake-rung floor"),
+        "with nothing ever saved, the built-in default (notice) must apply — no floor hint: {s}"
+    );
 }

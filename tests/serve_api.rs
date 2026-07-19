@@ -299,8 +299,8 @@ fn overview_has_topic_board_and_fleet_shapes() {
     // design/47 §4.2 items 3/4/6: `liveness`/`hbAgeSecs`/`trust` are ADDITIVE alongside the
     // existing `live` bool and `verified` enum — old consumers keep working.
     for key in [
-        "id", "display", "desc", "expectedHost", "lastTs", "lastHost", "live", "liveness", "hbAgeSecs", "verified", "trust", "version", "watchState",
-        "keyFingerprint", "color", "abbr", "wip",
+        "id", "display", "desc", "profileMarkdown", "expectedHost", "lastTs", "lastHost", "live", "liveness", "hbAgeSecs", "verified", "trust", "version",
+        "watchState", "keyFingerprint", "color", "abbr", "wip",
     ] {
         assert!(agent.get(key).is_some(), "missing agent.{key} in {agent}");
     }
@@ -484,6 +484,44 @@ fn overview_agent_projects_version_watch_state_and_key_fingerprint() {
     assert!(d["watchState"].is_null(), "delta: {d}");
     assert!(d["version"].is_null(), "delta: {d}");
     assert!(d["keyFingerprint"].is_null(), "delta never joined/published a key, so keyFingerprint is honestly null: {d}");
+}
+
+#[test]
+fn overview_agent_projects_full_role_profile_markdown_body() {
+    // `profileMarkdown` = the FULL markdown body below a `roles/<id>.md` card's frontmatter
+    // (the prose `desc` is NOT). Honest-nullable: a frontmatter-only card → null. Written
+    // straight into the clone's working tree (what serve's roster fold reads), same as any
+    // hand-authored role card.
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    let roles = alpha.dir.join("roles");
+    std::fs::create_dir_all(&roles).unwrap();
+    // A card with a real prose body below the closing fence.
+    std::fs::write(
+        roles.join("prosy.md"),
+        "---\ndisplay: Prosy\ndesc: one-line summary\n---\n# Prosy\n\nDoes the **profile** work.\nSecond line.\n",
+    )
+    .unwrap();
+    // A card with frontmatter ONLY (no body) → profileMarkdown must be null, desc still present.
+    std::fs::write(roles.join("bare.md"), "---\ndisplay: Bare\ndesc: just a slug\n---\n").unwrap();
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/overview");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let fleet = v["fleet"].as_array().expect("fleet array");
+    let find = |id: &str| fleet.iter().find(|a| a["id"] == id).unwrap_or_else(|| panic!("no {id} in {fleet:?}"));
+
+    let p = find("prosy");
+    assert_eq!(p["desc"], "one-line summary", "desc stays the one-line frontmatter field: {p}");
+    assert_eq!(
+        p["profileMarkdown"], "# Prosy\n\nDoes the **profile** work.\nSecond line.",
+        "profileMarkdown is the full body below the frontmatter, newlines preserved: {p}"
+    );
+
+    let b = find("bare");
+    assert_eq!(b["desc"], "just a slug", "bare card still has its desc slug: {b}");
+    assert!(b["profileMarkdown"].is_null(), "a frontmatter-only card has no body, so profileMarkdown is null: {b}");
 }
 
 #[test]

@@ -95,6 +95,17 @@ pub fn claimants(msgs: &[Message], req_id: &str) -> Vec<String> {
     seen
 }
 
+/// Who authored the request/thread-root a message is `of` (or that it directly is, when the
+/// message itself is the request). Used receiver-side to tell "a done/error ON MY request" (wake
+/// rung: alert/notice) apart from "the same event on a request I merely observe" (transactional) —
+/// design/51 §3. `of` is resolved to a full id at append time, so an exact id match is the normal
+/// path; `id_ref_matches` tolerates a legacy short-id reference.
+pub fn request_author<'a>(msgs: &'a [Message], req_id: &str) -> Option<&'a str> {
+    msgs.iter()
+        .find(|m| id_ref_matches(&m.front.id, req_id))
+        .map(|m| m.front.from.as_str())
+}
+
 /// A stale-open request is flagged for debt visibility.
 pub const STALE_SECS: i64 = 3 * 86400;
 
