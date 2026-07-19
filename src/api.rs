@@ -6,7 +6,7 @@
 //! contract with that frontend, not incidental.
 
 use crate::schema::{sanitize_term, CodeRef, Message};
-use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, seen, store, tiers, verify};
+use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, seen, store, tiers, verify, version};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -359,15 +359,40 @@ fn beat_liveness(beat: Option<&presence::Beat>, now: chrono::DateTime<Utc>) -> (
     (liveness_str, hb_age_secs, live == presence::Live::Up)
 }
 
+/// `liveness` (the existing 3-state `presence::Live` signal, already computed for
+/// the `liveness` field below) re-mapped onto the narrower "is a watcher actually
+/// armed" vocabulary the Fleet view wants: `live` (a fresh beat within the watch
+/// cadence) means the role's watcher is genuinely armed; `stale` (seen recently but
+/// past cadence) is honestly downgraded to merely "idle" rather than claimed as
+/// armed; `down` (or no trusted beat at all — `beat_liveness` collapses both to
+/// `"down"`) has no basis to claim EITHER state, so `null`, never guessed. No new
+/// detection mechanism — this is a pure fold of the same enum `beat_liveness` used.
+fn watch_state_of(liveness: &str) -> Option<&'static str> {
+    match liveness {
+        "live" => Some("armed"),
+        "stale" => Some("idle"),
+        _ => None,
+    }
+}
+
 fn agent_row_json(
     board: &projection::Board,
     a: &projection::AgentRow,
     verified: &'static str,
     trust: &'static str,
+    fpr: Option<&str>,
     beat: Option<&presence::Beat>,
     now: chrono::DateTime<Utc>,
 ) -> Value {
     let (liveness, hb_age_secs, live) = beat_liveness(beat, now);
+    // `version`: the confer build the agent's own (trust-gated) heartbeat is running,
+    // same pin-form `beat.p.build` that `confer fleet`/`require --bump` read — an
+    // Untrusted beat (forged/replayed) must not surface a believed version either, so
+    // this rides the same `beat_liveness`-filtered `beat` rather than re-deriving.
+    let version = beat
+        .filter(|b| b.trust.ok())
+        .and_then(|b| b.p.build.as_deref())
+        .map(|b| version::BuildId::parse(b).label());
     json!({
         "id": a.id,
         "display": sanitize_term(&a.display, false),
@@ -380,6 +405,9 @@ fn agent_row_json(
         "hbAgeSecs": hb_age_secs,
         "verified": verified,
         "trust": trust,
+        "version": version,
+        "watchState": watch_state_of(liveness),
+        "keyFingerprint": fpr,
         "color": color_of(&a.id),
         "abbr": abbr_of(&a.display),
         "wip": agent_wip(board, &a.id),
@@ -491,6 +519,7 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
                 a,
                 verified_of(card_trust.status_str()),
                 trust_of(card_trust.status_str()),
+                card_trust.fpr(),
                 beats.get(&a.id),
                 now,
             )

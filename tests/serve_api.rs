@@ -298,7 +298,10 @@ fn overview_has_topic_board_and_fleet_shapes() {
     let agent = &fleet[0];
     // design/47 §4.2 items 3/4/6: `liveness`/`hbAgeSecs`/`trust` are ADDITIVE alongside the
     // existing `live` bool and `verified` enum — old consumers keep working.
-    for key in ["id", "display", "desc", "expectedHost", "lastTs", "lastHost", "live", "liveness", "hbAgeSecs", "verified", "trust", "color", "abbr", "wip"] {
+    for key in [
+        "id", "display", "desc", "expectedHost", "lastTs", "lastHost", "live", "liveness", "hbAgeSecs", "verified", "trust", "version", "watchState",
+        "keyFingerprint", "color", "abbr", "wip",
+    ] {
         assert!(agent.get(key).is_some(), "missing agent.{key} in {agent}");
     }
     assert!(matches!(agent["verified"].as_str(), Some("signed" | "first-sight" | "unverified")));
@@ -309,6 +312,9 @@ fn overview_has_topic_board_and_fleet_shapes() {
     assert_eq!(agent["liveness"], "down");
     assert_eq!(agent["live"], false);
     assert!(agent["hbAgeSecs"].is_null());
+    assert!(agent["version"].is_null(), "no beat at all → no build to report: {agent}");
+    assert!(agent["watchState"].is_null(), "no trustworthy beat → honestly unknown, not 'idle': {agent}");
+    assert!(agent["keyFingerprint"].is_null(), "seeded agents never joined/published a key: {agent}");
 }
 
 /// Force-pushes a raw presence beat straight onto `refs/presence/<role>` (bypassing
@@ -318,6 +324,13 @@ fn overview_has_topic_board_and_fleet_shapes() {
 /// key (`commit-tree -S`, as `presence::publish` does for a real agent); `None` → an
 /// unsigned commit (the "forged/legacy" beat shape).
 fn push_beat(dir: &Path, role: &str, ts: &str, sign_key: Option<&Path>) {
+    push_beat_ex(dir, role, ts, sign_key, None);
+}
+
+/// Same as `push_beat`, plus an optional `build` (the pin-form `"<semver> <sha>"` a real
+/// heartbeat carries) — lets a test exercise the honest-nullable `version` projection
+/// without needing a real running watcher.
+fn push_beat_ex(dir: &Path, role: &str, ts: &str, sign_key: Option<&Path>, build: Option<&str>) {
     let mk = match sign_key {
         Some(key) => format!(
             "git -c gpg.format=ssh -c user.signingkey='{}' -c gpg.ssh.program=ssh-keygen commit-tree $t -S -m beat",
@@ -325,10 +338,14 @@ fn push_beat(dir: &Path, role: &str, ts: &str, sign_key: Option<&Path>) {
         ),
         None => "git commit-tree $t -m beat".to_string(),
     };
+    let build_field = match build {
+        Some(b) => format!(",\"build\":\"{b}\""),
+        None => String::new(),
+    };
     let o = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "cd '{dir}' && printf '{{\"role\":\"{role}\",\"last_seen\":\"{ts}\",\"poll_secs\":10}}' > pres.json && \
+            "cd '{dir}' && printf '{{\"role\":\"{role}\",\"last_seen\":\"{ts}\",\"poll_secs\":10{build_field}}}' > pres.json && \
              b=$(git hash-object -w pres.json) && \
              t=$(printf '100644 blob %s\\tpresence.json\\n' \"$b\" | git mktree) && \
              c=$({mk}) && \
@@ -400,6 +417,73 @@ fn overview_three_state_liveness_and_heartbeat_age() {
     assert_eq!(g["live"], false, "gamma: {g}");
     let g_age = g["hbAgeSecs"].as_i64().unwrap();
     assert!(g_age > 1800, "gamma hbAgeSecs should be well past the stale window: {g}");
+}
+
+#[test]
+fn overview_agent_projects_version_watch_state_and_key_fingerprint() {
+    // The three new per-agent fields, same honest-nullable pattern as tier/sync/seenBy:
+    // never faked/guessed, present only when the underlying signal actually exists.
+    //  - `version`: the agent's own build, straight off its (trust-gated) heartbeat.
+    //  - `watchState`: the existing 3-state `liveness` re-mapped to armed/idle/null —
+    //    no new detection mechanism, a pure fold of the same signal.
+    //  - `keyFingerprint`: the pinned signing key's SHA256 fingerprint, when known.
+    let hub = new_hub();
+    let keydir = tmp("key");
+
+    let alpha = hub.clone("alpha"); // signed + fresh beat WITH a build → live/armed/version+fpr
+    let beta = hub.clone("beta"); // signed + stale beat, no build published → idle/no version
+    let gamma = hub.clone("gamma"); // signed but no beat at all → down/null/null, still has a card key
+    for (c, role) in [(&alpha, "alpha"), (&beta, "beta"), (&gamma, "gamma")] {
+        let key = keygen(&keydir, role);
+        assert!(ok(&c.confer(&["join", "--role", role, "--signing-key", key.to_str().unwrap()])));
+    }
+    assert!(ok(&alpha.append(&["--type", "note", "--to", "beta", "--summary", "hi", "--text", "hi"])));
+    // delta never joins/publishes a key — it just authors a message (union-of-authors
+    // membership), so its whole new-fields shape must stay honestly null. Posted through
+    // alpha's OWN clone (rather than a separate delta clone) so it lands in alpha's local
+    // working tree immediately — a fresh clone pushing straight to origin wouldn't be
+    // visible without a fetch this harness never does (same reason every other test in
+    // this file posts through one already-`start_server`'d clone's directory).
+    assert!(ok(&alpha.confer(&["append", "--from", "delta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2"])));
+
+    let now = chrono::Utc::now();
+    let ts = |secs_ago: i64| (now - chrono::Duration::seconds(secs_ago)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    push_beat_ex(&alpha.dir, "alpha", &ts(30), Some(&keydir.join("alpha")), Some("0.6.9 45a9c04"));
+    push_beat_ex(&alpha.dir, "beta", &ts(1200), Some(&keydir.join("beta")), None); // stale, legacy no-build beat
+    // gamma: no beat published at all.
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/overview");
+    assert_eq!(status, 200, "body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let fleet = v["fleet"].as_array().expect("fleet array");
+    let find = |id: &str| fleet.iter().find(|a| a["id"] == id).unwrap_or_else(|| panic!("no {id} in {fleet:?}"));
+
+    let a = find("alpha");
+    assert_eq!(a["liveness"], "live", "alpha: {a}");
+    assert_eq!(a["watchState"], "armed", "alpha watchState should fold live->armed: {a}");
+    assert_eq!(a["version"], "0.6.9 (45a9c04)", "alpha version should be the human build label: {a}");
+    assert!(a["keyFingerprint"].as_str().unwrap_or("").starts_with("SHA256:"), "alpha keyFingerprint: {a}");
+
+    let b = find("beta");
+    assert_eq!(b["liveness"], "stale", "beta: {b}");
+    assert_eq!(b["watchState"], "idle", "beta watchState should fold stale->idle: {b}");
+    assert!(b["version"].is_null(), "beta published no build on its beat, so version stays null: {b}");
+    assert!(b["keyFingerprint"].as_str().unwrap_or("").starts_with("SHA256:"), "beta still has a pinned key: {b}");
+
+    let g = find("gamma");
+    assert_eq!(g["liveness"], "down", "gamma: {g}");
+    assert!(g["watchState"].is_null(), "gamma has no trustworthy beat, so watchState is honestly null (not 'idle'): {g}");
+    assert!(g["version"].is_null(), "gamma has no beat at all, so version is null: {g}");
+    // gamma DID join with a card/key, so its fingerprint should still resolve from the
+    // card-trust path independent of any beat.
+    assert!(g["keyFingerprint"].as_str().unwrap_or("").starts_with("SHA256:"), "gamma keyFingerprint from its card: {g}");
+
+    let d = find("delta");
+    assert_eq!(d["liveness"], "down", "delta: {d}");
+    assert!(d["watchState"].is_null(), "delta: {d}");
+    assert!(d["version"].is_null(), "delta: {d}");
+    assert!(d["keyFingerprint"].is_null(), "delta never joined/published a key, so keyFingerprint is honestly null: {d}");
 }
 
 #[test]
