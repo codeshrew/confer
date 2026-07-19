@@ -42,6 +42,7 @@
   import { boardFilter } from './lib/boardFilter.svelte';
   import { filterRequests } from './lib/boardStats';
   import FocusChip from './lib/components/FocusChip.svelte';
+  import { frameData, overlayStack } from './lib/overlayStack.svelte';
 
   let hubs = $state<Hub[]>([]);
   let overview = $state<Overview | null>(null);
@@ -138,13 +139,15 @@
 
   let notesOn = $state(true);
   let reqsOn = $state(true);
+  // piece 5 — kept separate from the ticket Full popover's own visibility
+  // (piece 10 Phase A: now `overlayStack.top?.id === 'ticket'`, see below):
+  // closing the popover must not clear which ticket is selected, so Board's
+  // row highlight and the right rail's meta-thread stay put after `esc` —
+  // "esc → back to the board where you were." This is also WHY the ticket's
+  // id isn't the stack frame's own source of truth (unlike the dossier's
+  // `agentId`): Board still needs it after the frame is popped off the
+  // stack entirely.
   let selectedRequestId = $state<string | null>(null);
-  // piece 5 — the ticket Full popover's own open/close, separate from
-  // `selectedRequestId` (mirrors `focusReaderOpen`'s separation from
-  // `appState.selectedMessage`): closing the popover must not clear which
-  // ticket is selected, so a re-open (or the right rail's meta-thread)
-  // still shows the same ticket — "esc → back to the board where you were".
-  let ticketPopoverOpen = $state(false);
 
   // Keep-alive for the four main view panes: switching Chat/Board/Fleet/Code
   // via `{#if appState.view === ...}` would destroy and recreate whichever
@@ -440,9 +443,19 @@
   // reference graph a plain click would (contextMode stays 'meta', matching
   // selectMessage), and opens the popover on top of whatever's already
   // there. "Mini card portals to Full" (the composable-card rationale).
-  function selectTicket(id: string) {
+  //
+  // piece 10 Phase A — `selectTicket` is used for TOP-LEVEL/same-level
+  // selection (Chat's TicketMiniCard, and the popover's own `onNavigate`
+  // j/k-ing between tickets), so it `replace`s the stack's top frame rather
+  // than nesting a new one: a fresh top-level open replaces-on-empty
+  // (identical to a push), and j/k swaps content in place at whatever depth
+  // it's already at (still nested under the dossier if that's where it was
+  // opened from). Opening a ticket FROM WITHIN a different overlay (the
+  // dossier's/note's own `onOpenTicket`, wired below) calls `setTicketContext`
+  // + `overlayStack.push` directly instead — THAT'S the actual bug fix:
+  // the parent frame survives underneath.
+  function setTicketContext(id: string) {
     selectedRequestId = id;
-    ticketPopoverOpen = true;
     contextMode = 'meta';
     // A ticket's originating message shares the `msg_`/`req_` id suffix
     // convention used across the mock fixtures (see ChatStream.findRequest).
@@ -456,9 +469,14 @@
     appState.drawer = 'right';
   }
 
+  function selectTicket(id: string) {
+    setTicketContext(id);
+    overlayStack.replace({ id: 'ticket', type: 'popover', data: { ticketId: id } });
+  }
+
   function selectBoardRow(id: string) {
     selectedRequestId = id;
-    ticketPopoverOpen = true;
+    overlayStack.replace({ id: 'ticket', type: 'popover', data: { ticketId: id } });
     contextMode = 'meta';
     // piece 3's `f`-from-anywhere focus reader keys off `appState.selectedMessage`
     // — mirrors selectTicket's own resolution (same `req_`/`msg_` id
@@ -496,14 +514,22 @@
   });
 
   // piece 8b — the reusable agent dossier's own open/close, separate from
-  // any view/selection state (same `focusReaderOpen`/`ticketPopoverOpen`
-  // shape): opening it never navigates anywhere, so "esc closes → back
-  // where you were" is true by construction, not something to re-derive.
-  let dossierOpen = $state(false);
-  let dossierAgentId = $state<string | null>(null);
+  // any view/selection state: opening it never navigates anywhere, so "esc
+  // closes → back where you were" is true by construction, not something
+  // to re-derive.
+  //
+  // piece 10 Phase A — unlike `selectedRequestId` (needed by Board even
+  // after the ticket popover closes), NOTHING else in the app needs "the
+  // last-opened agent" once the dossier itself closes, so `agentId` lives
+  // ENTIRELY in the stack frame's `data` now — no parallel `dossierAgentId`
+  // variable to keep in sync. `push` (not `replace`): every current call
+  // site (Fleet, Overview's AgentNode, a message's seen-by roster) opens
+  // the dossier from a TOP-LEVEL context — nothing else is showing — so
+  // this behaves like a fresh open today, but `push` is the semantically
+  // correct choice if a future nested "open a dossier from within X" path
+  // appears (it nests rather than replacing X).
   function openAgentDossier(agentId: string) {
-    dossierAgentId = agentId;
-    dossierOpen = true;
+    overlayStack.push({ id: 'agent-dossier', type: 'popover', data: { agentId } });
   }
 
   /** Overview's `AgentNode` click (design/47 §2.6's original "jump to that
@@ -751,6 +777,21 @@
     if (!appState.selectedMessage) focusReaderOpen = false;
   });
 
+  // piece 10 Phase A — focus reader stays a plain toggle (not part of
+  // `overlayStack`, per the brief), but it's still a competing FULL
+  // overlay. Before the stack existed, at most one popover could ever be
+  // open, so each popover's own "close me when focus reader opens" effect
+  // was equivalent to "nothing else shows." Now that frames can nest, that
+  // per-component effect only pops ONE layer — which could leave a stale
+  // parent frame (e.g. the dossier, under a popped ticket) to re-render
+  // underneath/alongside the focus reader. Clear the whole stack instead,
+  // whenever focus reader opens by ANY path (its own button or the global
+  // `f` key) — the individual popovers' own onClose-on-focusReaderOpen
+  // effects still fire too; popping an already-empty stack is just a no-op.
+  $effect(() => {
+    if (focusReaderOpen) overlayStack.clear();
+  });
+
   // keyboard-architecture pass — the mouse path for `f`: Message.svelte's
   // "open in focus reader" button. Selects, then opens, in one click —
   // `f` itself only TOGGLES because it assumes the message is already the
@@ -761,22 +802,26 @@
     focusReaderOpen = true;
   }
 
-  // piece 6 — the enriched note popover. Same shape as `focusReaderOpen`:
-  // a separate open/close flag (not folded into `appState.selectedMessage`
-  // itself) so closing it doesn't clear the selection, and an `$effect`
-  // auto-closing it if the selection clears out from under it or the
-  // focus reader opens on top (launchpad, not a stack — same rule
-  // TicketFullPopover follows).
-  let notePopoverOpen = $state(false);
+  // piece 6 — the enriched note popover. Its visibility is now `overlayStack`
+  // (piece 10 Phase A) rather than a boolean flag, but content selection is
+  // still `appState.selectedMessage` (not folded into the stack frame — it
+  // has other consumers too, the right rail's meta-thread among them), so
+  // closing it still doesn't clear the selection.
+  //
+  // Only ONE auto-close effect is needed here now, not two: NotePopover's
+  // OWN internal effect (`if (focusReaderOpen) onClose?.()`) already pops
+  // the stack once `onClose` is wired to `overlayStack.pop()` below — no
+  // need to duplicate that reaction here. The remaining case — the
+  // selection clearing out from under a SHOWING note frame — has no
+  // component-internal equivalent (there's no prop for "my content just
+  // went stale"), so it stays here, scoped to only pop when 'note' is
+  // actually the top (never reach into the middle of someone else's stack).
   $effect(() => {
-    if (!appState.selectedMessage) notePopoverOpen = false;
-  });
-  $effect(() => {
-    if (focusReaderOpen) notePopoverOpen = false;
+    if (!appState.selectedMessage && overlayStack.top?.id === 'note') overlayStack.pop();
   });
   function openNotePopover(id: string) {
     selectMessage(id);
-    notePopoverOpen = true;
+    overlayStack.push({ id: 'note', type: 'popover', data: { msgId: id } });
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -1159,8 +1204,18 @@
      singleton, read directly here rather than threaded back up through a
      prop), so prev/next only walks what's actually on screen; from Chat
      (no board filter concept) it's the honest full per-hub set. -->
+<!-- piece 10 Phase A — `open`/`hasParent` now come from `overlayStack`
+     (overlayStack.svelte.ts) instead of a boolean flag: only ever showing
+     when this frame is actually the TOP of the stack, so a ticket pushed
+     over the dossier/note correctly covers it without destroying it.
+     `onOpenThread`/`onFocusRead` both navigate AWAY from the popover stack
+     entirely (Chat / the focus reader — a competing full overlay), so they
+     `clear()` rather than `pop()` one layer — a lone `pop()` could leave a
+     stale parent frame (the dossier) to re-render underneath whatever's
+     being navigated to. `onClose` (esc, ✕, and now the "‹ back" chip when
+     `hasParent`) is the one true "step back exactly one layer" action. -->
 <TicketFullPopover
-  open={ticketPopoverOpen}
+  open={overlayStack.top?.id === 'ticket'}
   requestId={selectedRequestId}
   requests={appState.view === 'board'
     ? filterRequests(overview?.board.requests ?? [], boardFilter.stateFilter, boardFilter.agentFilter)
@@ -1169,18 +1224,19 @@
   agents={overview?.fleet ?? []}
   hub={appState.hub}
   {focusReaderOpen}
+  hasParent={overlayStack.stack.length > 1}
   onOpenThread={(msgId, topic) => {
-    ticketPopoverOpen = false;
+    overlayStack.clear();
     void navigateToMessageInChat(msgId, topic);
   }}
   onFocusRead={(msgId) => {
     selectMessage(msgId);
     focusReaderOpen = true;
-    ticketPopoverOpen = false;
+    overlayStack.clear();
   }}
   onOpenRefs={openRefs}
   onNavigate={(id) => selectTicket(id)}
-  onClose={() => (ticketPopoverOpen = false)}
+  onClose={() => overlayStack.pop()}
 />
 
 <!-- piece 6 (ui/REDESIGN.md) — the enriched note popover: a plain note's
@@ -1192,8 +1248,17 @@
      so the right rail's meta-thread is showing the SAME conversation
      behind this popover — "open thread" just closes it rather than
      re-navigating anywhere. -->
+<!-- piece 10 Phase A — `onOpenTicket` is the note-side half of the actual
+     bug fix: it used to CLOSE the note popover before opening the ticket
+     (`notePopoverOpen = false; selectTicket(id)`), destroying the note's
+     context exactly like the dossier did. Now it `push`es the ticket frame
+     ON TOP instead — the note frame survives underneath, and `esc`/"‹ back"
+     on the ticket returns to it. `onOpenThread` stays a plain `pop()` (not
+     `clear()`): unlike the ticket popover's own onOpenThread, this doesn't
+     navigate anywhere — the right rail's meta-thread is already showing the
+     same conversation, so it's just closing this one layer. -->
 <NotePopover
-  open={notePopoverOpen}
+  open={overlayStack.top?.id === 'note'}
   msgId={appState.selectedMessage?.id ?? null}
   {messages}
   agents={overview?.fleet ?? []}
@@ -1201,13 +1266,14 @@
   {thread}
   hub={appState.hub}
   {focusReaderOpen}
+  hasParent={overlayStack.stack.length > 1}
   onOpenTicket={(id) => {
-    notePopoverOpen = false;
-    selectTicket(id);
+    setTicketContext(id);
+    overlayStack.push({ id: 'ticket', type: 'popover', data: { ticketId: id } });
   }}
   onOpenRefs={openRefs}
-  onOpenThread={() => (notePopoverOpen = false)}
-  onClose={() => (notePopoverOpen = false)}
+  onOpenThread={() => overlayStack.pop()}
+  onClose={() => overlayStack.pop()}
 />
 
 <!-- piece 8b (ui/REDESIGN.md) — the reusable agent dossier: an agent is a
@@ -1219,18 +1285,30 @@
      `requests`/`messages` are the CURRENT hub's — cross-hub presence is
      the dossier's own lazy fetch (fetchHubOverviews), not threaded
      through here. -->
+<!-- piece 10 Phase A — the actual reported bug: `onOpenTicket` used to
+     CLOSE the dossier before opening the ticket (`dossierOpen = false;
+     selectTicket(id)`), so `esc` on the ticket had nothing to return to.
+     Now it `push`es the ticket frame on top instead, leaving the dossier
+     frame right where it was underneath — `esc`/"‹ back" pops exactly that
+     one layer, landing back on the dossier. `onNavigate` (j/k between
+     agents) stays a same-depth `replace` — it's not opening a new overlay,
+     just swapping THIS frame's content, same as `selectTicket`'s own
+     j/k-navigate case. `agentId` lives entirely in the frame's own `data`
+     now (see openAgentDossier's comment) — read via the shared `frameData`
+     helper. -->
 <AgentDossier
-  open={dossierOpen}
-  agentId={dossierAgentId}
+  open={overlayStack.top?.id === 'agent-dossier'}
+  agentId={frameData(overlayStack.top, 'agentId')}
   agents={overview?.fleet ?? []}
   requests={overview?.board.requests ?? []}
   {messages}
+  hasParent={overlayStack.stack.length > 1}
   onOpenTicket={(id) => {
-    dossierOpen = false;
-    selectTicket(id);
+    setTicketContext(id);
+    overlayStack.push({ id: 'ticket', type: 'popover', data: { ticketId: id } });
   }}
-  onNavigate={(id) => (dossierAgentId = id)}
-  onClose={() => (dossierOpen = false)}
+  onNavigate={(id) => overlayStack.replace({ id: 'agent-dossier', type: 'popover', data: { agentId: id } })}
+  onClose={() => overlayStack.pop()}
 />
 
 <style>

@@ -34,9 +34,15 @@
     onOpenTicket?: (id: string) => void;
     onNavigate?: (id: string) => void;
     onClose?: () => void;
+    /** Piece 10 Phase A (overlayStack.svelte.ts) — true when this dossier is
+     * nested on top of another overlay. No current App.svelte call site
+     * opens the dossier that way (it's always the bottom/only frame today),
+     * but the affordance exists for parity with TicketFullPopover/
+     * NotePopover's own `hasParent`, and for whenever one does. */
+    hasParent?: boolean;
   }
 
-  let { open, agentId, agents, requests, messages, onOpenTicket, onNavigate, onClose }: Props = $props();
+  let { open, agentId, agents, requests, messages, onOpenTicket, onNavigate, onClose, hasParent = false }: Props = $props();
 
   const agent = $derived(agentId ? (agents.find((a) => a.id === agentId) ?? null) : null);
   const showing = $derived(open && agent !== null);
@@ -134,6 +140,11 @@
         break;
       case 'Escape':
         e.preventDefault();
+        // Piece 10 Phase A — see TicketFullPopover's own identical comment:
+        // `onClose` pops the stack, which can synchronously reveal a parent
+        // frame whose OWN always-attached Escape listener would otherwise
+        // process this SAME keydown too.
+        e.stopImmediatePropagation();
         onClose?.();
         break;
     }
@@ -184,6 +195,9 @@
         <span class="live-badge {liveness}">
           {LIVE_LABEL[liveness]}{#if agent.hbAgeSecs != null} · hb {formatAgeFromSecs(agent.hbAgeSecs)}{/if}
         </span>
+        {#if hasParent}
+          <button type="button" class="ad-back" aria-label="Back" title="Back to where you opened this from" onclick={onClose}>‹ back</button>
+        {/if}
         <button type="button" class="ad-close" aria-label="Close dossier" onclick={onClose}>esc ✕</button>
       </div>
 
@@ -427,6 +441,23 @@
   .ad-close:hover {
     color: var(--text);
     border-color: var(--faint);
+  }
+  /* Piece 10 Phase A — same "‹ back" affordance TicketFullPopover's own
+     `.tk-back` adds, shown only when nested. `.live-badge`'s own
+     `margin-left: auto` already pushes both this and `.ad-close` to the
+     right (`.ad-head`'s `gap` spaces them), so no margin math needed here. */
+  .ad-back {
+    font: 500 11px/1 var(--mono);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .ad-back:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
 
   .ad-grid {

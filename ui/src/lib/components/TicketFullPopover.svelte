@@ -43,6 +43,13 @@
      * rather than stack behind it (launchpad, not a container: "focus
      * read" hands off, it doesn't layer). */
     focusReaderOpen?: boolean;
+    /** Piece 10 Phase A (overlayStack.svelte.ts) — true when this popover
+     * is NESTED on top of another overlay (opened from within the agent
+     * dossier or a note, not top-level from Chat/Board). Shows a "‹ back"
+     * affordance alongside the close button — same action as `onClose`
+     * (both pop exactly one stack layer), just framed as "return to where
+     * I came from" rather than "I'm done." */
+    hasParent?: boolean;
     onOpenThread?: (msgId: string, topic: string | null) => void;
     onFocusRead?: (msgId: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
@@ -50,7 +57,7 @@
     onClose?: () => void;
   }
 
-  let { open, requestId, requests, messages, agents, hub, focusReaderOpen = false, onOpenThread, onFocusRead, onOpenRefs, onNavigate, onClose }: Props = $props();
+  let { open, requestId, requests, messages, agents, hub, focusReaderOpen = false, hasParent = false, onOpenThread, onFocusRead, onOpenRefs, onNavigate, onClose }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
   const request = $derived(requestId ? (requests.find((r) => r.id === requestId) ?? null) : null);
@@ -168,6 +175,17 @@
         break;
       case 'Escape':
         e.preventDefault();
+        // Piece 10 Phase A — `onClose` pops the overlay stack, which can
+        // SYNCHRONOUSLY reveal a parent frame underneath (e.g. the agent
+        // dossier this ticket was pushed over). That parent's own
+        // `<svelte:window onkeydown>` is always attached (each popover
+        // gates itself on its own `showing`, not on being mounted at all),
+        // so without this, the SAME keydown event would cascade straight
+        // into ITS Escape case too — a single Esc popping two layers at
+        // once. `stopImmediatePropagation` (not just `stopPropagation` —
+        // these are sibling listeners on the SAME `window` target, not an
+        // ancestor) stops any not-yet-invoked listener for this dispatch.
+        e.stopImmediatePropagation();
         onClose?.();
         break;
     }
@@ -185,6 +203,9 @@
         <span class="tk-id mono">{request.id}</span>
         {#if request.topic}<span class="tk-topic mono">#{request.topic}</span>{/if}
         <CopiedToast text={toastText} />
+        {#if hasParent}
+          <button type="button" class="tk-back" aria-label="Back" title="Back to where you opened this from" onclick={onClose}>‹ back</button>
+        {/if}
         <button type="button" class="tk-close" aria-label="Close ticket" onclick={onClose}>esc ✕</button>
       </div>
 
@@ -316,6 +337,28 @@
   .tk-close:hover {
     color: var(--text);
     border-color: var(--faint);
+  }
+  /* Piece 10 Phase A — shown only when this popover is nested (pushed on
+     top of the agent dossier or a note). `margin-left: auto` moves to THIS
+     button when present, since it's now the first of the two right-aligned
+     controls; `.tk-close` keeps its own `margin-left: auto` for the
+     no-parent case where it's alone. */
+  .tk-back {
+    margin-left: auto;
+    font: 500 11px/1 var(--mono);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .tk-back:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .tk-back + .tk-close {
+    margin-left: 0;
   }
   .tk-body {
     padding: 17px 19px;

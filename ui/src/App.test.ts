@@ -1,14 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import App from './App.svelte';
 import { appState } from './lib/stores.svelte';
+import { overlayStack } from './lib/overlayStack.svelte';
 
 // jsdom has no real layout/viewport, so these tests exercise the responsive
 // *structure* (the drawer/scrim elements exist, and their open/closed state
 // is driven by appState.drawer) rather than anything computed-width based —
 // the actual show/hide at each breakpoint is pure CSS (see App.svelte's
 // media queries), which jsdom can't evaluate.
+
+// `overlayStack` (piece 10 Phase A) is a module singleton, like `appState` —
+// a test that opens a dossier/ticket/note and doesn't explicitly esc back
+// out (several pre-existing tests below don't, since closing wasn't their
+// point) would otherwise leak a frame into the NEXT test's stack, throwing
+// off any depth-dependent assertion (same gotcha boardFilter.test.ts/
+// readState.test.ts already guard their own singletons against).
+beforeEach(() => {
+  overlayStack.clear();
+});
 
 describe('App — default landing (design/47 §3)', () => {
   it('a fresh load lands on Overview, not a hub Chat — no appState.view set beforehand', async () => {
@@ -516,6 +527,100 @@ describe('App — piece 8b: the agent dossier, reachable from multiple entry poi
     const cards = await screen.findAllByTestId('fleet-presence-card');
     await user.click(cards[0]!);
 
+    expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+  });
+});
+
+describe('App — piece 10 Phase A: the overlay stack fixes the dossier→ticket back-nav bug', () => {
+  // The exact reported repro: Fleet → click an agent (dossier opens) →
+  // click one of their tickets (used to REPLACE the dossier — `esc` landed
+  // nowhere). Pipeline carries `req_01JQa91` in the mock fixtures.
+  async function openPipelineDossierAndItsTicket(user: ReturnType<typeof userEvent.setup>) {
+    const cards = await screen.findAllByTestId('fleet-presence-card');
+    const pipelineCard = cards.find((c) => within(c).queryByText('Pipeline'));
+    if (!pipelineCard) throw new Error('Pipeline fleet-presence-card not found in mock fixtures');
+    await user.click(pipelineCard);
+    const dossier = await screen.findByTestId('agent-dossier');
+
+    // Scoped to the dossier itself — Overview's own cross-hub worklist
+    // (kept mounted underneath, just CSS-hidden, per App.svelte's
+    // keep-alive-pane architecture) shows the SAME real ticket summary
+    // text, which would otherwise make an unscoped query ambiguous.
+    await user.click(within(dossier).getByText('Run the alignment pass over the restored plate set'));
+    await screen.findByTestId('ticket-popover');
+  }
+
+  it('opening a ticket FROM the dossier pushes it on top — the dossier survives underneath, and esc returns to it', async () => {
+    appState.drawer = 'none';
+    appState.view = 'fleet';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    await openPipelineDossierAndItsTicket(user);
+    // Only the TOP of the stack ever renders (the ticket now covers the
+    // dossier, same as a real card stack — showing both at once would look
+    // like two overlapping modals). The dossier's CONTEXT survives in
+    // `overlayStack`, not its DOM presence — proven by esc bringing it
+    // back below, not by it staying visible underneath.
+    expect(screen.queryByTestId('agent-dossier')).not.toBeInTheDocument();
+
+    // esc pops exactly ONE layer — the ticket closes, the dossier reappears.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+
+    // A second esc closes the dossier too — back to nothing, as normal for
+    // a top-level (non-nested) popover.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('agent-dossier')).not.toBeInTheDocument();
+  });
+
+  it('the nested ticket popover shows a "‹ back" affordance, and it pops exactly the same as esc', async () => {
+    appState.drawer = 'none';
+    appState.view = 'fleet';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    await openPipelineDossierAndItsTicket(user);
+    const ticketPopover = screen.getByTestId('ticket-popover');
+    const back = within(ticketPopover).getByRole('button', { name: 'Back' });
+
+    await user.click(back);
+    expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+  });
+
+  it('a TOP-LEVEL ticket open (no dossier involved) shows NO back affordance — it is not nested', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    const user = userEvent.setup();
+    render(App);
+
+    await user.click(await screen.findByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader'));
+    const ticketPopover = await screen.findByTestId('ticket-popover');
+    expect(within(ticketPopover).queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+  });
+
+  it('j/k navigating between tickets while nested under the dossier stays nested — replace, not push', async () => {
+    appState.drawer = 'none';
+    appState.view = 'fleet';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    await openPipelineDossierAndItsTicket(user);
+    // j/k inside the ticket popover swaps content in place — still exactly
+    // one layer nested under the dossier, not a second ticket frame pushed
+    // on top of the first.
+    await user.keyboard('k');
+    expect(screen.getByTestId('ticket-popover')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    // A SINGLE esc (not two) must already be back at the dossier — proof
+    // j/k didn't grow the stack.
+    expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
     expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
   });
 });

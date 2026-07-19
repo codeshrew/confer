@@ -38,13 +38,17 @@
     /** True while the focus reader is ALSO open — auto-closes this popover,
      * same "launchpad, don't stack" rule TicketFullPopover follows. */
     focusReaderOpen?: boolean;
+    /** Piece 10 Phase A (overlayStack.svelte.ts) — true when this popover is
+     * nested on top of another overlay. Shows the same "‹ back" affordance
+     * TicketFullPopover's own `hasParent` does — see its doc comment. */
+    hasParent?: boolean;
     onOpenTicket?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
     onOpenThread?: (msgId: string, topic: string | null) => void;
     onClose?: () => void;
   }
 
-  let { open, msgId, messages, agents, requests, thread, hub, focusReaderOpen = false, onOpenTicket, onOpenRefs, onOpenThread, onClose }: Props = $props();
+  let { open, msgId, messages, agents, requests, thread, hub, focusReaderOpen = false, hasParent = false, onOpenTicket, onOpenRefs, onOpenThread, onClose }: Props = $props();
 
   const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
   const message = $derived(msgId ? (messages.find((m) => m.id === msgId) ?? null) : null);
@@ -132,6 +136,11 @@
     if (isTypingTarget(e.target)) return;
     if (e.key === 'Escape') {
       e.preventDefault();
+      // Piece 10 Phase A — see TicketFullPopover's own identical comment:
+      // `onClose` pops the stack, which can synchronously reveal a parent
+      // frame whose OWN always-attached Escape listener would otherwise
+      // process this SAME keydown too.
+      e.stopImmediatePropagation();
       onClose?.();
     }
   }
@@ -148,6 +157,9 @@
         <span class="np-from" style="color:{agent?.color ?? 'var(--muted)'}">{display(message.from)}</span>
         <span class="np-meta mono">{message.host ?? '—'} · {formatClock(message.ts)} · #{message.topic ?? '—'}</span>
         <CopyIdButton id={message.id} class="np-copy-id" />
+        {#if hasParent}
+          <button type="button" class="np-back" aria-label="Back" title="Back to where you opened this from" onclick={onClose}>‹ back</button>
+        {/if}
         <button type="button" class="np-close" aria-label="Close note" onclick={onClose}>esc ✕</button>
       </div>
 
@@ -288,6 +300,26 @@
   .np-close:hover {
     color: var(--text);
     border-color: var(--faint);
+  }
+  /* Piece 10 Phase A — same "‹ back" affordance TicketFullPopover's own
+     `.tk-back` adds, shown only when nested. See its CSS comment for the
+     margin-left handoff between the two right-aligned controls. */
+  .np-back {
+    margin-left: auto;
+    font: 500 11px/1 var(--mono);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .np-back:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .np-back + .np-close {
+    margin-left: 0;
   }
   .np-head :global(.np-copy-id) {
     opacity: 1;
