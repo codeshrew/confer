@@ -1,6 +1,6 @@
 <script lang="ts">
   // Shared click-to-copy affordance for the bare `msg_…`/`req_…` id — used
-  // on Message's header, BoardRow, RequestDetail's ctx-head (App.svelte),
+  // on Message's header, TicketRow, TicketFullPopover's header,
   // and MetaThread's `.gid` line (design/41 Phase 0, §4 "copy-id cluster").
   //
   // Hidden by default (opacity: 0) so it doesn't visually compete with the

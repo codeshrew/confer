@@ -971,7 +971,9 @@
           <Board
             requests={overview?.board.requests ?? []}
             agents={overview?.fleet ?? []}
+            {messages}
             hubName={appState.hub}
+            hubTier={activeHubTier}
             {selectedRequestId}
             onSelectRequest={selectBoardRow}
           />
@@ -1254,8 +1256,8 @@
        min-content size (e.g. an unwrapped ticket track, a long code line)
        win over the 1fr track and blow the whole row out past the viewport
        on phone. min-width: 0 makes `.center` actually shrink to the track
-       it's given, so its children's own overflow/wrap rules (TicketCard,
-       BoardRow, CodeLens, etc.) are what's left to decide, not this. */
+       it's given, so its children's own overflow/wrap rules (TicketMiniCard,
+       TicketRow, CodeLens, etc.) are what's left to decide, not this. */
     min-width: 0;
     background: var(--bg);
     position: relative;

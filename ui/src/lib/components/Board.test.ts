@@ -2,104 +2,219 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import Board from './Board.svelte';
-import type { Agent, RequestRow } from '../types';
+import type { Agent, Message, RequestRow } from '../types';
 
-const agents: Agent[] = [
-  {
-    id: 'reader',
-    display: 'Reader',
-    desc: null,
-    expectedHost: null,
-    lastTs: null,
-    lastHost: null,
-    live: true,
-    verified: 'signed',
-    color: 'var(--ag-reader)',
-    abbr: 'RE',
-    wip: [],
-  },
-  {
-    id: 'pipeline',
-    display: 'Pipeline',
-    desc: null,
-    expectedHost: null,
-    lastTs: null,
-    lastHost: null,
-    live: true,
-    verified: 'signed',
-    color: 'var(--ag-pipeline)',
-    abbr: 'PI',
-    wip: [],
-  },
-];
+const reader: Agent = {
+  id: 'reader',
+  display: 'Reader',
+  desc: null,
+  expectedHost: null,
+  lastTs: null,
+  lastHost: null,
+  live: true,
+  verified: 'signed',
+  color: 'var(--ag-reader)',
+  abbr: 'RE',
+  wip: [{ id: 'req_01JQa91', summary: 'alignment pass', status: 'CLAIMED' }],
+};
 
-const requests: RequestRow[] = [
-  {
-    id: 'req_01JQ8f2',
+const pipeline: Agent = {
+  id: 'pipeline',
+  display: 'Pipeline',
+  desc: null,
+  expectedHost: null,
+  lastTs: null,
+  lastHost: null,
+  live: true,
+  verified: 'signed',
+  color: 'var(--ag-pipeline)',
+  abbr: 'PI',
+  wip: [],
+};
+
+const agents: Agent[] = [reader, pipeline];
+
+function request(overrides: Partial<RequestRow>): RequestRow {
+  return {
+    id: 'req_x',
     from: 'pipeline',
     to: ['reader'],
-    summary: 'plate-bundle endpoint',
-    status: 'DONE',
-    resolution: 'shipped',
-    deferred: false,
-    claimants: ['reader'],
-    ageSecs: 2400,
-    stale: false,
-    topic: 'reader',
-  },
-  {
-    id: 'req_01JQa91',
-    from: 'pipeline',
-    to: ['pipeline'],
-    summary: 'alignment pass',
-    status: 'CLAIMED',
+    summary: 'a ticket',
+    status: 'OPEN',
     resolution: null,
     deferred: false,
-    claimants: ['pipeline'],
-    ageSecs: 3600,
+    claimants: [],
+    ageSecs: 60,
     stale: false,
-    topic: 'studio',
-  },
+    topic: 'reader',
+    ...overrides,
+  };
+}
+
+const requests: RequestRow[] = [
+  request({ id: 'req_01JQ8f2', summary: 'plate-bundle endpoint', status: 'DONE', resolution: 'shipped', claimants: ['reader'], ageSecs: 2400 }),
+  request({ id: 'req_01JQa91', summary: 'alignment pass', status: 'CLAIMED', claimants: ['reader'], ageSecs: 3600 }),
+  request({ id: 'req_01JQb22', summary: 'needs a home', status: 'OPEN', claimants: [], from: 'pipeline', ageSecs: 7200 }),
+  request({ id: 'req_01JQc33', summary: 'stuck on review', status: 'BLOCKED', claimants: ['pipeline'], ageSecs: 10000 }),
 ];
 
-describe('Board', () => {
-  it('renders a swimlane per status with its rows', () => {
-    const { container } = render(Board, { requests, agents, hubName: 'agent-coord' });
+describe('Board — cockpit header + stats', () => {
+  it('shows the tier badge, hub name, and a real verdict line', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord', hubTier: 'shared' });
 
-    const laneLabels = [...container.querySelectorAll('.lane-head .ln')].map((el) => el.textContent);
-    expect(laneLabels).toEqual(['claimed', 'done']);
-    expect(screen.getByText('plate-bundle endpoint')).toBeInTheDocument();
+    expect(screen.getByText('shared')).toBeInTheDocument();
+    expect(screen.getByText('agent-coord')).toBeInTheDocument();
+    expect(screen.getByText(/1 needs an owner/)).toBeInTheDocument();
+    expect(screen.getByText(/1 stuck/)).toBeInTheDocument();
+  });
+
+  it('activeWork ("Open") is the TOTAL of everything not done, not a disjoint fourth bucket', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+    // 3 requests are live (claimed + needs-owner + stuck); the 4th is DONE.
+    expect(screen.getByTestId('board-stat-open').querySelector('.n')).toHaveTextContent('3');
+    expect(screen.getByTestId('board-stat-flight').querySelector('.n')).toHaveTextContent('1');
+    expect(screen.getByTestId('board-stat-stuck').querySelector('.n')).toHaveTextContent('1');
+    expect(screen.getByTestId('board-stat-unowned').querySelector('.n')).toHaveTextContent('1');
+  });
+
+  it('an empty board shows the empty state, not a wall of zeroed stat cards', () => {
+    render(Board, { requests: [], agents: [], messages: [], hubName: 'agent-coord' });
+    expect(screen.getByText('Nothing on the board yet')).toBeInTheDocument();
+    expect(screen.queryByTestId('board-stat-open')).not.toBeInTheDocument();
+  });
+});
+
+describe('Board — workload (carrying / asking)', () => {
+  it('carrying reflects real Agent.wip CLAIMED counts', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+    expect(screen.getByText('carrying')).toBeInTheDocument();
+    // Reader is carrying (wip has one CLAIMED entry); Pipeline is not.
+    const carryingSection = screen.getByText('carrying').closest('.card')!;
+    expect(carryingSection).toHaveTextContent('Reader');
+  });
+
+  it('asking groups live requests by requester, and the unowned key is present when relevant', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+    const askingSection = screen.getByText('asking').closest('.card')!;
+    // pipeline filed 2 live requests here (alignment pass is claimant reader
+    // but from pipeline is not set on it — check the fixture's `from`).
+    expect(askingSection).toHaveTextContent('Pipeline');
+  });
+});
+
+describe('Board — grouped work lists + done fold', () => {
+  it('groups live tickets by state, each rendered as a TicketRow', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    expect(screen.getByText('▲ needs an owner')).toBeInTheDocument();
+    expect(screen.getByText('● in flight')).toBeInTheDocument();
+    expect(screen.getByText('▲ blocked / stale')).toBeInTheDocument();
+    expect(screen.getByText('needs a home')).toBeInTheDocument();
     expect(screen.getByText('alignment pass')).toBeInTheDocument();
+    expect(screen.getByText('stuck on review')).toBeInTheDocument();
   });
 
-  it('renders the distribution bar + status counts', () => {
-    const { container } = render(Board, { requests, agents, hubName: 'agent-coord' });
+  it('DONE tickets are collapsed behind a fold, not shown by default', () => {
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
 
-    expect(container.querySelectorAll('.distbar i').length).toBe(2);
-    expect(container.querySelectorAll('.board-counts .bc').length).toBe(2);
+    expect(screen.queryByText('plate-bundle endpoint')).not.toBeInTheDocument();
+    expect(screen.getByTestId('board-done-fold')).toHaveTextContent('1 closed');
   });
 
-  it('regroups the rows into topic swimlanes when the group-by toggle changes', async () => {
+  it('clicking the done fold reveals the DONE tickets', async () => {
     const user = userEvent.setup();
-    const { container } = render(Board, { requests, agents, hubName: 'agent-coord' });
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
 
-    await user.click(screen.getByRole('button', { name: 'Topic' }));
-
-    const laneLabels = [...container.querySelectorAll('.lane-head .ln')].map((el) => el.textContent);
-    expect(laneLabels).toEqual(['#reader', '#studio']);
-    expect(container.querySelector('.lane-head .ln')?.textContent).not.toBe('done');
+    await user.click(screen.getByTestId('board-done-fold'));
+    expect(screen.getByText('plate-bundle endpoint')).toBeInTheDocument();
   });
 
-  it('regroups into claimant swimlanes and fires onSelectRequest on a row click', async () => {
+  it('fires onSelectRequest when a ticket row is clicked', async () => {
     const user = userEvent.setup();
     const onSelectRequest = vi.fn();
-    render(Board, { requests, agents, hubName: 'agent-coord', onSelectRequest });
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord', onSelectRequest });
 
-    await user.click(screen.getByRole('button', { name: 'Claimant' }));
-    expect(screen.getByText('Reader')).toBeInTheDocument();
-    expect(screen.getByText('Pipeline')).toBeInTheDocument();
+    await user.click(screen.getByText('alignment pass'));
+    expect(onSelectRequest).toHaveBeenCalledWith('req_01JQa91');
+  });
+});
 
-    await user.click(screen.getByText('plate-bundle endpoint'));
-    expect(onSelectRequest).toHaveBeenCalledWith('req_01JQ8f2');
+describe('Board — stat click-to-filter', () => {
+  it('clicking "Stuck" narrows the work lists to just the stuck group', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+
+    expect(screen.getByText('stuck on review')).toBeInTheDocument();
+    expect(screen.queryByText('needs a home')).not.toBeInTheDocument();
+    expect(screen.queryByText('alignment pass')).not.toBeInTheDocument();
+    expect(screen.getByTestId('board-filter-note')).toHaveTextContent('blocked / stale');
+  });
+
+  it('"show all" clears the filter', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+    await user.click(screen.getByRole('button', { name: /show all/ }));
+
+    expect(screen.getByText('needs a home')).toBeInTheDocument();
+    expect(screen.getByText('alignment pass')).toBeInTheDocument();
+    expect(screen.getByText('stuck on review')).toBeInTheDocument();
+    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+  });
+
+  it('clicking a second stat swaps the filter; clicking the SAME stat again clears it', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+    await user.click(screen.getByTestId('board-stat-unowned'));
+    expect(screen.getByText('needs a home')).toBeInTheDocument();
+    expect(screen.queryByText('stuck on review')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('board-stat-unowned'));
+    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+  });
+
+  it('clicking "Open" (the total, not a disjoint bucket) clears any active filter', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+    await user.click(screen.getByTestId('board-stat-open'));
+    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+  });
+});
+
+describe('Board — closure throughput', () => {
+  function msg(overrides: Partial<Message>): Message {
+    return {
+      id: 'msg_1',
+      from: 'herald',
+      type: 'done',
+      ts: '2026-07-18T10:00:00Z',
+      host: null,
+      to: [],
+      cc: [],
+      topic: 'general',
+      summary: 'hi',
+      body: 'hi',
+      of: null,
+      replyTo: null,
+      supersedes: null,
+      refs: [],
+      seenBy: [],
+      ...overrides,
+    };
+  }
+
+  it('renders real closed/opened totals from request/done message timestamps — no fabricated chart', () => {
+    const messages = [msg({ id: 'm1', type: 'done', ts: new Date().toISOString() }), msg({ id: 'm2', type: 'request', ts: new Date().toISOString() })];
+    render(Board, { requests, agents, messages, hubName: 'agent-coord' });
+
+    expect(screen.getByText('closure throughput')).toBeInTheDocument();
+    expect(screen.getByText('1', { selector: '.chart-meta b' })).toBeInTheDocument();
   });
 });

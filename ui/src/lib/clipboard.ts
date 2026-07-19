@@ -1,5 +1,5 @@
 // Copy-to-clipboard helper shared by every copy-id affordance (Message,
-// BoardRow, RequestDetail's ctx-head, MetaThread's `.gid` line).
+// TicketRow, TicketFullPopover, MetaThread's `.gid` line).
 //
 // REAL GOTCHA (design/41 §4): `navigator.clipboard` requires a secure
 // context — https or localhost. `serve.rs` explicitly advertises the LAN IP

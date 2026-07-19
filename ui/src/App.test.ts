@@ -99,7 +99,7 @@ describe('App — FilterBar is Chat-only', () => {
     expect(screen.getByTestId('density-toggle')).toBeInTheDocument();
   });
 
-  it('hides the FilterBar entirely in Board view (Board keeps its own group-by control)', async () => {
+  it('hides the FilterBar entirely in Board view (Board is its own cockpit, not a chat filter target)', async () => {
     appState.drawer = 'none';
     appState.view = 'board';
     render(App);
@@ -442,7 +442,10 @@ describe('App — piece 3: the focus reader, reachable from anywhere', () => {
     const user = userEvent.setup();
     render(App);
 
-    const ticketText = 'Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader';
+    // A live (BLOCKED) ticket — piece 5's cockpit collapses DONE tickets
+    // behind a fold by default, so a DONE fixture wouldn't be in the DOM
+    // to click here at all.
+    const ticketText = 'Freeze the CSL schema — needs a decision from Herald';
     await user.click(await screen.findByText(ticketText));
 
     await user.keyboard('f');
