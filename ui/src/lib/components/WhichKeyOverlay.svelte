@@ -78,13 +78,13 @@
       rows: [{ keys: 'j / k', desc: 'select next / previous message' }],
     },
     {
-      title: 'Thread peek',
+      title: 'Thread map',
       rows: [
-        { keys: '↵ / click', desc: 'open a message\'s peek (Chat/Board)' },
-        { keys: 'j / k', desc: 'move along the trail' },
+        { keys: 'click / ↵', desc: 'jump the stream to that message' },
+        { keys: 'hover', desc: 'preview the text without jumping' },
+        { keys: 'j / k', desc: 'move the local pointer along the map' },
         { keys: 'l', desc: 'deeper — focus a reply' },
         { keys: 'h', desc: 'back — focus the parent' },
-        { keys: '↵', desc: 'jump the stream here (real move)' },
         { keys: 'y', desc: 'copy the focused node\'s full id' },
         { keys: 'Esc', desc: 'close the peek' },
       ],

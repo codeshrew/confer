@@ -1042,11 +1042,9 @@
             {thread}
             agents={overview?.fleet ?? []}
             {messages}
-            hub={appState.hub}
             focusedMsgId={appState.selectedMessage.id}
             onJump={(msgId, topic) => void navigateToMessageInChat(msgId, topic)}
             onClose={closePeek}
-            onOpenRefs={openRefs}
           />
         {:else}
           <EmptyState

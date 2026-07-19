@@ -24,35 +24,37 @@ test('opening a peek keeps the stream in place, and Escape closes it back to the
   await expect(note).toBeVisible();
 });
 
-test('the peek shows a real breadcrumb + Focused card, and clicking a trail row moves focus without jumping the stream', async ({ page }) => {
+test('the minimap shows the real thread shape (author, kind, id), and hovering a row previews it without navigating', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
   await page.getByRole('tab', { name: 'Chat', exact: true }).click();
   await page.getByText(/canaried 0.7.3/).first().click();
 
-  await expect(page.getByTestId('peek-crumbs')).toBeVisible();
-  await expect(page.getByTestId('peek-focused')).toBeVisible();
-
+  await expect(page.getByTestId('peek-map')).toBeVisible();
   const rows = page.getByTestId('peek-node');
   const secondRow = rows.nth(1);
-  await secondRow.click();
+  await expect(secondRow).toBeVisible();
 
-  // Focus moved (the clicked row now shows the "here" tag) but the Chat
-  // topic crumb up top never changed — no navigation happened.
-  await expect(secondRow).toContainText('◂ here');
-  await expect(page.getByText('#reader', { exact: true }).first()).toBeVisible();
+  // Hovering previews the row's text without moving the "here" indicator
+  // or navigating — the map's "explore without committing" affordance.
+  await secondRow.hover();
+  await expect(page.getByTestId('peek-preview')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('Enter (or the Focused card\'s "open here" button) actually jumps the stream', async ({ page }) => {
+test('clicking a minimap row jumps the stream (piece 4: click now navigates — hover is the safe preview step)', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
   await page.getByRole('tab', { name: 'Chat', exact: true }).click();
   await page.getByText(/canaried 0.7.3/).first().click();
 
-  await page.getByTestId('peek-jump').click();
+  const rows = page.getByTestId('peek-node');
+  await rows.nth(1).click();
+
   // Jumping lands back in Chat (it already was), with the peek re-anchored
-  // on the jumped-to message — the deliberate, explicit move.
+  // on the jumped-to message — the clicked row now shows the "here" tag.
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(rows.nth(1)).toContainText('here');
 });
 
 test('"f" opens the focus reader on the focused message; j/k walk the thread; f/Esc exits', async ({ page }) => {
@@ -102,9 +104,8 @@ test('"y" copies the focused message\'s full id, in both the focus reader and th
   await page.getByRole('tab', { name: 'Chat', exact: true }).click();
   await page.getByText(/canaried 0.7.3/).first().click();
 
-  // The peek's Focused card.
-  const peekFocused = page.getByTestId('peek-focused');
-  await expect(peekFocused).toBeVisible();
+  // The peek's minimap.
+  await expect(page.getByTestId('peek-map')).toBeVisible();
   await page.getByTestId('thread-peek').focus();
   await page.keyboard.press('y');
   await expect(page.getByTestId('copied-toast')).toBeVisible();
@@ -116,6 +117,19 @@ test('"y" copies the focused message\'s full id, in both the focus reader and th
   await expect(reader).toBeVisible();
   await page.keyboard.press('y');
   await expect(reader.getByTestId('copied-toast')).toBeVisible();
+});
+
+test('the minimap\'s own ✕ closes the peek session (mouse-close, piece 4 — flagged as missing during the keyboard-architecture pass: the shared right-rail ✕ is mobile-drawer-only and does not reach it on desktop)', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+  await page.getByText(/canaried 0.7.3/).first().click();
+
+  await expect(page.getByTestId('thread-peek')).toBeVisible();
+  await page.getByTestId('peek-close').click();
+
+  await expect(page.getByTestId('thread-peek')).not.toBeVisible();
+  await expect(page.getByText('Select a message to trace its thread')).toBeVisible();
 });
 
 test('renders correctly in both themes', async ({ page }) => {
