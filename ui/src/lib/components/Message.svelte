@@ -40,6 +40,12 @@
      * ("focus reader" — reads the currently-focused message). Before this,
      * opening the focus reader was keyboard-only; this is that gap's fix. */
     onOpenFocus?: (id: string) => void;
+    /** Piece 6 — opens the enriched note popover (body + related tickets/
+     * code/thread). Plain notes only: a ticket already has its own richer
+     * destination (the Full popover, via its Mini card) — offering both
+     * here would just be two "expand" buttons pointed at different places
+     * for the same row. */
+    onOpenNote?: (id: string) => void;
   }
 
   let {
@@ -57,6 +63,7 @@
     onSelectTicket,
     onOpenRefs,
     onOpenFocus,
+    onOpenNote,
   }: Props = $props();
 
   const SYSLINE_TYPES = new Set(['claim', 'done', 'error', 'defer', 'supersede']);
@@ -229,6 +236,20 @@
           >
             <Icon name="arrow-up-right" size={12} />
             <Kbd keys="f" />
+          </button>
+        {/if}
+        {#if onOpenNote && !isTicket}
+          <button
+            type="button"
+            class="msg-inspect-btn"
+            title="Open note (body + related tickets/code/thread)"
+            aria-label="Open note detail"
+            onclick={(e) => {
+              e.stopPropagation();
+              onOpenNote?.(message.id);
+            }}
+          >
+            <Icon name="maximize" size={12} />
           </button>
         {/if}
         <SeenIndicator entries={seenEntries} />
@@ -411,6 +432,28 @@
   .msg:hover .msg-focus-btn,
   .msg:focus-within .msg-focus-btn,
   .msg-focus-btn:focus-visible {
+    opacity: 1;
+  }
+  /* Piece 6's "open note" trigger — same hover/focus-reveal treatment as
+     the focus-reader button right next to it. */
+  .msg-inspect-btn {
+    display: inline-flex;
+    align-items: center;
+    opacity: 0;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 2px 6px;
+    transition: opacity 0.12s ease;
+  }
+  .msg-inspect-btn:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .msg:hover .msg-inspect-btn,
+  .msg:focus-within .msg-inspect-btn,
+  .msg-inspect-btn:focus-visible {
     opacity: 1;
   }
   /* Scroll-to + highlight-pulse target (design/41 Phase 0 item 4) — a brief

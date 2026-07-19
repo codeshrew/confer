@@ -57,6 +57,9 @@
     /** keyboard-architecture pass — the mouse path for the `f` shortcut,
      * passed straight through to each Message row. */
     onOpenFocus?: (id: string) => void;
+    /** Piece 6 — the mouse path for opening the enriched note popover,
+     * passed straight through to each Message row (notes only). */
+    onOpenNote?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
     /** design/41 Phase 0 item 4 — the shared scroll-to + highlight-pulse
      * primitive that meta-thread-node clicks and lifecycle-trail-row clicks
@@ -83,6 +86,7 @@
     onSelectMessage,
     onSelectTicket,
     onOpenFocus,
+    onOpenNote,
     onOpenRefs,
     scrollToMessageId = null,
     scrollToken = 0,
@@ -453,6 +457,7 @@
           onSelect={onSelectMessage}
           onSelectTicket={onSelectTicket}
           {onOpenFocus}
+          {onOpenNote}
           {onOpenRefs}
         />
       {/each}

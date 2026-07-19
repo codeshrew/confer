@@ -55,6 +55,12 @@ export const uiIcons: Record<string, IconDef> = {
   'panel-right': { viewBox: '0 0 24 24', markup: '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" />' },
   'tag': { viewBox: '0 0 24 24', markup: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.428 0l6.58-6.58a2.426 2.426 0 0 0 0-3.428z" /><path d="M7.5 7.5h.01" />' },
   'arrow-up-right': { viewBox: '0 0 24 24', markup: '<path d="M7 7h10v10" /><path d="M7 17 17 7" />' },
+  // Lucide's "maximize-2" — piece 6's note-popover "inspect" trigger
+  // (Message.svelte's `onOpenNote` button).
+  'maximize': {
+    viewBox: '0 0 24 24',
+    markup: '<polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" x2="14" y1="3" y2="10" /><line x1="3" x2="10" y1="21" y2="14" />',
+  },
 };
 
 // ── ft: curated vscode-material-icon-theme subset (file types) ──────────

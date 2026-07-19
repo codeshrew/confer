@@ -19,6 +19,7 @@
   import Repos from './lib/components/Repos.svelte';
   import MetaThread from './lib/components/MetaThread.svelte';
   import TicketFullPopover from './lib/components/TicketFullPopover.svelte';
+  import NotePopover from './lib/components/NotePopover.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
   import { api } from './lib/api';
@@ -37,6 +38,8 @@
   import { isTypingTarget, viewForCmdNumber } from './lib/keys';
   import { paneFocus } from './lib/paneFocus.svelte';
   import { readState } from './lib/readState.svelte';
+  import { boardFilter } from './lib/boardFilter.svelte';
+  import { filterRequests } from './lib/boardStats';
   import FocusChip from './lib/components/FocusChip.svelte';
 
   let hubs = $state<Hub[]>([]);
@@ -709,6 +712,24 @@
     focusReaderOpen = true;
   }
 
+  // piece 6 — the enriched note popover. Same shape as `focusReaderOpen`:
+  // a separate open/close flag (not folded into `appState.selectedMessage`
+  // itself) so closing it doesn't clear the selection, and an `$effect`
+  // auto-closing it if the selection clears out from under it or the
+  // focus reader opens on top (launchpad, not a stack — same rule
+  // TicketFullPopover follows).
+  let notePopoverOpen = $state(false);
+  $effect(() => {
+    if (!appState.selectedMessage) notePopoverOpen = false;
+  });
+  $effect(() => {
+    if (focusReaderOpen) notePopoverOpen = false;
+  });
+  function openNotePopover(id: string) {
+    selectMessage(id);
+    notePopoverOpen = true;
+  }
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     // Never fire while the operator is actually typing somewhere (a chat
     // note, the palette's own search field, etc.) — REDESIGN.md's hard rule.
@@ -969,6 +990,7 @@
             onSelectMessage={selectMessage}
             onSelectTicket={selectTicket}
             onOpenFocus={openInFocusReader}
+            onOpenNote={openNotePopover}
             onOpenRefs={openRefs}
           />
         {/if}
@@ -1082,12 +1104,17 @@
      TicketRow's onSelect → selectBoardRow) alike, both of which already
      funnel through the same selectedRequestId/appState.selectedMessage
      pair every other jump (FocusReader, MetaThread) reads. `requests`
-     doubles as the `j`/`k` navigable list — Board's own filtered set once
-     piece 5c lands; the full per-hub set is the honest default until then. -->
+     doubles as the `j`/`k` navigable list — on Board, it's the SAME
+     `boardFilter`-filtered set Board.svelte's own lists show (piece 5c's
+     singleton, read directly here rather than threaded back up through a
+     prop), so prev/next only walks what's actually on screen; from Chat
+     (no board filter concept) it's the honest full per-hub set. -->
 <TicketFullPopover
   open={ticketPopoverOpen}
   requestId={selectedRequestId}
-  requests={overview?.board.requests ?? []}
+  requests={appState.view === 'board'
+    ? filterRequests(overview?.board.requests ?? [], boardFilter.stateFilter, boardFilter.agentFilter)
+    : (overview?.board.requests ?? [])}
   {messages}
   agents={overview?.fleet ?? []}
   hub={appState.hub}
@@ -1104,6 +1131,33 @@
   onOpenRefs={openRefs}
   onNavigate={(id) => selectTicket(id)}
   onClose={() => (ticketPopoverOpen = false)}
+/>
+
+<!-- piece 6 (ui/REDESIGN.md) — the enriched note popover: a plain note's
+     body + a keyboard-selectable Related column (tickets/code/thread),
+     composed from piece 5's portable mini cards. Reachable via each
+     Message row's own "open note" button (notes only — a ticket already
+     has TicketFullPopover). `selectMessage` (called by `openNotePopover`
+     above) already loads `thread` and sets `appState.selectedMessage`,
+     so the right rail's meta-thread is showing the SAME conversation
+     behind this popover — "open thread" just closes it rather than
+     re-navigating anywhere. -->
+<NotePopover
+  open={notePopoverOpen}
+  msgId={appState.selectedMessage?.id ?? null}
+  {messages}
+  agents={overview?.fleet ?? []}
+  requests={overview?.board.requests ?? []}
+  {thread}
+  hub={appState.hub}
+  {focusReaderOpen}
+  onOpenTicket={(id) => {
+    notePopoverOpen = false;
+    selectTicket(id);
+  }}
+  onOpenRefs={openRefs}
+  onOpenThread={() => (notePopoverOpen = false)}
+  onClose={() => (notePopoverOpen = false)}
 />
 
 <style>
