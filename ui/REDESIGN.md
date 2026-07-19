@@ -31,17 +31,43 @@ for the canonical reference — tokens, agent-node states, trust framing, attent
 **Cross-cutting: keyboard-first (operator directive, 2026-07-18).** The operator lives in vim, modern
 tmux, and macOS — the dashboard must be operable end-to-end from the keyboard, designed in from each
 piece, never retrofitted. The model (build up across pieces, discoverable via a `?` / which-key overlay):
-- **`⌘K` command palette** — fuzzy jump to any hub / thread / action (fzf-like), the macOS-native entry point.
-- **vim motions wherever there's a list** — `j`/`k` move selection, `g g`/`G` top/bottom, `/` filter-in-place,
-  `Enter` or `l` open/drill, `Esc` or `h` back/up-a-level. (Rail hubs, chat messages, board rows, code refs.)
-- **`g` leader for views + actions (SETTLED with operator 2026-07-18)** — the operator's tmux prefix is
-  `Ctrl+Space`, which clashes with browser chords, so the web dashboard uses a vim-native **`g` leader**.
-  View switching: **`g` then a number `1`–`5`** (Overview/Chat/Board/Fleet/Code — mirrors tmux window-number
-  muscle memory) is primary, with first-letter aliases where unambiguous. Action keys (`c` claim / `d` done)
-  where they apply.
-- **`?`** opens a which-key-style overlay of available keys, so nothing has to be memorized blind.
-- Every affordance reachable without a mouse — this composes with the `:focus-visible` work already in place.
-First slice lands in piece 2: rail `j`/`k` navigation + `⌘K` palette + `g`+number view switching + `?` overlay.
+**The model — three collision-free modifier layers** (adopted 2026-07-19 from Compositor's studio
+proofread-UI spec, relayed by Herald `P73QG8`; **supersedes the earlier `g`-leader**):
+
+    Ctrl  = PANES     move focus between regions (the operator's vim-tmux-navigator reflex)
+    bare  = CONTENT   vim motion INSIDE the focused pane (only its keys fire)
+    Cmd   = APP       global — palette, views, help — works regardless of focused pane
+
+- **Layer 1 · `Ctrl`+`h`/`j`/`k`/`l`** — move pane focus by BOUNDING-BOX GEOMETRY (nearest region on the
+  pressed side, scored by primary-axis distance + 2× cross-axis misalignment) so it survives any responsive
+  layout with no keymap edits. `Ctrl`+`]`/`[` cycle (ring); `F6`/`Shift+F6` a11y alias. Exactly one pane
+  active, shown by a **focus chip**; clicking a pane focuses it.
+- **Layer 2 · bare keys = the FOCUSED pane's own vocabulary** — only the focused pane's keys fire, so the
+  same key means different things in different panes with zero conflict (the tmux model). Stream: `j`/`k`
+  messages · `Enter` open peek · `f` focus reader; rail: `j`/`k` hubs; trail: `j`/`k`/`h`/`l` nodes;
+  `gg`/`G` top/bottom within any list.
+- **Layer 3 · `Cmd`** — `⌘K` palette · `⌘1`–`⌘5` views (Overview/Chat/Board/Fleet/Code, tmux-window feel) ·
+  `?` grouped keyboard-help. Global.
+- **The `g` leader is RETIRED** — a global `g`-prefix collides with per-pane bare keys (`gg`). Views moved to
+  the `Cmd` layer. **Browser caveat:** some `Ctrl` chords are reserved (`Ctrl+L` = address bar); provide a
+  `Cmd` alias where a `Ctrl` binding can't be reliably `preventDefault`ed.
+
+**Robustness — the 4 gotchas, enforced in `keys.ts`:** (1) bind the keydown listener ONCE, read the pane
+list through a ref, mutate via the functional updater — a listener that re-subscribes on pane-list change
+DROPS EVERY OTHER KEYPRESS (the biggest footgun); (2) `isTypingTarget` guard — INPUT/TEXTAREA/SELECT/
+`contentEditable` → let the key through, don't fire nav; (3) blur the active element on pane switch — else the
+old pane keeps eating keys; (4) neighbour from geometry, never a hardcoded order.
+
+**Everything button-reachable + glanceable shortcuts (operator directive 2026-07-19):** every action has an
+on-screen control — full mouse parity, nothing keyboard-only — and **each control displays its own shortcut
+inline** (a small `kbd` chip on the button / tab / menu item), so the model is learned passively just by using
+the UI. `?` gives the full grouped cheatsheet; a persistent focus chip shows the active pane; a one-line
+footnote states the model verbatim: *"Ctrl = panes · bare = content · Cmd = app · only the focused pane's keys
+fire."* It must stay **learnable in one sentence** — if it can't be, the layering is wrong.
+
+Landed so far: `⌘K` palette + `?` overlay + per-pane `j`/`k` (pieces 2–3). Remaining: retrofit the `Ctrl`
+pane-focus layer + focus chip, move views `g`+number → `⌘`+number, and the inline shortcut-chip pattern — a
+**keyboard-architecture pass** (below) before piece 4's keyboard bits.
 
 ---
 
