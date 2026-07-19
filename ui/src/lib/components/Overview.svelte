@@ -268,13 +268,16 @@
             {#if domain.workInFlight.length === 0}
               <span class="ov-quiet">quiet — no open requests</span>
             {:else}
-              {#each domain.workInFlight as w (w.id)}
-                <button type="button" class="ov-work ov-work-{workClass(w)}" onclick={() => onDrillRequest?.(domain.hub, w.id)}>
-                  <span class="ov-wid">{w.id.replace(/^req_/, '').slice(0, 6)}</span>
-                  <span class="ov-wsummary">{w.summary}</span>
-                  <span class="ov-wclaim">· {claimantLabel(w)}</span>
-                </button>
-              {/each}
+              <div class="ov-worklist">
+                {#each domain.workInFlight as w (w.id)}
+                  <button type="button" class="ov-work ov-work-{workClass(w)}" onclick={() => onDrillRequest?.(domain.hub, w.id)}>
+                    <span class="ov-wdot" aria-hidden="true"></span>
+                    <span class="ov-wid">{w.id.replace(/^req_/, '').slice(-6)}</span>
+                    <span class="ov-wsummary">{w.summary}</span>
+                    <span class="ov-wmeta">{claimantLabel(w)}</span>
+                  </button>
+                {/each}
+              </div>
             {/if}
           </div>
         </section>
@@ -527,56 +530,90 @@
     gap: var(--phi1);
   }
   .ov-flight {
-    margin-top: 14px;
-    padding-top: 12px;
+    margin-top: 13px;
+    padding-top: 10px;
     border-top: 1px solid var(--border);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-    align-items: center;
   }
   .ov-flab {
-    font: 700 10px/1 var(--mono);
-    letter-spacing: 0.06em;
+    display: block;
+    font: 700 9.5px/1 var(--mono);
+    letter-spacing: 0.09em;
     text-transform: uppercase;
     color: var(--faint);
-    margin-right: 3px;
+    margin-bottom: 6px;
+  }
+  /* Work-in-flight as a compact work-item list: one grid row each, so the
+     right-hand meta (claimant / age) lines up in a column across all rows;
+     status reads from a color dot (open=grey, claimed=cyan, stuck=amber),
+     not a glyph. Rows are borderless until hover — quiet at rest. */
+  .ov-worklist {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
   .ov-work {
-    font: 500 11.5px/1 var(--mono);
-    padding: 5px 9px;
-    border-radius: 6px;
-    border: 1px solid var(--border-2);
-    background: var(--panel-2);
-    color: var(--muted);
-    display: inline-flex;
-    gap: 6px;
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
     align-items: center;
-    max-width: 100%;
+    gap: 9px;
+    width: 100%;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    background: transparent;
+    font: 500 11px/1.4 var(--mono);
+    color: var(--fg-dim);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .ov-work:hover {
+    background: var(--panel-2);
+    border-color: var(--border-2);
   }
   .ov-work:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline-offset: 1px;
+  }
+  .ov-wdot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--muted-2);
   }
   .ov-wid {
     color: var(--faint);
+    font-size: 10px;
+    letter-spacing: 0.02em;
   }
   .ov-wsummary {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--fg-dim);
+    min-width: 0;
   }
-  .ov-work-wip {
-    border-color: color-mix(in srgb, var(--claimed) 45%, transparent);
+  .ov-wmeta {
+    justify-self: end;
+    white-space: nowrap;
+    font-size: 10px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .ov-work-wip .ov-wdot {
+    background: var(--claimed);
+  }
+  .ov-work-wip .ov-wmeta {
     color: var(--claimed);
   }
-  .ov-work-stuck {
-    border-color: color-mix(in srgb, var(--blocked) 50%, transparent);
-    color: var(--blocked);
-    background: color-mix(in srgb, var(--blocked) 9%, transparent);
+  .ov-work-stuck .ov-wdot {
+    background: var(--blocked);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blocked) 16%, transparent);
   }
-  .ov-work-stuck::before {
-    content: '▲';
+  .ov-work-stuck .ov-wmeta {
+    color: var(--blocked);
   }
   .ov-quiet {
     font-size: 11.5px;
