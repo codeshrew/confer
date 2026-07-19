@@ -6,7 +6,10 @@ import { test, expect } from '@playwright/test';
 // put, the clicked range's conversations read in the persistent right-rail
 // reader, and "open full thread ›" is the ONLY opt-in path back to Chat.
 // Mock fixtures: PlateBundle.swift's L44–49 carries 3 real hits (reader,
-// pipeline, and a private compositor note).
+// pipeline, and a private compositor note) — filtered by "3 ·" since piece
+// 11 Phase 2 added a SECOND, genuinely overlapping range (L44–46, 1 hit)
+// on the same file/line to demonstrate real column-overlap; both entries'
+// tabs now sit on line 44.
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -16,7 +19,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('clicking a hot line opens the anchored reader in place — Code stays put, does not jump to Chat', async ({ page }) => {
-  const hotLine = page.locator('.dens.hit').first();
+  const hotLine = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
   await expect(hotLine).toBeVisible();
   await hotLine.click();
 
@@ -31,7 +34,7 @@ test('clicking a hot line opens the anchored reader in place — Code stays put,
 });
 
 test('the scope header locks to the clicked range, with "↩ whole file" to widen', async ({ page }) => {
-  const hotLine = page.locator('.dens.hit').first();
+  const hotLine = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
   await hotLine.click();
 
   const drawer = page.getByTestId('right-drawer');
@@ -46,46 +49,46 @@ test('the scope header locks to the clicked range, with "↩ whole file" to wide
   await expect(scope).not.toContainText('▐');
 });
 
-test('multiple conversations on the range: one focused + expanded, the rest a "‹ N more" strip, j/k steps between them', async ({ page }) => {
-  const hotLine = page.locator('.dens.hit').first();
+test('multiple conversations on the range: one focused + expanded, the rest VISIBLE scannable rows, j/k steps between them', async ({ page }) => {
+  const hotLine = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
   await hotLine.click();
 
   const drawer = page.getByTestId('right-drawer');
   await expect(drawer.getByTestId('anchored-conv')).toBeVisible();
-  const morePills = drawer.getByTestId('anchored-more-pill');
-  await expect(morePills).toHaveCount(2);
+  const rows = drawer.getByTestId('anchored-row');
+  await expect(rows).toHaveCount(2);
 
   const firstBody = await drawer.getByTestId('anchored-conv').textContent();
 
-  // Clicking a "more" pill swaps the focus — a DIFFERENT conversation now
-  // expands, and the pill count stays at 2 (still one focused, N-1 more).
-  await morePills.first().click();
+  // Clicking a row swaps the focus (accordion) — a DIFFERENT conversation
+  // now expands, and the row count stays at 2 (still one focused, N-1 rows).
+  await rows.first().click();
   const secondBody = await drawer.getByTestId('anchored-conv').textContent();
   expect(secondBody).not.toBe(firstBody);
-  await expect(drawer.getByTestId('anchored-more-pill')).toHaveCount(2);
+  await expect(drawer.getByTestId('anchored-row')).toHaveCount(2);
 
   // j/k also steps focus — the keydown bubbles up from whatever's already
-  // focused (the pill just clicked) to the panel's own handler, no extra
+  // focused (the row just clicked) to the panel's own handler, no extra
   // focus() call needed.
   await page.keyboard.press('j');
   const thirdBody = await drawer.getByTestId('anchored-conv').textContent();
   expect(thirdBody).not.toBe(secondBody);
 });
 
-test('"open full thread ›" is the ONLY thing that leaves Code — never a bare row/pill click', async ({ page }) => {
-  const hotLine = page.locator('.dens.hit').first();
+test('"open full thread ›" is the ONLY thing that leaves Code — never a bare row click', async ({ page }) => {
+  const hotLine = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
   await hotLine.click();
 
   const drawer = page.getByTestId('right-drawer');
-  // Clicking the "more" strip stayed in Code (proven by the previous test);
-  // only the expanded card's own explicit link navigates.
+  // Clicking a row stayed in Code (proven by the previous test); only the
+  // expanded card's own explicit link navigates.
   await drawer.getByTestId('open-full-thread').click();
 
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('renders correctly in both themes', async ({ page }) => {
-  const hotLine = page.locator('.dens.hit').first();
+  const hotLine = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
   await hotLine.click();
   const drawer = page.getByTestId('right-drawer');
   await expect(drawer.getByTestId('anchored-conv')).toBeVisible();
@@ -93,5 +96,5 @@ test('renders correctly in both themes', async ({ page }) => {
   await page.getByRole('button', { name: 'Toggle theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(drawer.getByTestId('anchored-conv')).toBeVisible();
-  await expect(drawer.getByTestId('anchored-more-pill').first()).toBeVisible();
+  await expect(drawer.getByTestId('anchored-row').first()).toBeVisible();
 });

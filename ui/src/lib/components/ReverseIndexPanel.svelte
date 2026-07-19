@@ -10,7 +10,7 @@
   import { formatAge, formatIsoDate } from '../format';
   import { groupRefHitsByFile } from '../codeTree';
   import { paneFocus } from '../paneFocus.svelte';
-  import { EVENT_COLOR_VAR } from '../eventSubject';
+  import { hitColorVar } from '../codeGutter';
   import { isTypingTarget } from '../keys';
   import EmptyState from './EmptyState.svelte';
   import Icon from './Icon.svelte';
@@ -88,64 +88,51 @@
     return agents.find((a) => a.id === id);
   }
 
-  /** Piece 11 Phase 1 — a hit's accent color for the anchored reader's card
-   * border/kind badge. Reuses the SAME per-kind palette `eventSubject.ts`
-   * already established for claim/done/error/blocked/defer/supersede
-   * (piece 9) — not a second invented mapping. `note` isn't an event kind
-   * (no subject to resolve), so it gets its own muted-teal, matching the
-   * `05-composable-cards.html` mock's own note/request distinction; a
-   * `request` hit is colored by its REAL `requestStatus` — a simplified
-   * peer of `ticketStateOf`'s state->color story (a `RefHit` carries only
-   * the raw status enum, not a full `RequestRow`, so it's not the SAME
-   * function, just the same palette). */
-  function hitColorVar(hit: RefHit): string {
-    switch (hit.msgType) {
-      case 'note':
-        return 'var(--state-metric)';
-      case 'request':
-        switch (hit.requestStatus) {
-          case 'CLAIMED':
-            return 'var(--state-flight)';
-          case 'BLOCKED':
-          case 'ERROR':
-            return 'var(--state-stuck)';
-          case 'DONE':
-          case 'SUPERSEDED':
-            return 'var(--state-done)';
-          default:
-            return 'var(--state-open)';
-        }
-      default:
-        return EVENT_COLOR_VAR[hit.msgType];
-    }
-  }
-
   // Piece 11 Phase 1 — the anchored reader's own focus: which hit is
-  // currently shown EXPANDED (the rest render as compact "more" pills).
-  // Reset to the FIRST hit whenever the SCOPE changes (a different repo/
-  // path/range selected) — never a stale index left over from whatever
-  // scope was showing before. Keyed on the scope, not `hits` itself, so an
-  // unrelated re-render that happens to pass a new-but-equivalent `hits`
-  // array doesn't blow away focus the reader is mid-read on.
+  // currently shown EXPANDED (the rest render as compact rows). Reset to
+  // the FIRST hit whenever the SCOPE changes (a different repo/path/range
+  // selected) — never a stale index left over from whatever scope was
+  // showing before. Keyed on the scope, not `hits` itself, so an unrelated
+  // re-render that happens to pass a new-but-equivalent `hits` array
+  // doesn't blow away focus the reader is mid-read on.
   let focusedIdx = $state(0);
   $effect(() => {
     void repo;
     void path;
     void range;
     focusedIdx = 0;
+    showAllRows = false;
   });
   $effect(() => {
     if (focusedIdx >= hits.length) focusedIdx = Math.max(0, hits.length - 1);
   });
 
-  // A "more" pill click UNMOUNTS itself (the hit it named becomes the
-  // expanded card, so it's no longer rendered as a pill) — the browser
-  // silently drops keyboard focus to <body> when its previously-focused
-  // element is removed from the DOM. Without re-focusing the panel root
-  // here, a SUBSEQUENT j/k press would never bubble back into `handleAnchoredKeydown`
-  // (body isn't a descendant of `.cvx`, so nothing reaches it). j/k's own
-  // moves don't need this — the panel root is already what's focused when
-  // a keydown fires on it in the first place.
+  // Jarvis's live-verify catch on Phase 1's own first cut: conversations
+  // shouldn't hide behind a bare count — the pane's whole point is to SCAN
+  // and flow through a range's discussion. All hits render as visible,
+  // scannable ROWS (accordion: the focused one expands, collapses the
+  // prior); only genuinely many (6+) fold the tail behind a "‹ N older"
+  // reveal, matching the mock's own "few conversations, all shown" case
+  // exactly while still keeping a huge hit list from blowing out the pane.
+  const VISIBLE_ROW_CAP = 5;
+  let showAllRows = $state(false);
+  $effect(() => {
+    // If focus ever lands beyond the initial cap (j/k stepping past it),
+    // the visible window must include it — reveal rather than hide the
+    // very thing that's focused.
+    if (focusedIdx >= VISIBLE_ROW_CAP) showAllRows = true;
+  });
+  const visibleCount = $derived(showAllRows || hits.length <= VISIBLE_ROW_CAP ? hits.length : VISIBLE_ROW_CAP);
+  const olderCount = $derived(hits.length - visibleCount);
+
+  // A row click UNMOUNTS itself (the hit it named becomes the expanded
+  // card, so it's no longer rendered as a row) — the browser silently
+  // drops keyboard focus to <body> when its previously-focused element is
+  // removed from the DOM. Without re-focusing the panel root here, a
+  // SUBSEQUENT j/k press would never bubble back into
+  // `handleAnchoredKeydown` (body isn't a descendant of `.cvx`, so nothing
+  // reaches it). j/k's own moves don't need this — the panel root is
+  // already what's focused when a keydown fires on it in the first place.
   function focusHit(i: number) {
     focusedIdx = i;
     cvxEl?.focus();
@@ -267,44 +254,39 @@
          Clicking a row/pill only ever moves FOCUS — `onOpenThread` (the
          expanded card's own explicit link) is the ONLY way out to Chat. -->
     {#each hits as hit, i (hit.msgId)}
-      {#if i === focusedIdx}
-        {@const agent = resolveAgent(hit.from)}
-        {@const c = hitColorVar(hit)}
-        <div class="aconv" style="--c:{c}" data-testid="anchored-conv">
-          <div class="ach">
-            <span class="aav" style="background:{agent?.color ?? 'var(--muted-2)'}">{agent?.abbr ?? hit.from.slice(0, 2).toUpperCase()}</span>
-            <span class="awho">{agent?.display ?? cap(hit.from)}</span>
-            <span class="akind">{hit.msgType}</span>
-            <span class="ats">{formatAge(hit.ts)}</span>
+      {#if i < visibleCount}
+        {#if i === focusedIdx}
+          {@const agent = resolveAgent(hit.from)}
+          {@const c = hitColorVar(hit)}
+          <div class="aconv" style="--c:{c}" data-testid="anchored-conv">
+            <div class="ach">
+              <span class="aav" style="background:{agent?.color ?? 'var(--muted-2)'}">{agent?.abbr ?? hit.from.slice(0, 2).toUpperCase()}</span>
+              <span class="awho">{agent?.display ?? cap(hit.from)}</span>
+              <span class="akind">{hit.msgType}</span>
+              <span class="ats">{formatAge(hit.ts)}</span>
+            </div>
+            <div class="abody">{hit.summary}</div>
+            <div class="afoot">
+              <button type="button" class="aopenlink" onclick={() => onOpenThread?.(hit)} data-testid="open-full-thread">open full thread ›</button>
+              {#if hit.topic}<span class="asep">·</span><span class="atopic">#{hit.topic}</span>{/if}
+              <span class="ahub" class:priv={hit.hubPrivate}>{hit.hub}{hit.hubPrivate ? ' · priv' : ''}</span>
+            </div>
           </div>
-          <div class="abody">{hit.summary}</div>
-          <div class="afoot">
-            <button type="button" class="aopenlink" onclick={() => onOpenThread?.(hit)} data-testid="open-full-thread">open full thread ›</button>
-            {#if hit.topic}<span class="asep">·</span><span class="atopic">#{hit.topic}</span>{/if}
-            <span class="ahub" class:priv={hit.hubPrivate}>{hit.hub}{hit.hubPrivate ? ' · priv' : ''}</span>
-          </div>
-        </div>
+        {:else}
+          {@const agent = resolveAgent(hit.from)}
+          <!-- Visible, scannable — NOT hidden behind a count. Clicking
+               moves focus (accordion: this expands, the current one
+               collapses back to a row); it never navigates away. -->
+          <button type="button" class="arow" style="--c:{hitColorVar(hit)}" onclick={() => focusHit(i)} data-testid="anchored-row">
+            <span class="arow-who">{agent?.display ?? cap(hit.from)}</span>
+            <span class="arow-kind">{hit.msgType}</span>
+            <span class="arow-teaser">{hit.summary}</span>
+          </button>
+        {/if}
       {/if}
     {/each}
-    {#if hits.length > 1}
-      <div class="amore" role="list" aria-label="{hits.length - 1} more conversation{hits.length - 1 === 1 ? '' : 's'}">
-        <span class="amore-lab">‹ {hits.length - 1} more</span>
-        {#each hits as hit, i (hit.msgId)}
-          {#if i !== focusedIdx}
-            {@const agent = resolveAgent(hit.from)}
-            <button
-              type="button"
-              class="amore-pill"
-              style="--c:{hitColorVar(hit)}"
-              onclick={() => focusHit(i)}
-              data-testid="anchored-more-pill"
-            >
-              {agent?.display ?? cap(hit.from)} · {hit.msgType}
-            </button>
-          {/if}
-        {/each}
-      </div>
-      <p class="amore-hint mono">j/k to step</p>
+    {#if olderCount > 0}
+      <button type="button" class="aolder" onclick={() => (showAllRows = true)} data-testid="anchored-older">‹ {olderCount} older</button>
     {/if}
   {:else}
     {#each hits as hit (hit.msgId)}
@@ -560,36 +542,67 @@
   .ahub.priv {
     color: var(--deferred);
   }
-  .amore {
+  /* Piece 11 Phase 1 (post-verify tweak) — visible, scannable collapsed
+     rows, not a hidden pill strip: the pane's whole point is to scan and
+     flow through a range's conversations. Clicking one is the accordion's
+     "expand this instead" action — the currently-expanded `.aconv` becomes
+     a row exactly like this the moment a DIFFERENT one is focused. */
+  .arow {
     display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 4px;
+    align-items: baseline;
+    gap: 7px;
+    width: 100%;
+    text-align: left;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--c, var(--accent));
+    border-radius: 0 8px 8px 0;
+    padding: 6px 10px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
   }
-  .amore-lab {
-    font: 600 10.5px/1 var(--mono);
-    color: var(--muted);
+  .arow:hover,
+  .arow:focus-visible {
+    border-color: var(--c, var(--accent));
+    background: var(--panel-3);
+  }
+  .arow-who {
+    font-weight: 600;
+    font-size: 11.5px;
     flex: 0 0 auto;
   }
-  .amore-pill {
+  .arow-kind {
+    font: 600 9px/1 var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c, var(--accent));
+    flex: 0 0 auto;
+  }
+  .arow-teaser {
+    font-size: 11.5px;
+    color: var(--muted);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aolder {
+    display: block;
+    width: 100%;
+    text-align: center;
     font: 600 10.5px/1 var(--mono);
     color: var(--muted);
-    background: var(--panel-2);
-    border: 1px solid var(--border-2);
-    border-radius: 999px;
-    padding: 4px 9px;
+    background: transparent;
+    border: 1px dashed var(--border-2);
+    border-radius: 8px;
+    padding: 6px;
     cursor: pointer;
   }
-  .amore-pill:hover,
-  .amore-pill:focus-visible {
+  .aolder:hover {
     color: var(--text);
-    border-color: var(--c, var(--accent));
-  }
-  .amore-hint {
-    font-size: 10px;
-    color: var(--faint);
-    margin: 4px 0 0;
-    text-align: center;
+    border-color: var(--accent);
   }
 </style>

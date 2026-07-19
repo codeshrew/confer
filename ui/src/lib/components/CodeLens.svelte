@@ -8,18 +8,24 @@
   // writes to (stores.svelte.ts), rather than owning its own local file
   // list — clicking a file in the tree updates this pane with no prop or
   // callback plumbing between the two components.
-  import type { RefHit } from '../types';
+  import type { Agent, RefHit } from '../types';
   import { api } from '../api';
   import { highlightSnippetLines, resolveLang, type HighlightedLine } from '../highlight';
   import { codeState } from '../stores.svelte';
   import { fileKey, groupRefHitsByFile } from '../codeTree';
   import { formatAge } from '../format';
+  import { buildGutterEntries, gutterColumnCount, hitColorVar, type GutterEntry } from '../codeGutter';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
   import FileIcon from './FileIcon.svelte';
 
   interface Props {
     hub: string;
+    /** Piece 11 Phase 2 — the current hub's fleet, for the gutter tab's
+     * real initials (falls back to a generic id-based treatment when a
+     * hit's author isn't in it, same honest-fallback convention the
+     * anchored reader's own `agents` prop already established). */
+    agents?: Agent[];
     onOpenRefs?: (ctx: { repo: string; path: string; range: [number, number] | null }, hits: RefHit[]) => void;
     /** Fired whenever the active file's FULL reference list (whole-file `range:null`
      * hits included) is (re)loaded — lets the host surface a file-level conversation
@@ -33,7 +39,7 @@
     onRepoRefs?: (repo: string, hits: RefHit[]) => void;
   }
 
-  let { hub, onOpenRefs, onFileRefs, onRepoRefs }: Props = $props();
+  let { hub, agents = [], onOpenRefs, onFileRefs, onRepoRefs }: Props = $props();
 
   const s = $derived(codeState.forHub(hub));
 
@@ -79,11 +85,100 @@
   let lines = $state<{ n: number; text: string }[]>([]);
   let lang = $state<string | null>(null);
   let highlighted = $state<HighlightedLine[]>([]);
-  let hitsByLine = $state<Map<number, RefHit[]>>(new Map());
   // ALL of the active file's hits (whole-file `range:null` ones included) —
-  // the file-level "conversations about this code" list, distinct from
-  // `hitsByLine` which only carries the ranged subset for the gutter.
+  // the file-level "conversations about this code" list. Piece 11 Phase 2's
+  // gutter (`gutterEntries` below) and file-lane (`wholeFileHits`) are both
+  // pure derivations off this ONE fetched list, not separate state to keep
+  // in sync.
   let fileRefs = $state<RefHit[]>([]);
+
+  // Piece 11 Phase 2 (11-code-view-BUILD-BRIEF.md) — the powered gutter:
+  // "shape = scope" (file-lane / bracket / tick), "color = meaning" (real
+  // per-kind palette, `codeGutter.ts`'s `hitColorVar` — shared with the
+  // anchored reader, piece 9's own event palette underneath), "column =
+  // overlap" (`buildGutterEntries`'s greedy interval coloring). Whole-file
+  // hits (`range: null`) never touch the gutter — they live in the
+  // file-lane above line 1 instead.
+  const wholeFileHits = $derived(fileRefs.filter((h) => h.range === null));
+  const gutterEntries = $derived(buildGutterEntries(fileRefs));
+  const gutterColumns = $derived(gutterColumnCount(gutterEntries));
+
+  interface LineSegment {
+    entry: GutterEntry;
+    pos: 'start' | 'middle' | 'end' | 'tick';
+  }
+  /** Per line, one slot per gutter column — `null` where nothing crosses
+   * that line in that column. Rebuilt whenever the entries change (a new
+   * file, or its refs reloading), not per-render. */
+  const lineColumns = $derived.by((): Map<number, (LineSegment | null)[]> => {
+    const map = new Map<number, (LineSegment | null)[]>();
+    for (const line of lines) map.set(line.n, new Array(gutterColumns).fill(null));
+    for (const entry of gutterEntries) {
+      for (let n = entry.range[0]; n <= entry.range[1]; n++) {
+        const slots = map.get(n);
+        if (!slots) continue;
+        const pos: LineSegment['pos'] = entry.isTick ? 'tick' : n === entry.range[0] ? 'start' : n === entry.range[1] ? 'end' : 'middle';
+        slots[entry.column] = { entry, pos };
+      }
+    }
+    return map;
+  });
+
+  /** The clickable "range tab" renders once per entry, on its START
+   * line — the click target into the Phase-1 anchored reader. More than
+   * one entry can rarely start on the same line; render both rather than
+   * silently dropping one. */
+  const tabsByLine = $derived.by((): Map<number, GutterEntry[]> => {
+    const map = new Map<number, GutterEntry[]>();
+    for (const entry of gutterEntries) {
+      const arr = map.get(entry.range[0]) ?? [];
+      arr.push(entry);
+      map.set(entry.range[0], arr);
+    }
+    return map;
+  });
+
+  function resolveAgent(id: string): Agent | undefined {
+    return agents.find((a) => a.id === id);
+  }
+
+  function cap(s: string): string {
+    return s.length ? s[0]!.toUpperCase() + s.slice(1) : s;
+  }
+
+  /** The tab's own label — "2 · JV HE" (mock 12) — real initials for every
+   * DISTINCT author on the entry, falling back to a generic id-derived
+   * treatment when an author isn't on this hub's roster (a real cross-hub
+   * case, not an error). */
+  function tabInitials(entry: GutterEntry): string {
+    const seen = new Set<string>();
+    const initials: string[] = [];
+    for (const h of entry.hits) {
+      if (seen.has(h.from)) continue;
+      seen.add(h.from);
+      initials.push(resolveAgent(h.from)?.abbr ?? h.from.slice(0, 2).toUpperCase());
+    }
+    return initials.join(' ');
+  }
+
+  /** Hover = peek (the brief's own bullet) — a native title tooltip naming
+   * who and how many, real data, no custom hover UI needed for this. */
+  function tabTitle(entry: GutterEntry): string {
+    const count = entry.hits.length;
+    const latest = [...entry.hits].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!;
+    const who = [...new Set(entry.hits.map((h) => resolveAgent(h.from)?.display ?? cap(h.from)))].join(', ');
+    return `${count} conversation${count === 1 ? '' : 's'} · ${who} · latest ${formatAge(latest.ts)}${entry.drift ? ' · drifted from the pinned lines' : ''}`;
+  }
+
+  function clickEntry(entry: GutterEntry) {
+    if (!active) return;
+    onOpenRefs?.({ repo: active.repo, path: active.path, range: entry.range }, entry.hits);
+  }
+
+  function clickFileLane() {
+    if (!active || wholeFileHits.length === 0) return;
+    onOpenRefs?.({ repo: active.repo, path: active.path, range: null }, wholeFileHits);
+  }
 
   /** Most-recently-posted hit for the active file (ISO ts, string-sortable) —
    * drives both the sha `getCode` renders at and the empty-state copy. */
@@ -124,7 +219,6 @@
     const f = active;
     if (!f || !f.mapped) {
       lines = [];
-      hitsByLine = new Map();
       fileRefs = [];
       s.codeSha = 'HEAD';
       loading = false;
@@ -145,17 +239,6 @@
       lines = snippet.lines;
       lang = snippet.lang;
       highlighted = lines.length ? await highlightSnippetLines(lines, resolveLang(lang)) : [];
-
-      const byLine = new Map<number, RefHit[]>();
-      for (const h of relevant) {
-        if (!h.range) continue;
-        for (let n = h.range[0]; n <= h.range[1]; n++) {
-          const arr = byLine.get(n) ?? [];
-          arr.push(h);
-          byLine.set(n, arr);
-        }
-      }
-      hitsByLine = byLine;
     } finally {
       loading = false;
     }
@@ -174,20 +257,6 @@
 
   function highlightedFor(n: number): HighlightedLine | undefined {
     return highlighted.find((h) => h.n === n);
-  }
-
-  function heatStyle(n: number): string | undefined {
-    const refs = hitsByLine.get(n)?.length ?? 0;
-    if (!refs) return undefined;
-    const heat = Math.min(refs * 10, 42);
-    return `--heat:${heat}%`;
-  }
-
-  function clickLine(n: number) {
-    if (!active) return;
-    const hits = hitsByLine.get(n);
-    if (!hits || hits.length === 0) return;
-    onOpenRefs?.({ repo: active.repo, path: active.path, range: [n, n] }, hits);
   }
 </script>
 
@@ -236,7 +305,7 @@
     </div>
   {:else if active}
     <div class="codetool">
-      <span class="ct-hint">conversation-density gutter · click a hot line to see who discussed it</span>
+      <span class="ct-hint">conversation gutter · shape=scope, color=meaning, column=overlap · click a range tab to read it</span>
     </div>
     <div class="codepage">
       <div class="densitywrap">
@@ -258,27 +327,61 @@
           </div>
         {:else}
           <div class="densefile">
-            <div class="code" data-lang={lang}>
+            {#if wholeFileHits.length > 0}
+              <!-- Piece 11 Phase 2 — the file-lane: whole-file conversations
+                   live HERE, never pinned to (or cluttering) any one line. -->
+              <button type="button" class="filelane" onclick={clickFileLane} data-testid="file-lane">
+                <span class="fl-ico">▤</span>
+                <span class="fl-tx"
+                  ><b>{wholeFileHits.length} conversation{wholeFileHits.length === 1 ? '' : 's'}</b> about the whole file</span
+                >
+              </button>
+            {/if}
+            <div class="code" data-lang={lang} style="--gutter-cols:{gutterColumns}">
               {#each lines as line (line.n)}
-                {@const refCount = hitsByLine.get(line.n)?.length ?? 0}
-                <div class="cl">
-                  {#if refCount > 0}
-                    <button
-                      type="button"
-                      class="dens hit"
-                      style={heatStyle(line.n)}
-                      title={`${refCount} conversation${refCount === 1 ? '' : 's'} reference this line`}
-                      onclick={() => clickLine(line.n)}
-                    >{refCount}</button>
-                  {:else}
-                    <span class="dens">·</span>
-                  {/if}
+                {@const cols = lineColumns.get(line.n) ?? []}
+                {@const tabs = tabsByLine.get(line.n) ?? []}
+                <div class="cl" class:hot={cols.some((c) => c !== null)}>
+                  <span class="g">
+                    {#each cols as seg, ci (ci)}
+                      <span class="gcol">
+                        {#if seg}
+                          {#if seg.pos === 'tick'}
+                            <span class="tick" class:drift={seg.entry.drift} style="--bc:{hitColorVar(seg.entry.hits[0]!)}"></span>
+                          {:else}
+                            <span
+                              class="br"
+                              class:s={seg.pos === 'start'}
+                              class:e={seg.pos === 'end'}
+                              class:drift={seg.entry.drift}
+                              style="--bc:{hitColorVar(seg.entry.hits[0]!)}"
+                            ></span>
+                          {/if}
+                        {/if}
+                      </span>
+                    {/each}
+                  </span>
                   <span class="ln">{line.n}</span>
                   <span class="cc">
                     {#each highlightedFor(line.n)?.tokens ?? [{ text: line.text, style: '' }] as tok, i (i)}
                       <span class="shiki-tok" style={tok.style}>{tok.text}</span>
                     {/each}
                   </span>
+                  {#if tabs.length > 0}
+                    <span class="tabs-wrap">
+                      {#each tabs as entry (entry.range[0] + '-' + entry.range[1])}
+                        <button
+                          type="button"
+                          class="tab"
+                          class:drift={entry.drift}
+                          style="--tc:{hitColorVar(entry.hits[0]!)}"
+                          title={tabTitle(entry)}
+                          onclick={() => clickEntry(entry)}
+                          data-testid="gutter-tab"
+                        >{entry.drift ? '◷ ' : ''}{entry.hits.length} · {tabInitials(entry)}</button>
+                      {/each}
+                    </span>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -376,33 +479,149 @@
   }
   .densefile .cl {
     display: flex;
+    align-items: stretch;
     padding: 0 14px;
     white-space: pre;
+    position: relative;
   }
-  .densefile .cl:hover {
+  .densefile .cl:hover,
+  .densefile .cl.hot:hover {
     background: var(--panel-2);
   }
-  .dens {
-    width: 26px;
-    flex: 0 0 auto;
-    text-align: center;
-    margin-right: 10px;
-    border-radius: 4px;
-    font: 700 9.5px/1 var(--mono);
-    color: var(--faint);
-    cursor: default;
+  .densefile .cl.hot {
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+
+  /* Piece 11 Phase 2 — the file-lane: whole-file conversations, never
+     pinned to (or cluttering) any one line. */
+  .filelane {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 20px;
+    background: color-mix(in srgb, var(--state-metric) 9%, transparent);
     border: 0;
-    background: transparent;
-    padding: 0;
-  }
-  .dens.hit {
+    border-bottom: 1px dashed color-mix(in srgb, var(--state-metric) 35%, transparent);
     cursor: pointer;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) var(--heat, 14%), transparent);
+    font: inherit;
+    color: inherit;
   }
-  .dens.hit:hover {
-    background: color-mix(in srgb, var(--accent) calc(var(--heat, 14%) + 12%), transparent);
-    text-decoration: underline;
+  .filelane:hover {
+    background: color-mix(in srgb, var(--state-metric) 15%, transparent);
+  }
+  .filelane .fl-ico {
+    font: 700 11px/1 var(--mono);
+    color: var(--state-metric);
+  }
+  .filelane .fl-tx {
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .filelane .fl-tx b {
+    color: var(--text);
+  }
+
+  /* The gutter itself: `--gutter-cols` columns wide (piece 11 Phase 2's
+     "column = overlap" — set once per file on `.code`, read by every row
+     so a single-column file doesn't reserve space for overlap it doesn't
+     have, and a deeply-overlapping one gets exactly the width it needs). */
+  .g {
+    flex: 0 0 auto;
+    display: flex;
+    width: calc(var(--gutter-cols, 1) * 13px + 6px);
+    margin-right: 10px;
+  }
+  .gcol {
+    width: 13px;
+    flex: 0 0 auto;
+    position: relative;
+  }
+  /* A range bracket — "shape = scope": a contiguous band spans exactly the
+     lines the conversation is pinned to. `--bc` (bracket color) is set
+     per-segment from `codeGutter.ts`'s `hitColorVar` — "color = meaning". */
+  .br {
+    position: absolute;
+    left: 3px;
+    right: 2px;
+    top: 0;
+    bottom: 0;
+  }
+  .br.s {
+    top: 3px;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+  }
+  .br.e {
+    bottom: 3px;
+    border-bottom-left-radius: 3px;
+    border-bottom-right-radius: 3px;
+  }
+  .br::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--bc) 20%, transparent);
+  }
+  .br::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2.5px;
+    background: var(--bc);
+  }
+  /* Drift — law #3: dashed only when a REAL hit in this entry has
+     genuinely drifted (`staleness === 'changed'`), never decorative. */
+  .br.drift::after {
+    background: repeating-linear-gradient(0deg, var(--bc) 0 4px, transparent 4px 7px);
+  }
+  /* A single-line hit — "shape = scope": a tick, not a bracket. */
+  .tick {
+    position: absolute;
+    left: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--bc);
+  }
+  /* A tick's own drift treatment — a bracket has an edge to dash, a tick
+     is a single point, so drift reads as a dashed OUTLINE ring instead of
+     a filled square (same law-#3 "real mismatch only" rule as `.br.drift`). */
+  .tick.drift {
+    background: transparent;
+    border: 1.5px dashed var(--bc);
+    box-sizing: border-box;
+  }
+  /* The range tab — the click target into the Phase-1 anchored reader.
+     Sits on the entry's START line; more than one rarely starting on the
+     same line stack via flex `gap` rather than overlapping. */
+  .tabs-wrap {
+    position: absolute;
+    right: 14px;
+    top: -1px;
+    display: flex;
+    gap: 3px;
+    z-index: 2;
+  }
+  .tab {
+    font: 700 9px/1 var(--mono);
+    color: var(--tc, var(--accent));
+    background: var(--panel);
+    border: 1px solid color-mix(in srgb, var(--tc, var(--accent)) 42%, transparent);
+    border-radius: 0 0 5px 5px;
+    padding: 1px 5px;
+    cursor: pointer;
+  }
+  .tab:hover {
+    background: color-mix(in srgb, var(--tc, var(--accent)) 16%, var(--panel));
+  }
+  .tab.drift {
+    border-style: dashed;
   }
   .ln {
     width: 24px;

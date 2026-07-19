@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import CodeLens from './CodeLens.svelte';
-import type { CodeFile, RefHit, Snippet } from '../types';
+import type { Agent, CodeFile, RefHit, Snippet } from '../types';
 import { api } from '../api';
 import { codeState } from '../stores.svelte';
 import { fileKey } from '../codeTree';
@@ -192,35 +192,35 @@ describe('CodeLens', () => {
     expect(await screen.findByText('No code returned')).toBeInTheDocument();
   });
 
-  it('renders a density hook only for lines with reference hits, filtered to the active file (repo+path)', async () => {
+  it('piece 11 Phase 2 — renders a range tab only for lines with reference hits, filtered to the active file (repo+path)', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), hitOn(45), hitOn(999, 'some/other/file.swift')]); // different path — must be filtered out
 
     const { container } = render(CodeLens, { hub: 'agent-coord' });
 
-    await waitFor(() => expect(container.querySelectorAll('.dens.hit').length).toBe(2));
-    const hitButtons = container.querySelectorAll('.dens.hit');
-    expect(hitButtons[0]!.textContent).toBe('1');
-    expect(hitButtons[0]!.getAttribute('title')).toBe('1 conversation reference this line');
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="gutter-tab"]').length).toBe(2));
+    const tabs = container.querySelectorAll('[data-testid="gutter-tab"]');
+    // hitOn(44)/hitOn(45) are single-line hits from 'reader' — a 1-count
+    // tick tab, real initials (no `agents` passed here, so the honest
+    // id-derived fallback: 'reader' -> 'RE').
+    expect(tabs[0]!.textContent).toBe('1 · RE');
   });
 
-  it('pluralizes the hit-count title correctly, and clamps the heat variable at 42% for >=5 refs on one line', async () => {
+  it('piece 11 Phase 2 — pluralizes the tab title correctly for multiple hits on one identical range', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
-    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), hitOn(44), hitOn(44), hitOn(44), hitOn(44), hitOn(44)]); // 6 hits, same line
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), hitOn(44), hitOn(44), hitOn(44), hitOn(44), hitOn(44)]); // 6 hits, identical range -> ONE entry
 
     const { container } = render(CodeLens, { hub: 'agent-coord' });
 
-    await waitFor(() => expect(container.querySelector('.dens.hit')).toBeInTheDocument());
-    const hitButton = container.querySelector('.dens.hit') as HTMLElement;
-    expect(hitButton.textContent).toBe('6');
-    expect(hitButton.getAttribute('title')).toBe('6 conversations reference this line');
-    // 6 * 10 = 60, clamped to 42
-    expect(hitButton.getAttribute('style')).toMatch(/--heat:\s*42%/);
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    const tab = container.querySelector('[data-testid="gutter-tab"]') as HTMLElement;
+    expect(tab.textContent).toBe('6 · RE');
+    expect(tab.getAttribute('title')).toMatch(/^6 conversations · Reader · latest/);
   });
 
-  it('clicking a hot line fires onOpenRefs with the active file context and that line\'s hits', async () => {
+  it('piece 11 Phase 2 — clicking a range tab fires onOpenRefs with the active file context and the entry\'s REAL range + hits', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     const hit = hitOn(45);
@@ -229,9 +229,9 @@ describe('CodeLens', () => {
 
     const { container } = render(CodeLens, { hub: 'agent-coord', onOpenRefs });
 
-    await waitFor(() => expect(container.querySelector('.dens.hit')).toBeInTheDocument());
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
     const user = userEvent.setup();
-    await user.click(container.querySelector('.dens.hit') as HTMLElement);
+    await user.click(container.querySelector('[data-testid="gutter-tab"]') as HTMLElement);
 
     expect(onOpenRefs).toHaveBeenCalledWith(
       { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: [45, 45] },
@@ -239,17 +239,20 @@ describe('CodeLens', () => {
     );
   });
 
-  it('a cold (non-referenced) line is not clickable and does not fire onOpenRefs', async () => {
+  it('a cold (non-referenced) line has no gutter tab and does not fire onOpenRefs', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
     vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
     vi.mocked(api.getRefs).mockResolvedValue([]);
     const onOpenRefs = vi.fn();
 
-    render(CodeLens, { hub: 'agent-coord', onOpenRefs });
+    const { container } = render(CodeLens, { hub: 'agent-coord', onOpenRefs });
 
     await waitFor(() => expect(screen.queryByTestId('skeleton')).not.toBeInTheDocument());
-    expect(document.querySelectorAll('.dens.hit').length).toBe(0);
-    expect(document.querySelectorAll('.dens').length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('[data-testid="gutter-tab"]').length).toBe(0);
+    // The empty gutter column slots still render (reserving the layout),
+    // just with no bracket/tick inside any of them.
+    expect(container.querySelectorAll('.gcol').length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('.br, .tick').length).toBe(0);
     expect(onOpenRefs).not.toHaveBeenCalled();
   });
 
@@ -354,6 +357,138 @@ describe('CodeLens', () => {
     render(CodeLens, { hub: 'confer-jarvis-orbit' });
 
     expect(await screen.findByText(/references this repo — a file, a line range, or the repo itself/)).toBeInTheDocument();
+  });
+});
+
+describe('CodeLens — piece 11 Phase 2: the powered gutter', () => {
+  const readerAgent: Agent = {
+    id: 'reader',
+    display: 'Reader',
+    desc: null,
+    expectedHost: null,
+    lastTs: null,
+    lastHost: null,
+    live: true,
+    verified: 'signed',
+    version: null,
+    watchState: null,
+    keyFingerprint: null,
+    profileMarkdown: null,
+    color: 'var(--ag-reader)',
+    abbr: 'RE',
+    wip: [],
+  };
+
+  it('shape = scope: the file-lane renders for whole-file hits, clicking it fires onOpenRefs with range:null', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    const wholeFile = wholeFileHit();
+    vi.mocked(api.getRefs).mockResolvedValue([wholeFile]);
+    const onOpenRefs = vi.fn();
+
+    render(CodeLens, { hub: 'agent-coord', onOpenRefs });
+
+    const lane = await screen.findByTestId('file-lane');
+    expect(lane).toHaveTextContent('1 conversation');
+    // Whole-file hits never light a line's gutter — no bracket/tick.
+    expect(document.querySelectorAll('.br, .tick').length).toBe(0);
+
+    const user = userEvent.setup();
+    await user.click(lane);
+    expect(onOpenRefs).toHaveBeenCalledWith(
+      { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: null },
+      [wholeFile]
+    );
+  });
+
+  it('no file-lane at all when there are no whole-file hits', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('gutter-tab')).toBeInTheDocument());
+    expect(screen.queryByTestId('file-lane')).not.toBeInTheDocument();
+  });
+
+  it('shape = scope: a single-line hit is a TICK, a multi-line hit is a BRACKET (both/either real, never guessed)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), { ...hitOn(45), range: [44, 46] }]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="gutter-tab"]').length).toBe(2));
+    expect(container.querySelector('.tick')).toBeInTheDocument();
+    expect(container.querySelector('.br')).toBeInTheDocument();
+  });
+
+  it('column = overlap: two DIFFERENT overlapping ranges render two distinct bracket segments on a shared line, not one blurred together', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([
+      { ...hitOn(44), msgId: 'a', range: [44, 45] },
+      { ...hitOn(45), msgId: 'b', range: [45, 46] },
+    ]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="gutter-tab"]').length).toBe(2));
+    // Line 45 is covered by BOTH ranges — two separate bracket segments,
+    // one per column, not a single merged one.
+    const line45 = [...container.querySelectorAll('.cl')].find((cl) => cl.querySelector('.ln')?.textContent === '45')!;
+    expect(line45.querySelectorAll('.br').length).toBe(2);
+  });
+
+  it('law #3: the drift marker shows ONLY when a real hit has staleness "changed" — never decorative', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([{ ...hitOn(44), range: [44, 45], staleness: 'changed' }]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    expect(container.querySelector('.br.drift')).toBeInTheDocument();
+    expect(container.querySelector('.tab.drift')).toBeInTheDocument();
+    expect(screen.getByTestId('gutter-tab').textContent).toContain('◷');
+  });
+
+  it('law #3: a single-line (TICK) hit shows its own drift treatment too — a dashed outline, not a bracket edge', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([{ ...hitOn(44), staleness: 'changed' as const }]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    expect(container.querySelector('.tick.drift')).toBeInTheDocument();
+    expect(container.querySelector('.br.drift')).not.toBeInTheDocument();
+  });
+
+  it('law #3: an ordinary current hit shows NO drift marker', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([{ ...hitOn(44), range: [44, 45], staleness: 'current' }]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    expect(container.querySelector('.br.drift')).not.toBeInTheDocument();
+    expect(container.querySelector('.tab.drift')).not.toBeInTheDocument();
+  });
+
+  it('color = meaning: resolves a real agent\'s initials in the tab when `agents` is passed', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord', agents: [readerAgent] });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    const tab = container.querySelector('[data-testid="gutter-tab"]') as HTMLElement;
+    expect(tab.textContent).toBe('1 · RE');
+    expect(tab.getAttribute('title')).toContain('Reader');
   });
 });
 

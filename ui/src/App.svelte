@@ -1110,7 +1110,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
         {#if codeMounted}
-          <CodeLens hub={appState.hub} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} onRepoRefs={onCodeRepoRefs} />
+          <CodeLens hub={appState.hub} agents={overview?.fleet ?? []} onOpenRefs={openRefsFromCode} onFileRefs={onCodeFileRefs} onRepoRefs={onCodeRepoRefs} />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>

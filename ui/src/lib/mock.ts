@@ -834,6 +834,66 @@ const mockRefHits: RefHit[] = [
     baseRef: null,
     forkPoint: null,
   },
+  // Piece 11 Phase 2 (11-code-view-BUILD-BRIEF.md) — a genuinely DIFFERENT
+  // range that overlaps the [44,49] hits above (same file, real data) —
+  // demonstrates "column = overlap" (two distinct bracket columns) against
+  // real fixtures rather than only synthetic unit-test ranges.
+  {
+    repo: 'wealdlore',
+    path: 'Sources/Reader/PlateBundle.swift',
+    sha: 'a3f1c9',
+    range: [44, 46],
+    contentHash: null,
+    staleness: 'current',
+    msgId: 'msg_01JQi01',
+    from: 'jarvis',
+    msgType: 'request',
+    ts: '2026-07-13T11:00:00Z',
+    topic: 'reader',
+    summary: 'should assembleBundle take a cancellation token for large uid sets?',
+    threadRoot: 'msg_01JQi01',
+    requestStatus: 'OPEN',
+    hub: 'agent-coord',
+    hubPrivate: false,
+    refName: 'main',
+    refType: 'branch',
+    commitDate: '2026-07-17T14:40:00Z',
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
+  },
+  // Piece 11 Phase 2 — a genuinely DRIFTED hit (mock `getCode` always
+  // renders the SAME fixed lines regardless of file/sha, so the pre-44
+  // pipeline/plates.py 'changed' fixture below never actually intersects
+  // visible code — this one demonstrates the drift marker on lines that
+  // ARE really shown). Line 48 real drift: the pinned sha's line 48 has
+  // since moved.
+  {
+    repo: 'wealdlore',
+    path: 'Sources/Reader/PlateBundle.swift',
+    sha: 'a3f1c9',
+    range: [48, 48],
+    contentHash: null,
+    staleness: 'changed',
+    msgId: 'msg_01JQi02',
+    from: 'compositor',
+    msgType: 'note',
+    ts: '2026-07-08T09:00:00Z',
+    topic: 'reader',
+    summary: 'the citation tie-in used to be a two-liner here — worth re-checking after the uid spine v2 change',
+    threadRoot: 'msg_01JQi02',
+    requestStatus: null,
+    hub: 'agent-coord',
+    hubPrivate: false,
+    refName: 'main',
+    refType: 'branch',
+    commitDate: '2026-06-20T08:00:00Z',
+    dirty: false,
+    untracked: false,
+    baseRef: null,
+    forkPoint: null,
+  },
   // design/44 Phase 2 — exercises the working-tree-snapshot warning chip
   // (`--allow-dirty`'s captured `dirty`/`untracked` flags) on a feature
   // branch that hasn't merged yet (`refType: 'branch'`, non-null `refName`).
