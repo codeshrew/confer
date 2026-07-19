@@ -4,9 +4,10 @@
 //! interval. A `notify` filesystem watch on `threads/` wakes us early on any local
 //! change (a co-resident write, or a pull landing) for sub-interval latency.
 
+use crate::machineconfig::{self, WatchPrefs};
 use crate::schema::{is_actionable, Message};
 use crate::{config, cursor, gitcmd, hint, roster, store, watchlock, BUILD_SHA};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::io::Write;
 use std::path::Path;
@@ -127,6 +128,82 @@ fn wake_rung(m: &Message, me: &str, grps: &crate::groups::Groups, all_msgs: &[Me
         "note" | "supersede" => WakeRung::Notice,
         _ => WakeRung::Notice, // conservative default for any future/unclassified type
     }
+}
+
+/// Parse `--min-priority`'s string form. Shared by the CLI parse path and by preference resolution
+/// (below), so a saved value round-trips through the exact same validation as a freshly-typed flag.
+pub fn parse_min_priority(s: &str) -> Result<u8> {
+    match s {
+        "low" => Ok(0),
+        "normal" => Ok(1),
+        "high" => Ok(2),
+        other => Err(anyhow!("invalid --min-priority '{other}': expected low | normal | high")),
+    }
+}
+
+/// Parse `--wake-on`'s string form, applying the `verbose` = "lowest floor + whole-board scope" sugar
+/// (design/51 §4) on top of the incoming `all` baseline (which may itself already be true from an
+/// explicit `--all` or a saved preference). Shared by the CLI parse path and preference resolution.
+pub fn parse_wake_on(s: &str, all_in: bool) -> Result<(WakeRung, bool)> {
+    match s {
+        "alert" => Ok((WakeRung::Alert, all_in)),
+        "notice" => Ok((WakeRung::Notice, all_in)),
+        "all" => Ok((WakeRung::Transactional, all_in)),
+        "verbose" => Ok((WakeRung::Transactional, true)),
+        other => Err(anyhow!("invalid --wake-on '{other}': expected alert | notice | all | verbose")),
+    }
+}
+
+/// Resolve `wake_on` / `min_priority` / `topic` / `all` for one (hub, role) `watch`/`arm` invocation
+/// (design/51 §6/Phase B). Resolution order per field: **explicit CLI flag > saved machine config for
+/// this (hub, role) > built-in default** (notice / low / no topic / false). `cli_*` are `None`/`false`
+/// when the flag wasn't passed this run — that's what lets "explicitly notice" be told apart from
+/// "defaulted to notice" (an `Option<String>` CLI flag with no clap default, not a defaulted plain
+/// value; see cli.rs). If ANY flag was explicit this run, the full resolved bundle is saved back —
+/// replacing the prior record — so the next bare invocation for this (hub, role) reproduces it exactly
+/// without re-deciding. A bare invocation with nothing saved just returns the built-in defaults and
+/// writes nothing.
+pub fn resolve_watch_prefs(
+    hub_key: &str,
+    role: &str,
+    cli_wake_on: Option<&str>,
+    cli_min_priority: Option<&str>,
+    cli_topic: Option<&str>,
+    cli_all: bool,
+) -> Result<(WakeRung, u8, Option<String>, bool)> {
+    let saved = machineconfig::get_watch_prefs(hub_key, role);
+
+    let wake_on_str = cli_wake_on
+        .map(str::to_string)
+        .or_else(|| saved.wake_on.clone())
+        .unwrap_or_else(|| "notice".to_string());
+    let min_priority_str = cli_min_priority
+        .map(str::to_string)
+        .or_else(|| saved.min_priority.clone())
+        .unwrap_or_else(|| "low".to_string());
+    let topic = cli_topic.map(str::to_string).or_else(|| saved.topic.clone());
+    // A bool store-true flag can never be explicitly "false" — its only explicit state is present/true —
+    // so folding cli_all into the baseline before parsing is the correct (and only possible) resolution.
+    let all_baseline = cli_all || saved.all.unwrap_or(false);
+
+    let min_priority = parse_min_priority(&min_priority_str)?;
+    let (wake_on, all) = parse_wake_on(&wake_on_str, all_baseline)?;
+
+    let explicit = cli_wake_on.is_some() || cli_min_priority.is_some() || cli_topic.is_some() || cli_all;
+    if explicit {
+        let _ = machineconfig::save_watch_prefs(
+            hub_key,
+            role,
+            WatchPrefs {
+                wake_on: Some(wake_on_str),
+                min_priority: Some(min_priority_str),
+                topic: topic.clone(),
+                all: Some(all),
+                extra: Default::default(),
+            },
+        );
+    }
+    Ok((wake_on, min_priority, topic, all))
 }
 
 pub fn run(opts: WatchOpts) -> Result<()> {

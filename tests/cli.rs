@@ -6892,3 +6892,147 @@ fn append_requires_summary_or_summary_file() {
     assert!(!ok(&o), "append with neither --summary nor --summary-file must be rejected");
     assert!(err(&o).contains("--summary"), "{}", err(&o));
 }
+
+// ── design/51 §6/Phase B: per-(hub, role) watch preferences persist in machine config ──────────
+
+/// Spawn `confer <args>` briefly (long enough to pass the startup hints, before the poll loop),
+/// kill it, and return its stderr — where `--wake-on`'s floor hint (or its absence) is emitted.
+fn spawn_and_capture_stderr(home: &Path, hub_dir: &Path, role: &str, args: &[&str]) -> String {
+    use std::io::Read;
+    let mut child = Command::new(BIN)
+        .env("HOME", home)
+        .env("CONFER_HUB", hub_dir)
+        .env("CONFER_ROLE", role)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    let _ = child.kill();
+    let mut s = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut s);
+    }
+    let _ = child.wait();
+    s
+}
+
+#[test]
+fn watch_prefs_persist_per_hub_role_and_reload_on_bare_rearm() {
+    // An explicit --wake-on is saved for this (hub, role) in machine config; a LATER bare
+    // re-arm for the SAME (hub, role) must reload it without the flag being re-passed.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "explicit --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `watch` must reload the saved wake-on=alert preference for this (hub, role): {reloaded}"
+    );
+}
+
+#[test]
+fn confer_arm_persists_wake_on_and_a_bare_rearm_reloads_it() {
+    // Same persistence contract, through `confer arm` (the paved-path re-arm command) rather
+    // than raw `watch` — the post-compaction auto-heal re-arm goes through `arm`.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["arm", "--role", "alpha"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "confer arm --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `confer arm` must reload the saved wake-on=alert preference: {reloaded}"
+    );
+}
+
+#[test]
+fn explicit_watch_flag_overrides_a_saved_preference() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let _ = run(&["--wake-on", "alert"]);
+    let overridden = run(&["--wake-on", "all"]);
+    assert!(
+        overridden.contains("all (board mechanics"),
+        "an explicit --wake-on on a later run must override the saved preference, not defer to it: {overridden}"
+    );
+}
+
+#[test]
+fn watch_prefs_are_scoped_per_hub_and_role_not_shared() {
+    // alpha and beta are two DIFFERENT roles on the SAME hub (same hub_key) — beta's bare watch
+    // must not inherit alpha's saved --wake-on.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    let _ = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1", "--wake-on", "alert"],
+    );
+    let beta_bare = spawn_and_capture_stderr(
+        &b.home,
+        &b.dir,
+        "beta",
+        &["watch", "--role", "beta", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !beta_bare.contains("wake-rung floor"),
+        "a different role on the same hub must NOT inherit alpha's saved wake-on preference: {beta_bare}"
+    );
+}
+
+#[test]
+fn bare_watch_with_nothing_saved_defaults_to_notice() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let s = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !s.contains("wake-rung floor"),
+        "with nothing ever saved, the built-in default (notice) must apply — no floor hint: {s}"
+    );
+}
