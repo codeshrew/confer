@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+- **Leaner, unified skill set.** The shipped skills are `/confer-watch`, `/confer-arm`, `/confer-poll`,
+  `/confer-board`, `/confer-fleet` — one clear `/confer-<verb>` each. `/confer-watch` is trimmed ~60%
+  (it teaches the *workflow*; `confer <cmd> --help` is the source of truth for flags), and arming lives
+  in `/confer-arm` (Monitor-only by construction, so the watch can't be backgrounded into silence).
+- **Retired skills are removed automatically on update.** `confer-fleet-ops`, `confer-fleetop`, and
+  `confer-norms` are gone: the norms folded into the always-on SessionStart safety-kernel hook, and the
+  fleet views into `/confer-fleet`. `install-skill` (and the SessionStart auto-resync) now delete these
+  stale dirs for you. **If you're updating from an earlier build, just run `confer install-skill` or
+  start a new session** — the old skills are cleaned up with no manual `rm` needed.
+
 ## 0.7.3
 
 - **Fix: `serve --all-hubs` no longer shows a broken "not a confer hub" tab.** A dev/source directory

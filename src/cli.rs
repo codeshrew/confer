@@ -423,6 +423,17 @@ pub(crate) enum Cmd {
         #[arg(long)]
         delivery: Option<String>,
     },
+    /// Arm (or re-arm) your watcher the ONE correct way, then stream wakes: self-locate your
+    /// role's clone, take over any orphan (`--replace`), and stamp `--delivery monitor` so
+    /// `watch-status` can confirm delivery — none of which you can forget. Host it under the
+    /// Monitor tool (the `/confer-arm` skill); it's a long-lived streamer like `watch`. The
+    /// paved path over `watch --replace --delivery monitor` (design/49).
+    Arm {
+        /// arm this role explicitly. Default: resolve from the current clone, or the single
+        /// watch target this session owns (disambiguate a multi-role machine with this).
+        #[arg(long)]
+        role: Option<String>,
+    },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether
     /// to re-arm (`watch --replace`). A REPORT: exits 0 whenever it produces the report
