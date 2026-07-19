@@ -11,14 +11,12 @@ import type { View } from './stores.svelte';
 const ALL_VIEWS: View[] = ['overview', 'chat', 'board', 'fleet', 'code', 'repos'];
 
 describe('defaultContextMode', () => {
-  it('defaults Board to request', () => {
-    expect(defaultContextMode('board')).toBe('request');
-  });
   it('defaults Code to refs', () => {
     expect(defaultContextMode('code')).toBe('refs');
   });
-  it('defaults Chat, Fleet, and Repos to meta', () => {
+  it('defaults Chat, Board, Fleet, and Repos to meta — piece 5 retired the bespoke Board "request" mode in favor of the ticket overlay', () => {
     expect(defaultContextMode('chat')).toBe('meta');
+    expect(defaultContextMode('board')).toBe('meta');
     expect(defaultContextMode('fleet')).toBe('meta');
     expect(defaultContextMode('repos')).toBe('meta');
   });

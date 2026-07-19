@@ -17,10 +17,9 @@
   import CodeLens from './lib/components/CodeLens.svelte';
   import Repos from './lib/components/Repos.svelte';
   import MetaThread from './lib/components/MetaThread.svelte';
-  import RequestDetail from './lib/components/RequestDetail.svelte';
+  import TicketFullPopover from './lib/components/TicketFullPopover.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
-  import CopyIdButton from './lib/components/CopyIdButton.svelte';
   import { api } from './lib/api';
   import { appState, chatWindowCache, codeState, hubDataCache } from './lib/stores.svelte';
   import { selectDefaultHub, selectDefaultTopic } from './lib/hydrate';
@@ -135,6 +134,12 @@
   let notesOn = $state(true);
   let reqsOn = $state(true);
   let selectedRequestId = $state<string | null>(null);
+  // piece 5 — the ticket Full popover's own open/close, separate from
+  // `selectedRequestId` (mirrors `focusReaderOpen`'s separation from
+  // `appState.selectedMessage`): closing the popover must not clear which
+  // ticket is selected, so a re-open (or the right rail's meta-thread)
+  // still shows the same ticket — "esc → back to the board where you were".
+  let ticketPopoverOpen = $state(false);
 
   // Keep-alive for the four main view panes: switching Chat/Board/Fleet/Code
   // via `{#if appState.view === ...}` would destroy and recreate whichever
@@ -420,18 +425,20 @@
   function selectMessage(id: string) {
     const found = messages.find((m) => m.id === id);
     appState.selectedMessage = found ?? null;
-    // A plain note/thread click is the meta-thread pane, not "Request
-    // detail" — without this, clicking a ticket first (which sets
-    // contextMode = 'request') then a plain note left the sidebar stuck
-    // showing the PREVIOUS ticket's "Request detail" heading and content
-    // over the newly-selected note's own thread.
     contextMode = 'meta';
     loadThread(id);
   }
 
+  // piece 5 (ui/REDESIGN.md) — a ticket's Full detail is now the overlay
+  // popover (TicketFullPopover), not a right-rail mode: this still selects
+  // the underlying message so the right rail shows the SAME meta-thread
+  // reference graph a plain click would (contextMode stays 'meta', matching
+  // selectMessage), and opens the popover on top of whatever's already
+  // there. "Mini card portals to Full" (the composable-card rationale).
   function selectTicket(id: string) {
     selectedRequestId = id;
-    contextMode = 'request';
+    ticketPopoverOpen = true;
+    contextMode = 'meta';
     // A ticket's originating message shares the `msg_`/`req_` id suffix
     // convention used across the mock fixtures (see ChatStream.findRequest).
     const asMsgId = id.replace(/^req_/, 'msg_');
@@ -446,7 +453,8 @@
 
   function selectBoardRow(id: string) {
     selectedRequestId = id;
-    contextMode = 'request';
+    ticketPopoverOpen = true;
+    contextMode = 'meta';
     // piece 3's `f`-from-anywhere focus reader keys off `appState.selectedMessage`
     // — mirrors selectTicket's own resolution (same `req_`/`msg_` id
     // convention) so a Board row is just as focus-reader-reachable as a
@@ -569,8 +577,6 @@
     // tablet/phone — close it so the chat underneath is revealed.
     appState.drawer = 'none';
   }
-
-  const selectedRequest = $derived(overview?.board.requests.find((r) => r.id === selectedRequestId) ?? null);
 
   // design/43 Phase B — the unified Code breadcrumb: `hub › Code › repo ›
   // dir › … › file @sha`, absorbing CodeLens's old standalone `repo ›
@@ -1004,15 +1010,7 @@
         >
           ✕
         </button>
-        {#if contextMode === 'request'}
-          <div class="k">Request detail</div>
-          <h2>
-            {selectedRequest?.summary ?? selectedRequestId ?? 'Request'}
-            {#if selectedRequestId}
-              <CopyIdButton id={selectedRequestId} class="ctx-copy-id" />
-            {/if}
-          </h2>
-        {:else if contextMode === 'refs'}
+        {#if contextMode === 'refs'}
           <div class="k">Reverse index</div>
           <h2>Conversations about this code</h2>
         {:else}
@@ -1021,16 +1019,7 @@
         {/if}
       </div>
       <div class="ctx-body">
-        {#if contextMode === 'request' && selectedRequest}
-          <RequestDetail
-            request={selectedRequest}
-            {messages}
-            agents={overview?.fleet ?? []}
-            hub={appState.hub}
-            onOpenRefs={openRefs}
-            onSelectMessage={navigateToMessageInChat}
-          />
-        {:else if contextMode === 'refs'}
+        {#if contextMode === 'refs'}
           <ReverseIndexPanel
             hits={refHits}
             repo={refContext?.repo ?? null}
@@ -1077,6 +1066,35 @@
   onNavigate={(id) => (appState.selectedMessage = messages.find((m) => m.id === id) ?? null)}
   onOpenRefs={openRefs}
   onClose={() => (focusReaderOpen = false)}
+/>
+
+<!-- piece 5 (ui/REDESIGN.md) — the ticket Full popover: reachable from
+     Chat (a TicketMiniCard's onSelect → selectTicket) and Board (a
+     TicketRow's onSelect → selectBoardRow) alike, both of which already
+     funnel through the same selectedRequestId/appState.selectedMessage
+     pair every other jump (FocusReader, MetaThread) reads. `requests`
+     doubles as the `j`/`k` navigable list — Board's own filtered set once
+     piece 5c lands; the full per-hub set is the honest default until then. -->
+<TicketFullPopover
+  open={ticketPopoverOpen}
+  requestId={selectedRequestId}
+  requests={overview?.board.requests ?? []}
+  {messages}
+  agents={overview?.fleet ?? []}
+  hub={appState.hub}
+  {focusReaderOpen}
+  onOpenThread={(msgId, topic) => {
+    ticketPopoverOpen = false;
+    void navigateToMessageInChat(msgId, topic);
+  }}
+  onFocusRead={(msgId) => {
+    selectMessage(msgId);
+    focusReaderOpen = true;
+    ticketPopoverOpen = false;
+  }}
+  onOpenRefs={openRefs}
+  onNavigate={(id) => selectTicket(id)}
+  onClose={() => (ticketPopoverOpen = false)}
 />
 
 <style>

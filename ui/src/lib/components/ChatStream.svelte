@@ -442,6 +442,7 @@
         <MessageComponent
           {message}
           {hub}
+          {agents}
           fromAgent={agentsById.get(message.from)}
           request={message.type === 'request' ? findRequest(message) : null}
           selected={selectedMessageId === message.id}

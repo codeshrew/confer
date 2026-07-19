@@ -12,16 +12,20 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole('tab', { name: 'Chat', exact: true }).click();
 });
 
-test('Chat shows the message stream and a ticket card', async ({ page }) => {
+test('Chat shows the message stream and a ticket mini card', async ({ page }) => {
   await expect(page.getByText('Shipping confer 0.7.3')).toBeVisible();
-  // The filed request renders as a torn-stub TicketCard, not a plain note.
-  await expect(page.getByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader')).toBeVisible();
-  await expect(page.getByText('req_01JQ8f2', { exact: true })).toBeVisible();
-  // Its lifecycle track shows all four stages.
-  await expect(page.getByText('filed', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('claim', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('blocked', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('done', { exact: true }).first()).toBeVisible();
+  // The filed request renders as a TicketMiniCard (piece 5's card trio),
+  // not a plain note — kind tag, id, mini progress + state label.
+  const mini = page.getByTestId('ticket-mini').filter({ hasText: 'req_01JQ8f2' });
+  await expect(mini).toBeVisible();
+  await expect(mini.getByText('req', { exact: true })).toBeVisible();
+  await expect(mini.getByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader')).toBeVisible();
+  // req_01JQ8f2 is DONE in the fixtures — all three progress knobs fill.
+  await expect(mini.getByText('done', { exact: true })).toBeVisible();
+
+  // Clicking it portals to the Full popover.
+  await mini.click();
+  await expect(page.getByTestId('ticket-popover')).toBeVisible();
 });
 
 test('Board shows swimlanes and the group-by toggle regroups', async ({ page }) => {

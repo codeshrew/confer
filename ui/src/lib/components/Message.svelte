@@ -5,7 +5,7 @@
   import { readState } from '../readState.svelte';
   import { api } from '../api';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
-  import TicketCard from './TicketCard.svelte';
+  import TicketMiniCard from './TicketMiniCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import Icon from './Icon.svelte';
@@ -14,6 +14,10 @@
   interface Props {
     message: MessageT;
     fromAgent?: Agent;
+    /** Only needed for the ticket mini-card's assignee avatar (piece 5) —
+     * every other agent-color lookup in this component goes through
+     * `fromAgent` already. */
+    agents?: Agent[];
     request?: RequestRow | null;
     hub?: string;
     selected?: boolean;
@@ -41,6 +45,7 @@
   let {
     message,
     fromAgent,
+    agents = [],
     request = null,
     hub = '',
     selected = false,
@@ -230,7 +235,7 @@
       </div>
 
       {#if isTicket && request}
-        <TicketCard {request} onSelect={onSelectTicket} />
+        <TicketMiniCard {request} {agents} onSelect={onSelectTicket} />
       {:else}
         {#if showSummaryLine}
           <div class="summary-line">

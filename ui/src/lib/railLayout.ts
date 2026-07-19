@@ -4,16 +4,20 @@
 // (appState.view, selectedRequestId, whether Code has an active file).
 import type { View } from './stores.svelte';
 
-export type ContextMode = 'meta' | 'request' | 'refs';
+// piece 5 (ui/REDESIGN.md) retired 'request': the ticket detail view moved
+// from a right-rail panel (RequestDetail.svelte) to a centered overlay
+// (TicketFullPopover.svelte, reachable from Chat and Board alike) that's
+// entirely independent of the right rail's contextMode. Selecting a ticket
+// on Board now shows the SAME meta-thread reference graph Chat shows for
+// any selection — one fewer bespoke mode, and Board gets the reference
+// graph for free.
+export type ContextMode = 'meta' | 'refs';
 
 /** The right rail's legal default `contextMode` per view. App.svelte resets
- * to this whenever `appState.view` changes — killing the "Request detail
- * leaks into Code" class of bug, where a mode picked in one view lingered
- * into the next. */
+ * to this whenever `appState.view` changes — killing the "stale mode leaks
+ * into the next view" class of bug. */
 export function defaultContextMode(view: View): ContextMode {
   switch (view) {
-    case 'board':
-      return 'request';
     case 'code':
       return 'refs';
     default:

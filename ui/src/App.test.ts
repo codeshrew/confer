@@ -362,10 +362,11 @@ describe('App — piece 2 workspace tint: the active hub\'s real tier', () => {
 });
 
 describe('App — piece 3: side-peek preserves the stream, Esc closes it', () => {
-  // A plain note (not a ticket) is what opens the meta-thread PEEK
-  // (contextMode='meta') — clicking a ticket opens Request Detail instead
-  // (contextMode='request', see the "right-rail context mode" describe
-  // block below). Reuses the same fixture note that block already relies on.
+  // A plain note (not a ticket) opens the meta-thread PEEK — same as a
+  // ticket does now (piece 5 retired the bespoke "Request detail" mode; a
+  // ticket ALSO opens the Full popover overlay, see the "right-rail context
+  // mode" describe block below). Reuses the same fixture note that block
+  // already relies on.
   const noteText = /canaried 0.7.3/;
 
   it('opening a peek does not remove the stream from the DOM — it stays mounted, untouched, behind the peek', async () => {
@@ -450,25 +451,33 @@ describe('App — piece 3: the focus reader, reachable from anywhere', () => {
 });
 
 describe('App — right-rail context mode', () => {
-  it('selecting a plain note after a ticket switches the sidebar OFF "Request detail" — not stuck showing the previous ticket', async () => {
+  it('selecting a plain note after a ticket switches the sidebar to that note\'s own thread — not stuck showing the previous ticket', async () => {
     appState.drawer = 'none';
     appState.view = 'chat';
     const user = userEvent.setup();
     render(App);
 
-    // First: a ticket — the mock fixture's filed request card.
+    // First: a ticket — the mock fixture's filed request card (its Mini
+    // card, embedded inline in the stream). Selecting it opens the Full
+    // popover AND puts the right rail on the SAME meta-thread pane a plain
+    // click would (piece 5 retired the bespoke "Request detail" mode).
     await user.click(
       await screen.findByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader')
     );
-    expect(screen.getByText('Request detail')).toBeInTheDocument();
+    expect(await screen.findByTestId('ticket-popover')).toBeInTheDocument();
+    expect(screen.getByText('Meta-thread')).toBeInTheDocument();
+
+    // The popover's backdrop covers the stream — close it (Esc) before the
+    // next click can reach a different row underneath, same as any modal.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
 
     // Then: a plain note (Jarvis's "canaried 0.7.3", same #reader topic).
     await user.click(await screen.findByText(/canaried 0.7.3/));
 
-    // The sidebar must have moved off "Request detail" — it's now the
-    // meta-thread/reference-graph pane for the note just clicked, not stuck
-    // showing the earlier ticket.
-    expect(screen.queryByText('Request detail')).not.toBeInTheDocument();
+    // Still the meta-thread pane, but now for the note just clicked, not
+    // stuck showing the earlier ticket's thread.
+    expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
     expect(screen.getByText('Meta-thread')).toBeInTheDocument();
   });
 });
