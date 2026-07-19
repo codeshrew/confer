@@ -686,3 +686,187 @@ describe('CodeLens — piece 11 Phase 2b: the conversation minimap', () => {
     expect(vi.mocked(Element.prototype.scrollIntoView).mock.instances[0]).toBe(line45);
   });
 });
+
+describe('CodeLens — piece 11 Phase 3: PR-style collapse', () => {
+  // A 40-line file with two far-apart single-hit ranges — real top, middle,
+  // AND bottom gaps in one fixture (context=2 around each hit):
+  //   entry [5,6]  -> open span [3,8]
+  //   entry [30,31] -> open span [28,33]
+  //   gap [1,2]   edge=top    (2 lines)
+  //   gap [9,27]  edge=middle (19 lines)
+  //   gap [34,40] edge=bottom (7 lines)
+  const longSnippet: Snippet = {
+    lang: 'swift',
+    staleness: 'current',
+    lines: Array.from({ length: 40 }, (_, i) => ({ n: i + 1, text: `line ${i + 1}` })),
+  };
+
+  function rangeHit(range: [number, number], msgId: string): RefHit {
+    return { ...hitOn(range[0]), msgId, range };
+  }
+
+  const longFileFixture = [rangeHit([5, 6], 'msg_a'), rangeHit([30, 31], 'msg_b')];
+
+  async function renderCollapsed() {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(longSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue(longFileFixture);
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(3));
+    return container;
+  }
+
+  function visibleLineNumbers(container: HTMLElement): number[] {
+    return Array.from(container.querySelectorAll<HTMLElement>('[data-line]')).map((el) => Number(el.getAttribute('data-line')));
+  }
+
+  it('defaults to "referenced": only referenced ranges + context are visible, three real folds for top/middle/bottom', async () => {
+    const container = await renderCollapsed();
+
+    const visible = visibleLineNumbers(container);
+    expect(visible).toEqual([3, 4, 5, 6, 7, 8, 28, 29, 30, 31, 32, 33]);
+
+    const folds = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]');
+    expect(folds[0]!.getAttribute('title')).toBe('lines 1–2');
+    expect(folds[0]!.textContent).toContain('expand 2 lines');
+    expect(folds[1]!.getAttribute('title')).toBe('lines 9–27');
+    expect(folds[1]!.textContent).toContain('expand 19 lines');
+    expect(folds[2]!.getAttribute('title')).toBe('lines 34–40');
+    expect(folds[2]!.textContent).toContain('expand 7 lines');
+  });
+
+  it('gutter line numbers stay real and correct across a fold — never renumbered', async () => {
+    // Line 30 (inside the second open span) keeps reading "30", not "13" or
+    // any other position-in-DOM count — the whole point of never rendering
+    // collapsed lines instead of hiding them.
+    const container = await renderCollapsed();
+    const row = container.querySelector('[data-line="30"]');
+    expect(row?.querySelector('.ln')?.textContent).toBe('30');
+  });
+
+  it('a top-edge fold has ONE button ("↑ top") that fully reveals in one click', async () => {
+    const container = await renderCollapsed();
+    const folds = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]');
+    const topFold = folds[0]!;
+    expect(topFold.querySelectorAll('[data-testid="fold-expand-up"], [data-testid="fold-expand-down"], [data-testid="fold-expand-all"]')).toHaveLength(0);
+    const edgeBtn = topFold.querySelector<HTMLElement>('[data-testid="fold-expand-edge"]');
+    expect(edgeBtn?.textContent).toBe('↑ top');
+
+    const user = userEvent.setup();
+    await user.click(edgeBtn!);
+
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(2));
+    expect(visibleLineNumbers(container)).toEqual(expect.arrayContaining([1, 2]));
+  });
+
+  it('a bottom-edge fold\'s single "↓ bottom" button fully reveals it too', async () => {
+    const container = await renderCollapsed();
+    const folds = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]');
+    const bottomFold = folds[2]!;
+    const edgeBtn = bottomFold.querySelector<HTMLElement>('[data-testid="fold-expand-edge"]');
+    expect(edgeBtn?.textContent).toBe('↓ bottom');
+
+    const user = userEvent.setup();
+    await user.click(edgeBtn!);
+
+    await waitFor(() => expect(visibleLineNumbers(container)).toEqual(expect.arrayContaining([34, 40])));
+    expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(2);
+  });
+
+  it('a middle gap has all three buttons (↑8, ↓8, ⤢all) and ↑8 reveals exactly 8 lines from the top, shrinking the fold', async () => {
+    const container = await renderCollapsed();
+    const folds = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]');
+    const middleFold = folds[1]!;
+    expect(middleFold.querySelector('[data-testid="fold-expand-up"]')?.textContent).toBe('↑ 8');
+    expect(middleFold.querySelector('[data-testid="fold-expand-down"]')?.textContent).toBe('↓ 8');
+    expect(middleFold.querySelector('[data-testid="fold-expand-all"]')?.textContent).toBe('⤢ all');
+
+    const user = userEvent.setup();
+    await user.click(middleFold.querySelector('[data-testid="fold-expand-up"]')!);
+
+    // Lines 9-16 (8 lines) now real rows; the SAME fold row shrinks to
+    // "expand 11 lines" (17-27) instead of a second fold appearing.
+    await waitFor(() => expect(visibleLineNumbers(container)).toEqual(expect.arrayContaining([9, 10, 11, 12, 13, 14, 15, 16])));
+    expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(3);
+    const shrunk = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]')[1]!;
+    expect(shrunk.getAttribute('title')).toBe('lines 17–27');
+    expect(shrunk.textContent).toContain('expand 11 lines');
+  });
+
+  it('↑8 then ↓8 on the same middle gap chip away from both edges without double-counting or overlapping', async () => {
+    const container = await renderCollapsed();
+    const user = userEvent.setup();
+    let middleFold = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]')[1]!;
+    await user.click(middleFold.querySelector('[data-testid="fold-expand-up"]')!); // hidden 17-27
+    middleFold = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]')[1]!;
+    await user.click(middleFold.querySelector('[data-testid="fold-expand-down"]')!); // reveal 20-27 -> hidden 17-19
+
+    await waitFor(() => {
+      middleFold = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]')[1]!;
+      expect(middleFold.getAttribute('title')).toBe('lines 17–19');
+    });
+    expect(visibleLineNumbers(container)).toEqual(expect.arrayContaining([9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27]));
+  });
+
+  it('⤢all on the middle gap reveals it entirely in one click — no fold row left for it', async () => {
+    const container = await renderCollapsed();
+    const middleFold = container.querySelectorAll<HTMLElement>('[data-testid="fold-row"]')[1]!;
+    const user = userEvent.setup();
+    await user.click(middleFold.querySelector('[data-testid="fold-expand-all"]')!);
+
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(2));
+    expect(visibleLineNumbers(container)).toEqual(expect.arrayContaining(Array.from({ length: 19 }, (_, i) => i + 9)));
+  });
+
+  it('"show all" reveals every real line and hides every fold row; "referenced" re-collapses', async () => {
+    const container = await renderCollapsed();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId('collapse-toggle-showall'));
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(0));
+    expect(visibleLineNumbers(container)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
+    expect(screen.getByTestId('collapse-toggle-showall')).toHaveClass('on');
+
+    await user.click(screen.getByTestId('collapse-toggle-referenced'));
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(3));
+    expect(screen.getByTestId('collapse-toggle-referenced')).toHaveClass('on');
+  });
+
+  it('the collapse toggle is hidden entirely when there\'s nothing to collapse (no gaps)', async () => {
+    // plateBundleSnippet's 3 lines are all within [44,46]'s own context —
+    // no gap exists, so a toggle with no effect would just be clutter.
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(45)]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(screen.getByTestId('gutter-tab')).toBeInTheDocument());
+    expect(screen.queryByTestId('collapse-toggle')).not.toBeInTheDocument();
+  });
+
+  it('a file with zero ranged conversations shows every line — collapse never kicks in with nothing to anchor around', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(longSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(container.querySelectorAll('.cl')).toHaveLength(40));
+    expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(0);
+  });
+
+  it('switching to a different file resets collapse state — no carried-over reveals or "show all"', async () => {
+    const container = await renderCollapsed();
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('collapse-toggle-showall'));
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="fold-row"]')).toHaveLength(0));
+
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(45, 'pipeline/plates.py')]);
+    codeState.forHub('agent-coord').activeKey = fileKey(threeFiles[1]!);
+
+    await waitFor(() => expect(vi.mocked(api.getCode)).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'a3f1c9'));
+    // The new file has no gaps at all (fixture is fully covered by context),
+    // so the absence of a toggle here also confirms showAll didn't leak.
+    expect(screen.queryByTestId('collapse-toggle')).not.toBeInTheDocument();
+  });
+});

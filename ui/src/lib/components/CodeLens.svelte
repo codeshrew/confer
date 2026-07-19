@@ -16,6 +16,17 @@
   import { formatAge } from '../format';
   import { buildGutterEntries, entryColorVar, gutterColumnCount, type GutterEntry } from '../codeGutter';
   import { buildMinimapSegments, computeViewportIndicator, type ViewportIndicator } from '../codeMinimap';
+  import {
+    computeGaps,
+    computeOpenSpans,
+    PARTIAL_EXPAND_STEP,
+    planRows,
+    revealAll,
+    revealFromBottom,
+    revealFromTop,
+    type RevealState,
+    type Row,
+  } from '../codeCollapse';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
   import FileIcon from './FileIcon.svelte';
@@ -111,17 +122,94 @@
   const gutterEntries = $derived(buildGutterEntries(fileRefs));
   const gutterColumns = $derived(gutterColumnCount(gutterEntries));
 
+  // Piece 11 Phase 3 (11-code-collapse-RESEARCH.md, roll-our-own) — PR-style
+  // collapse: referenced ranges + context stay open, everything else folds.
+  // `showAll` is the rev-bar `referenced`/`show all` toggle; `reveal` holds
+  // each gap's own partial-expand progress (`↑8`/`↓8`), keyed by the gap's
+  // ORIGINAL bounds (`codeCollapse.ts`'s `gapKey`) so it survives re-renders
+  // of the SAME file. Both reset on a file switch, in `loadFile` below.
+  let showAll = $state(false);
+  let reveal = $state(new Map<string, RevealState>());
+
+  const firstLine = $derived(lines[0]?.n ?? null);
+  const lastLine = $derived(lines[lines.length - 1]?.n ?? null);
+  const openSpans = $derived.by(() => {
+    if (firstLine === null || lastLine === null) return [];
+    return computeOpenSpans(gutterEntries, firstLine, lastLine);
+  });
+  const collapseGaps = $derived.by(() => {
+    if (firstLine === null || lastLine === null) return [];
+    return computeGaps(openSpans, firstLine, lastLine);
+  });
+  const rowPlan = $derived.by((): Row[] => planRows(lines.map((l) => l.n), collapseGaps, reveal, showAll));
+  const lineByN = $derived(new Map(lines.map((l) => [l.n, l])));
+
+  /** Every fold-expand click goes through this — it keeps the viewport's
+   * visual position stable across the DOM height change a reveal causes
+   * (the research doc's own "scroll anchoring" gotcha). Anchors on whatever
+   * REAL line is currently topmost in view (not the clicked fold row
+   * itself — a full `⤢all`/edge reveal removes that row entirely), so it
+   * works uniformly for a partial OR a full expand. */
+  function withScrollAnchor(mutate: () => void) {
+    const el = scrollEl;
+    if (!el) {
+      mutate();
+      return;
+    }
+    const containerTop = el.getBoundingClientRect().top;
+    let anchor: { line: string; offset: number } | null = null;
+    for (const row of el.querySelectorAll<HTMLElement>('[data-line]')) {
+      const r = row.getBoundingClientRect();
+      if (r.bottom > containerTop) {
+        anchor = { line: row.getAttribute('data-line')!, offset: r.top - containerTop };
+        break;
+      }
+    }
+    mutate();
+    if (!anchor) return;
+    const { line, offset } = anchor;
+    requestAnimationFrame(() => {
+      const row = el.querySelector<HTMLElement>(`[data-line="${line}"]`);
+      if (!row) return;
+      const newOffset = row.getBoundingClientRect().top - containerTop;
+      el.scrollTop += newOffset - offset;
+    });
+  }
+
+  function setReveal(key: string, next: RevealState) {
+    const map = new Map(reveal);
+    map.set(key, next);
+    reveal = map;
+  }
+
+  function expandTop(row: Extract<Row, { kind: 'fold' }>) {
+    withScrollAnchor(() => setReveal(row.key, revealFromTop(row.hiddenStart, row.hiddenEnd)));
+  }
+  function expandBottom(row: Extract<Row, { kind: 'fold' }>) {
+    withScrollAnchor(() => setReveal(row.key, revealFromBottom(row.hiddenStart, row.hiddenEnd)));
+  }
+  function expandAllOf(row: Extract<Row, { kind: 'fold' }>) {
+    withScrollAnchor(() => setReveal(row.key, revealAll(row.hiddenStart, row.hiddenEnd)));
+  }
+  function setShowAll(next: boolean) {
+    if (next === showAll) return;
+    withScrollAnchor(() => (showAll = next));
+  }
+
   // Piece 11 Phase 2b — the conversation minimap: the SAME gutter entries,
   // compressed to a proportional strip. Built off the file's real first/last
   // line numbers (a snippet doesn't necessarily start at line 1), never off
-  // whatever's currently SCROLLED into view — the whole point is that
-  // clusters in folded regions (Phase 3, not built yet) still show up here.
-  // (`buildMinimapSegments` still honestly drops an entry that doesn't
-  // intersect the LOADED file at all, e.g. a dangling `offline` ref to lines
-  // that no longer exist here — same as the per-line gutter already does.)
+  // whatever's currently SCROLLED into view — clusters in a Phase 3 fold
+  // still show up here (it's built off the full hit set, same as
+  // `collapseGaps` above, not off `rowPlan`'s visible subset). Now that
+  // Phase 3 exists: this SAME data is what draws the fold rows too — one
+  // source, two views. (`buildMinimapSegments` still honestly drops an
+  // entry that doesn't intersect the LOADED file at all, e.g. a dangling
+  // `offline` ref to lines that no longer exist here — same as the
+  // per-line gutter already does.)
   const minimapSegments = $derived.by(() => {
-    if (lines.length === 0) return [];
-    return buildMinimapSegments(gutterEntries, lines[0]!.n, lines[lines.length - 1]!.n);
+    if (firstLine === null || lastLine === null) return [];
+    return buildMinimapSegments(gutterEntries, firstLine, lastLine);
   });
 
   // The viewport indicator (mock 12's `.mmview`) — real scroll geometry, not
@@ -290,6 +378,13 @@
   }
 
   async function loadFile() {
+    // Piece 11 Phase 3 — a new file starts fresh: default "referenced"
+    // collapse, no carried-over partial reveals from whatever the operator
+    // was just looking at (a gap key coinciding across two different files
+    // by pure line-number chance would otherwise silently reuse the wrong
+    // reveal state).
+    showAll = false;
+    reveal = new Map();
     const f = active;
     if (!f || !f.mapped) {
       lines = [];
@@ -380,6 +475,16 @@
   {:else if active}
     <div class="codetool">
       <span class="ct-hint">conversation gutter · shape=scope, color=meaning, column=overlap · click a range tab to read it</span>
+      {#if collapseGaps.length > 0}
+        <!-- Piece 11 Phase 3 — "referenced" (default) folds everything not
+             near a conversation; "show all" renders the real whole file.
+             Hidden entirely when there's nothing TO collapse (no gaps) —
+             a toggle with no effect is just clutter. -->
+        <span class="rtoggle" data-testid="collapse-toggle">
+          <button type="button" class:on={!showAll} onclick={() => setShowAll(false)} data-testid="collapse-toggle-referenced">referenced</button>
+          <button type="button" class:on={showAll} onclick={() => setShowAll(true)} data-testid="collapse-toggle-showall">show all</button>
+        </span>
+      {/if}
     </div>
     <div class="codepage">
       <div class="densitywrap" bind:this={scrollEl} onscroll={updateViewport}>
@@ -414,55 +519,83 @@
               </button>
             {/if}
             <div class="code" data-lang={lang} bind:this={codeEl} style="--gutter-cols:{gutterColumns}">
-              {#each lines as line (line.n)}
-                {@const cols = lineColumns.get(line.n) ?? []}
-                {@const tabs = tabsByLine.get(line.n) ?? []}
-                {@const rowActive = cols.some((seg) => !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`)}
-                <div class="cl" class:hot={cols.some((c) => c !== null)} class:act={rowActive} data-line={line.n}>
-                  <span class="g">
-                    {#each cols as seg, ci (ci)}
-                      {@const segActive = !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`}
-                      <span class="gcol">
-                        {#if seg}
-                          {#if seg.pos === 'tick'}
-                            <span class="tick" class:drift={seg.entry.drift} class:act={segActive} style="--bc:{entryColorVar(seg.entry)}"></span>
-                          {:else}
-                            <span
-                              class="br"
-                              class:s={seg.pos === 'start'}
-                              class:e={seg.pos === 'end'}
-                              class:drift={seg.entry.drift}
-                              class:act={segActive}
-                              style="--bc:{entryColorVar(seg.entry)}"
-                            ></span>
+              {#each rowPlan as row (row.kind === 'line' ? 'l' + row.n : 'f' + row.key)}
+                {#if row.kind === 'fold'}
+                  {@const hiddenCount = row.hiddenEnd - row.hiddenStart + 1}
+                  <!-- Piece 11 Phase 3 — a real collapsed span, never lines
+                       rendered-then-hidden: everything between row.hiddenStart
+                       and row.hiddenEnd is simply absent from `rowPlan`. -->
+                  <div class="fold" data-testid="fold-row" title={`lines ${row.hiddenStart}–${row.hiddenEnd}`}>
+                    <span class="exp">⋯</span>
+                    <span class="n">expand {hiddenCount} line{hiddenCount === 1 ? '' : 's'}</span>
+                    <span class="updown">
+                      {#if row.edge === 'top'}
+                        <button type="button" onclick={() => expandAllOf(row)} data-testid="fold-expand-edge">↑ top</button>
+                      {:else if row.edge === 'bottom'}
+                        <button type="button" onclick={() => expandAllOf(row)} data-testid="fold-expand-edge">↓ bottom</button>
+                      {:else}
+                        <button type="button" onclick={() => expandTop(row)} data-testid="fold-expand-up"
+                          >↑ {Math.min(PARTIAL_EXPAND_STEP, hiddenCount)}</button
+                        >
+                        <button type="button" onclick={() => expandBottom(row)} data-testid="fold-expand-down"
+                          >↓ {Math.min(PARTIAL_EXPAND_STEP, hiddenCount)}</button
+                        >
+                        <button type="button" onclick={() => expandAllOf(row)} data-testid="fold-expand-all">⤢ all</button>
+                      {/if}
+                    </span>
+                  </div>
+                {:else}
+                  {@const n = row.n}
+                  {@const text = lineByN.get(n)?.text ?? ''}
+                  {@const cols = lineColumns.get(n) ?? []}
+                  {@const tabs = tabsByLine.get(n) ?? []}
+                  {@const rowActive = cols.some((seg) => !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`)}
+                  <div class="cl" class:hot={cols.some((c) => c !== null)} class:act={rowActive} data-line={n}>
+                    <span class="g">
+                      {#each cols as seg, ci (ci)}
+                        {@const segActive = !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`}
+                        <span class="gcol">
+                          {#if seg}
+                            {#if seg.pos === 'tick'}
+                              <span class="tick" class:drift={seg.entry.drift} class:act={segActive} style="--bc:{entryColorVar(seg.entry)}"></span>
+                            {:else}
+                              <span
+                                class="br"
+                                class:s={seg.pos === 'start'}
+                                class:e={seg.pos === 'end'}
+                                class:drift={seg.entry.drift}
+                                class:act={segActive}
+                                style="--bc:{entryColorVar(seg.entry)}"
+                              ></span>
+                            {/if}
                           {/if}
-                        {/if}
-                      </span>
-                    {/each}
-                  </span>
-                  <span class="ln">{line.n}</span>
-                  <span class="cc">
-                    {#each highlightedFor(line.n)?.tokens ?? [{ text: line.text, style: '' }] as tok, i (i)}
-                      <span class="shiki-tok" style={tok.style}>{tok.text}</span>
-                    {/each}
-                  </span>
-                  {#if tabs.length > 0}
-                    <span class="tabs-wrap">
-                      {#each tabs as entry (entry.range[0] + '-' + entry.range[1])}
-                        <button
-                          type="button"
-                          class="tab"
-                          class:drift={entry.drift}
-                          class:act={activeEntryKey === `${entry.range[0]}-${entry.range[1]}`}
-                          style="--tc:{entryColorVar(entry)}"
-                          title={tabTitle(entry)}
-                          onclick={() => clickEntry(entry)}
-                          data-testid="gutter-tab"
-                        >{entry.drift ? '◷ ' : ''}{entry.hits.length} · {tabInitials(entry)}</button>
+                        </span>
                       {/each}
                     </span>
-                  {/if}
-                </div>
+                    <span class="ln">{n}</span>
+                    <span class="cc">
+                      {#each highlightedFor(n)?.tokens ?? [{ text, style: '' }] as tok, i (i)}
+                        <span class="shiki-tok" style={tok.style}>{tok.text}</span>
+                      {/each}
+                    </span>
+                    {#if tabs.length > 0}
+                      <span class="tabs-wrap">
+                        {#each tabs as entry (entry.range[0] + '-' + entry.range[1])}
+                          <button
+                            type="button"
+                            class="tab"
+                            class:drift={entry.drift}
+                            class:act={activeEntryKey === `${entry.range[0]}-${entry.range[1]}`}
+                            style="--tc:{entryColorVar(entry)}"
+                            title={tabTitle(entry)}
+                            onclick={() => clickEntry(entry)}
+                            data-testid="gutter-tab"
+                          >{entry.drift ? '◷ ' : ''}{entry.hits.length} · {tabInitials(entry)}</button>
+                        {/each}
+                      </span>
+                    {/if}
+                  </div>
+                {/if}
               {/each}
             </div>
           </div>
@@ -514,6 +647,28 @@
   .ct-hint {
     color: var(--faint);
     font-size: 11.5px;
+  }
+  /* Piece 11 Phase 3 — the "referenced / show all" collapse toggle
+     (mock 11's `.rtoggle`), pushed to the far right of the toolbar. */
+  .rtoggle {
+    margin-left: auto;
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+    font: 600 10.5px/1 var(--mono);
+  }
+  .rtoggle button {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    padding: 4px 9px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .rtoggle button.on {
+    background: var(--panel-3);
+    color: var(--text);
   }
   .codepage {
     flex: 1;
@@ -759,6 +914,42 @@
   }
   .cc {
     color: var(--text);
+  }
+
+  /* Piece 11 Phase 3 — a collapsed-span row (mock 11's `.fold`): the whole
+     row is chrome, not code, so it doesn't carry `data-line` and sits
+     outside the gutter-column grid entirely (its own full-width flex row). */
+  .fold {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 14px;
+    margin: 2px 0;
+    color: var(--muted);
+    cursor: default;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    font: 500 10.5px/1 var(--mono);
+  }
+  .fold .exp {
+    color: var(--accent);
+  }
+  .fold .updown {
+    margin-left: auto;
+    display: flex;
+    gap: 10px;
+  }
+  .fold .updown button {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+  }
+  .fold .updown button:hover {
+    text-decoration: underline;
   }
 
   /* Piece 11 Phase 2b — the conversation minimap: a thin strip on the far

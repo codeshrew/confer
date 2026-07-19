@@ -1019,6 +1019,28 @@ const mockSnippet: Snippet = {
     { n: 47, text: '  let cites = citations.tieIns(regions)' },
     { n: 48, text: '  return PlateBundle(plate, regions, cites)' },
     { n: 49, text: '}' },
+    // Piece 11 Phase 3 — genuinely UNREFERENCED trailing lines (no hit's
+    // range or context reaches past 51), so the "referenced" default
+    // collapses them into one real bottom fold against real mock data,
+    // rather than only via synthetic unit fixtures. Left deliberately
+    // unrealistic Swift (a scratch helper) — content doesn't matter, only
+    // that nothing in mockRefHits references it.
+    { n: 50, text: '' },
+    { n: 51, text: 'private func debugDump(_ bundle: PlateBundle) {' },
+    { n: 52, text: '  #if DEBUG' },
+    { n: 53, text: '  print("plate:", bundle.plate.id)' },
+    { n: 54, text: '  print("regions:", bundle.regions.count)' },
+    { n: 55, text: '  print("cites:", bundle.cites.count)' },
+    { n: 56, text: '  #endif' },
+    { n: 57, text: '}' },
+    { n: 58, text: '' },
+    { n: 59, text: 'extension PlateBundle {' },
+    { n: 60, text: '  var isEmpty: Bool {' },
+    { n: 61, text: '    regions.isEmpty && cites.isEmpty' },
+    { n: 62, text: '  }' },
+    { n: 63, text: '}' },
+    { n: 64, text: '' },
+    { n: 65, text: '// EOF (mock fixture padding)' },
   ],
 };
 
