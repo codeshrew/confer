@@ -18,6 +18,19 @@ export function formatAgeFromSecs(ageSecs: number): string {
   return `${Math.round(days)}d`;
 }
 
+/** The canonical human-readable short code for a `req_`-prefixed id: the
+ * last 6 characters after stripping the prefix (`req_01JQ8f2` -> `01JQ8F` /
+ * a real ULID -> `ATXQV1`). Was three drifting ad-hoc copies (Overview.svelte,
+ * and piece 9's event chip about to become a fourth) — one definition now,
+ * same as `formatClock`/`agePct` centralize their own small math. Message-id
+ * short forms (FocusReader/MetaThread's own `shortId`) are a DIFFERENT shape
+ * (they format `msg_`-prefixed ids, truncated from the front, not the human
+ * "the code you'd say out loud" convention this one is) — deliberately not
+ * unified with those. */
+export function shortCode(id: string): string {
+  return id.replace(/^req_/, '').slice(-6);
+}
+
 /** Whether an agent heartbeat should render as "stale" (mockup: >~10m). */
 export function isStaleAge(ts: string | null, nowMs: number = Date.now()): boolean {
   if (!ts) return true;

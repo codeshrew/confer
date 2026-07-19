@@ -8,6 +8,7 @@
 // `supersedes` pointer that doesn't resolve to something actually loaded
 // renders the event as plain text, never a dead link.
 import type { Agent, Message, MsgType, RequestRow } from './types';
+import { shortCode } from './format';
 
 /** The lifecycle/system message types rendered as compact rows, not full
  * conversational messages — Message.svelte's `isSysline`. `blocked` was
@@ -73,7 +74,12 @@ export function resolveEventSubject(message: Message, requests: RequestRow[], me
     if (!message.of) return null;
     const reqId = message.of.replace(/^msg_/, 'req_');
     const req = requests.find((r) => r.id === reqId);
-    return req ? { kind: 'ticket', id: req.id, label: req.id } : null;
+    // `id` stays the FULL id — the popover opens by looking it up in
+    // `requests` (App.svelte's selectTicket), which needs the real key. The
+    // chip's own on-screen `label` is the 6-char human short code (the
+    // brief's own `[98XCNF]` example) — the full ULID as inline prose is a
+    // wall of noise, per Jarvis's live-verify catch.
+    return req ? { kind: 'ticket', id: req.id, label: shortCode(req.id) } : null;
   }
   if (message.type === 'supersede') {
     const targetId = message.supersedes ?? message.replyTo ?? null;

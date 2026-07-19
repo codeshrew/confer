@@ -35,6 +35,15 @@
   const fromDisplay = $derived(fromAgent?.display ?? message.from);
 
   const SUBJECT_NOUN: Record<EventSubject['kind'], string> = { ticket: 'ticket', agent: 'agent', thread: 'thread' };
+
+  /** The chip's own on-screen `label` is the short human form (a 6-char
+   * code for a ticket, a thread's summary) — the `title` hover always names
+   * the REAL identifier behind it (the full id for ticket/agent; the label
+   * IS already the real thing for thread, so no expansion needed there). */
+  function subjectTitle(s: EventSubject): string {
+    const id = s.kind === 'thread' ? s.label : s.id;
+    return `Open the ${SUBJECT_NOUN[s.kind]}: ${id}`;
+  }
 </script>
 
 <div class="event-row" class:pulse={highlight} data-type={message.type} data-msg-id={message.id} data-testid="event-row">
@@ -45,7 +54,8 @@
       <button
         type="button"
         class="subject-chip"
-        title="Open the {SUBJECT_NOUN[subject.kind]}: {subject.label}"
+        class:truncate={subject.kind === 'thread'}
+        title={subjectTitle(subject)}
         data-testid="event-subject-chip"
         onclick={(e) => {
           e.stopPropagation();
@@ -86,7 +96,6 @@
   .subject-chip {
     display: inline-flex;
     align-items: center;
-    max-width: 260px;
     margin-left: 4px;
     padding: 1px 7px;
     border: 1px solid var(--border-2);
@@ -95,10 +104,18 @@
     color: var(--accent);
     font: 600 11px/1.5 var(--mono);
     cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     vertical-align: middle;
+  }
+  /* Only a thread subject's label (a message summary) can run long enough
+     to need clipping — a ticket's 6-char short code or an agent's display
+     name never do, so they stay untruncated (Jarvis's live-verify catch:
+     the OLD always-260px cap was clipping the full ULID it used to show,
+     masking exactly the noise problem the short code itself now fixes). */
+  .subject-chip.truncate {
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .subject-chip:hover,
   .subject-chip:focus-visible {

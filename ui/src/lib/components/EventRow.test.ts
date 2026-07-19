@@ -44,18 +44,35 @@ function claimMessage(overrides: Partial<Message> = {}): Message {
   };
 }
 
-const ticketSubject: EventSubject = { kind: 'ticket', id: 'req_01JQ8f2', label: 'req_01JQ8f2' };
+// A realistic full-length ULID (like the real backend's) — `id` is what the
+// popover actually looks a ticket up by; `label` is the short human code the
+// chip shows ON SCREEN (Jarvis's live-verify catch: the full ULID as inline
+// prose was a wall of noise — `eventSubject.ts`'s `resolveEventSubject` now
+// keeps `id` full but sets `label` via the shared `shortCode()` helper).
+const ticketSubject: EventSubject = { kind: 'ticket', id: 'req_01KXEWVA86DHF2T4WQYTATXQV1', label: 'ATXQV1' };
 const threadSubject: EventSubject = { kind: 'thread', msgId: 'msg_01JQf01', label: 'restore chain context' };
 
 describe('EventRow', () => {
-  it('renders the actor and summary, with a clickable subject chip when the subject resolves', () => {
+  it('renders the actor and summary, with a clickable subject chip showing the SHORT code, not the full id', () => {
     render(EventRow, { message: claimMessage(), fromAgent: reader, subject: ticketSubject });
 
     expect(screen.getByText('Reader')).toBeInTheDocument();
     expect(screen.getByText(/claimed it — taking the endpoint/)).toBeInTheDocument();
     const chip = screen.getByTestId('event-subject-chip');
     expect(chip).toBeInTheDocument();
-    expect(chip).toHaveTextContent('req_01JQ8f2');
+    expect(chip).toHaveTextContent('ATXQV1');
+    expect(chip).not.toHaveTextContent('01KXEWVA86DHF2T4WQYTATXQV1');
+  });
+
+  it('the full id is still what drives the open — clicking the short-code chip dispatches the FULL id, not the label', () => {
+    const onOpenSubject = vi.fn();
+    render(EventRow, { message: claimMessage(), fromAgent: reader, subject: ticketSubject, onOpenSubject });
+
+    screen.getByTestId('event-subject-chip').click();
+    expect(onOpenSubject).toHaveBeenCalledWith(ticketSubject);
+    const dispatched = onOpenSubject.mock.calls[0]![0] as EventSubject;
+    expect(dispatched.kind).toBe('ticket');
+    expect((dispatched as { id: string }).id).toBe('req_01KXEWVA86DHF2T4WQYTATXQV1');
   });
 
   it('clicking the subject chip fires onOpenSubject with the resolved subject, not the row', () => {
@@ -64,6 +81,15 @@ describe('EventRow', () => {
 
     screen.getByTestId('event-subject-chip').click();
     expect(onOpenSubject).toHaveBeenCalledWith(ticketSubject);
+  });
+
+  it('the ticket chip has no truncation — only a thread subject\'s (potentially long) summary label needs it', () => {
+    const { container: ticket } = render(EventRow, { message: claimMessage(), fromAgent: reader, subject: ticketSubject });
+    const evt = claimMessage({ type: 'supersede', of: null, supersedes: 'msg_01JQf01', summary: 'superseded the restore-chain note' });
+    const { container: thread } = render(EventRow, { message: evt, fromAgent: reader, subject: threadSubject });
+
+    expect(ticket.querySelector('.subject-chip')).not.toHaveClass('truncate');
+    expect(thread.querySelector('.subject-chip')).toHaveClass('truncate');
   });
 
   it('renders a thread subject\'s label the same way — one chip, one dispatch, regardless of subject kind', () => {

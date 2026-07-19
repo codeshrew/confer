@@ -29,7 +29,7 @@
   import { bySeverityThenAge } from '../attention';
   import type { Attention, AttentionItem, DomainWorkItem, HubDomain, Severity } from '../attention';
   import type { HubTier } from '../types';
-  import { formatAgeFromSecs } from '../format';
+  import { formatAgeFromSecs, shortCode } from '../format';
   import AgentNode from './AgentNode.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import EmptyState from './EmptyState.svelte';
@@ -272,7 +272,7 @@
                 {#each domain.workInFlight as w (w.id)}
                   <button type="button" class="ov-work ov-work-{workClass(w)}" onclick={() => onDrillRequest?.(domain.hub, w.id)}>
                     <span class="ov-wdot" aria-hidden="true"></span>
-                    <span class="ov-wid">{w.id.replace(/^req_/, '').slice(-6)}</span>
+                    <span class="ov-wid">{shortCode(w.id)}</span>
                     <span class="ov-wsummary">{w.summary}</span>
                     <span class="ov-wmeta">{claimantLabel(w)}</span>
                   </button>

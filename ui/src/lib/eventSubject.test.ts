@@ -76,17 +76,28 @@ describe('EVENT_ICON / EVENT_COLOR_VAR', () => {
 });
 
 describe('resolveEventSubject — ticket-kind events (claim/done/error/blocked/defer)', () => {
-  const req = request({ id: 'req_8f2', summary: 'wire the endpoint' });
+  // A realistic full-length ULID (like the real backend's, not a short mock
+  // id) — this is exactly the case Jarvis's live-verify caught: the chip
+  // must show the 6-char short code, never this whole thing.
+  const req = request({ id: 'req_01KXEWVA86DHF2T4WQYTATXQV1', summary: 'wire the endpoint' });
 
-  it('resolves via `of` to a real ticket', () => {
-    const evt = message({ type: 'claim', of: 'msg_8f2' });
-    expect(resolveEventSubject(evt, [req], [], [])).toEqual({ kind: 'ticket', id: 'req_8f2', label: 'req_8f2' });
+  it('resolves via `of` to a real ticket — id stays FULL (for the popover lookup), label is the 6-char short code', () => {
+    const evt = message({ type: 'claim', of: 'msg_01KXEWVA86DHF2T4WQYTATXQV1' });
+    expect(resolveEventSubject(evt, [req], [], [])).toEqual({
+      kind: 'ticket',
+      id: 'req_01KXEWVA86DHF2T4WQYTATXQV1',
+      label: 'ATXQV1',
+    });
   });
 
   it('resolves the same way for done/error/blocked/defer — all ticket-kind', () => {
     for (const type of ['done', 'error', 'blocked', 'defer'] as const) {
-      const evt = message({ type, of: 'msg_8f2' });
-      expect(resolveEventSubject(evt, [req], [], [])).toEqual({ kind: 'ticket', id: 'req_8f2', label: 'req_8f2' });
+      const evt = message({ type, of: 'msg_01KXEWVA86DHF2T4WQYTATXQV1' });
+      expect(resolveEventSubject(evt, [req], [], [])).toEqual({
+        kind: 'ticket',
+        id: 'req_01KXEWVA86DHF2T4WQYTATXQV1',
+        label: 'ATXQV1',
+      });
     }
   });
 

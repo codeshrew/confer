@@ -11,6 +11,7 @@ import {
   formatLocalDateTime,
   groupByDay,
   isStaleAge,
+  shortCode,
 } from './format';
 
 // formatClock/formatIsoDate render the operator's LOCAL time — these
@@ -52,6 +53,24 @@ describe('formatAgeFromSecs', () => {
 
   it('never renders a negative minute count', () => {
     expect(formatAgeFromSecs(-30)).toBe('0m');
+  });
+});
+
+describe('shortCode', () => {
+  it('strips the req_ prefix and takes the last 6 characters — the real ULID case (piece 9\'s live-verify catch)', () => {
+    expect(shortCode('req_01KXEWVA86DHF2T4WQYTATXQV1')).toBe('ATXQV1');
+  });
+
+  it('matches Overview.svelte\'s own pre-existing convention (now factored here)', () => {
+    expect(shortCode('req_01JQ8f2')).toBe('1JQ8f2');
+  });
+
+  it('an id with no req_ prefix still takes the last 6 characters', () => {
+    expect(shortCode('01KXEWVA86DHF2T4WQYTATXQV1')).toBe('ATXQV1');
+  });
+
+  it('an id shorter than 6 characters (after stripping) is returned whole, not padded', () => {
+    expect(shortCode('req_ab')).toBe('ab');
   });
 });
 

@@ -20,7 +20,9 @@ test('a claim event\'s subject chip opens the ticket it claimed — Full popover
   await expect(row).toBeVisible();
 
   const chip = row.getByTestId('event-subject-chip');
-  await expect(chip).toHaveText('req_01JQ8f2');
+  // The chip shows the SHORT code, not the full id (Jarvis's live-verify
+  // catch) — the full id still drives the popover, confirmed below.
+  await expect(chip).toHaveText('1JQ8f2');
   await chip.click();
 
   const popover = page.getByTestId('ticket-popover');
@@ -40,7 +42,7 @@ test('a defer event\'s subject chip opens its ticket — Board\'s parked/deferre
   const row = page.locator('[data-testid="event-row"][data-type="defer"]');
   await expect(row).toBeVisible();
   const chip = row.getByTestId('event-subject-chip');
-  await expect(chip).toHaveText('req_01JQd21');
+  await expect(chip).toHaveText('1JQd21');
   await chip.click();
 
   const popover = page.getByTestId('ticket-popover');
@@ -54,7 +56,7 @@ test('an error event\'s subject chip opens its ticket', async ({ page }) => {
   const row = page.locator('[data-testid="event-row"][data-type="error"]');
   await expect(row).toBeVisible();
   const chip = row.getByTestId('event-subject-chip');
-  await expect(chip).toHaveText('req_01JQe88');
+  await expect(chip).toHaveText('1JQe88');
   await chip.click();
 
   const popover = page.getByTestId('ticket-popover');
