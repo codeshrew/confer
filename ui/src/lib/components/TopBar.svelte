@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Hub } from '../types';
   import type { View } from '../stores.svelte';
-  import Kbd from './Kbd.svelte';
 
   export type ConnStatus = 'live' | 'reconnecting' | 'loading';
 
@@ -61,17 +60,16 @@
     repos: 'Repos',
   };
 
-  // keyboard-architecture pass — every actionable control shows its own
-  // shortcut inline (ui/REDESIGN.md). `repos` has no ⌘-number binding (the
-  // model only covers ⌘1-⌘5 — see keys.ts's viewForCmdNumber) so it
-  // deliberately gets no chip here, rather than showing an invented one.
-  const viewCmdKey: Partial<Record<View, string>> = {
-    overview: '⌘1',
-    chat: '⌘2',
-    board: '⌘3',
-    fleet: '⌘4',
-    code: '⌘5',
-  };
+  // keyboard-architecture pass, honesty-fix follow-up (2026-07-19):
+  // Cmd+1-5 view-switch chords are BROWSER-RESERVED on every platform
+  // (Ctrl+1-9 switches tabs on Linux/Windows, Cmd+1-9 switches tabs on
+  // macOS) — `viewForCmdNumber` (keys.ts) never actually gets to fire, so
+  // a shortcut chip advertising it would be a dead key. No chip here until
+  // view-switching moves into the ⌘K palette (Stefan's planned redesign —
+  // the palette will dynamically classify every on-screen interactable,
+  // views included; spec pending via Herald). ⌘K itself is the lucky free
+  // exception (not tab-reserved) and keeps its chip on HubRail's own
+  // "Jump to hub…" button.
 </script>
 
 <div class="topbar">
@@ -135,9 +133,6 @@
         onclick={() => onViewChange?.(v)}
       >
         {viewLabel[v]}
-        {#if viewCmdKey[v]}
-          <Kbd keys={viewCmdKey[v]} class="seg-kbd" />
-        {/if}
       </button>
     {/each}
   </div>

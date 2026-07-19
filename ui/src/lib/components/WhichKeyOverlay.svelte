@@ -46,14 +46,16 @@
       ],
     },
     {
+      // Cmd+1-5 view-switch chords are BROWSER-RESERVED on every platform
+      // (tab-switching, Linux/Windows/macOS alike) — they never actually
+      // fire, so they're deliberately NOT listed here (a shortcut that
+      // doesn't work is worse than no shortcut). View-switching is moving
+      // into ⌘K itself instead — the palette is being redesigned to
+      // dynamically pull + classify every on-screen interactable,
+      // including views (spec pending). Click the view tabs for now.
       title: 'App (Cmd)',
       rows: [
-        { keys: '⌘K', desc: 'command palette — fuzzy jump to a hub' },
-        { keys: '⌘1', desc: 'Overview' },
-        { keys: '⌘2', desc: 'Chat' },
-        { keys: '⌘3', desc: 'Board' },
-        { keys: '⌘4', desc: 'Fleet' },
-        { keys: '⌘5', desc: 'Code' },
+        { keys: '⌘K', desc: 'command palette — fuzzy jump to a hub (views coming soon)' },
         { keys: '?', desc: 'this overlay' },
       ],
     },
