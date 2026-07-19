@@ -58,6 +58,15 @@ const md: MarkdownIt = new MarkdownIt({
 });
 md.use(mentionPlugin);
 
+// linkify's FUZZY matching (bare `word.tld` text, no `http(s)://`) treats
+// any dotted-suffix word as a domain — including a plain filename mention
+// like "REDESIGN.md" (`.md` is Moldova's ccTLD) or "design/48-x.md". That
+// silently turned filenames into off-site navigation to a random external
+// domain — a real bug (mild security/UX issue), not a style choice. Fuzzy
+// matching is what needs disabling; EXPLICIT `http://`/`https://` URLs are
+// still linkified normally (linkify's non-fuzzy path is untouched).
+md.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+
 // Match the pre-existing look-and-feel: inline code kept its `.mono` class
 // (see Message.test.ts), fenced code gets a `language-x` class the async
 // Shiki pass below can key off.

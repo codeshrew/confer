@@ -56,6 +56,8 @@
   import { paneFocus } from '../paneFocus.svelte';
   import Icon from './Icon.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
+  import CopyIdButton from './CopyIdButton.svelte';
+  import CopiedToast from './CopiedToast.svelte';
   import type { Agent, CodeRef, Message as MessageT, MsgType, RefHit, ThreadNode } from '../types';
 
   interface Props {
@@ -166,11 +168,34 @@
         e.preventDefault();
         jump();
         break;
+      case 'y':
+        e.preventDefault();
+        if (focusedNode) void copyFocusedId(focusedNode.msgId);
+        break;
       case 'Escape':
         e.preventDefault();
         onClose?.();
         break;
     }
+  }
+
+  // keyboard-architecture pass — `y` (vim yank) copies the focused node's
+  // FULL id. The Focused card's own CopyIdButton (added below) covers the
+  // mouse path; each trail ROW already has its own click-to-copy `.gid`
+  // (copyNodeId, above) — this is the keyboard equivalent for whichever
+  // node is currently focused, with the same toast feedback FocusReader's
+  // `y` uses (there's no button under the pointer when it fires from the
+  // keyboard).
+  let toastText = $state<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyFocusedId(msgId: string) {
+    const ok = await copyToClipboard(msgId);
+    if (!ok) return;
+    toastText = `copied ${shortId(msgId)}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastText = null;
+    }, 1500);
   }
 
   // keyboard-architecture pass — "thread-peek", registered only while this
@@ -331,6 +356,8 @@
         {#if messagesById.get(focusedNode.msgId)}
           <span class="fts mono" title={formatIso8601(messagesById.get(focusedNode.msgId)!.ts)}>{formatClock(messagesById.get(focusedNode.msgId)!.ts)}</span>
         {/if}
+        <CopyIdButton id={focusedNode.msgId} class="ft-copy-id" />
+        <CopiedToast text={toastText} />
         <button type="button" class="jumpbtn" onclick={jump} data-testid="peek-jump">↵ open here ›</button>
       </div>
       <div class="fx prose md" use:highlightBody>
@@ -503,6 +530,13 @@
   .focused .fts {
     font-size: 10.5px;
     color: var(--faint);
+  }
+  /* CopyIdButton defaults to opacity:0 (design/41) — reveal it on the
+     Focused card's own hover/focus, same convention as Message's
+     .msg:hover :global(.msg-copy-id). */
+  .focused:hover :global(.ft-copy-id),
+  .focused:focus-within :global(.ft-copy-id) {
+    opacity: 1;
   }
   .focused .jumpbtn {
     margin-left: auto;

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import FocusReader from './FocusReader.svelte';
@@ -197,5 +197,55 @@ describe('FocusReader', () => {
     const [ref, hits] = onOpenRefs.mock.calls[0]!;
     expect(ref.path).toBe('src/api.rs');
     expect(hits).toHaveLength(1); // real hits, never a fabricated empty array
+  });
+
+  describe('keyboard-architecture pass: "y" copies the full message id', () => {
+    afterEach(() => {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+
+    it('copies the FULL id (not the shortened display id) and shows a toast', async () => {
+      // userEvent.setup() installs its own navigator.clipboard stub, so the
+      // mock must be defined AFTER setup() or it gets clobbered — same
+      // ordering Message.test.ts's copy-id test uses.
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+      const messages = [message({ id: 'msg_01JQ00000000000000000001', from: 'reader' })];
+      render(FocusReader, {
+        open: true,
+        msgId: 'msg_01JQ00000000000000000001',
+        messages,
+        agents: [reader],
+        thread: [node('msg_01JQ00000000000000000001', 'reader')],
+        hub: 'lab',
+      });
+
+      expect(screen.queryByTestId('copied-toast')).not.toBeInTheDocument();
+      await user.keyboard('y');
+
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith('msg_01JQ00000000000000000001');
+      });
+      expect(await screen.findByTestId('copied-toast')).toHaveTextContent(/copied/);
+    });
+
+    it('does not fire while a typing field has focus', async () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      input.focus();
+
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+      const messages = [message({ id: 'm1', from: 'reader' })];
+      render(FocusReader, { open: true, msgId: 'm1', messages, agents: [reader], thread: [node('m1', 'reader')], hub: 'lab' });
+
+      await user.keyboard('y');
+      expect(writeText).not.toHaveBeenCalled();
+      input.remove();
+    });
   });
 });

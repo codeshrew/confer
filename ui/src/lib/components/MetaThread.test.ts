@@ -262,6 +262,38 @@ describe('MetaThread', () => {
     });
   });
 
+  describe('keyboard-architecture pass: the Focused card also has a copy-id control, and "y" copies it', () => {
+    afterEach(() => {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+
+    it('the Focused card shows its own copy-id button (not just the trail rows)', async () => {
+      const thread = [node('m1', 'reader', 'reader'), node('m2', 'pipeline', 'reader')];
+      render(MetaThread, { thread, agents: [reader, pipeline], focusedMsgId: 'm1' });
+
+      const focused = within(screen.getByTestId('peek-focused'));
+      expect(focused.getByRole('button', { name: /copy id m1/i })).toBeInTheDocument();
+    });
+
+    it('"y" copies the FULL id of the currently-focused node and shows a toast', async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+      const thread = [node('msg_01JQ00000000000000000001', 'reader', 'reader'), node('m2', 'pipeline', 'reader')];
+      render(MetaThread, { thread, agents: [reader, pipeline], focusedMsgId: 'msg_01JQ00000000000000000001' });
+
+      screen.getByTestId('thread-peek').focus();
+      expect(screen.queryByTestId('copied-toast')).not.toBeInTheDocument();
+      await user.keyboard('y');
+
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith('msg_01JQ00000000000000000001');
+      });
+      expect(await screen.findByTestId('copied-toast')).toHaveTextContent(/copied/);
+    });
+  });
+
   describe('git-log-style row (time + hop chip)', () => {
     it('shows a per-node time when the node\'s message is loaded, formatted via formatClock', () => {
       const thread = [node('m1', 'reader', 'reader', 'Short summary')];

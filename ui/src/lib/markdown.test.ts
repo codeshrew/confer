@@ -173,6 +173,25 @@ describe('renderMarkdown', () => {
     const html = renderMarkdown('before <iframe src="https://evil.example"></iframe> after');
     expect(html).not.toContain('<iframe');
   });
+
+  it('does not fuzzy-linkify bare filenames — "REDESIGN.md" is not a domain, "design/48-x.md" is not a URL', () => {
+    // linkify's fuzzy matcher treats any dotted-suffix word as a bare
+    // domain (`.md` is Moldova's ccTLD) — clicking a filename mention was
+    // silently navigating off-site to a random external domain.
+    const a = renderMarkdown('See REDESIGN.md for the plan.');
+    expect(a).not.toContain('<a');
+    expect(a).toContain('REDESIGN.md');
+
+    const b = renderMarkdown('Landed in design/48-x.md this week.');
+    expect(b).not.toContain('<a');
+    expect(b).toContain('design/48-x.md');
+  });
+
+  it('still linkifies explicit https:// URLs (only fuzzy bare-word matching is disabled)', () => {
+    const html = renderMarkdown('See https://example.com for details.');
+    expect(html).toContain('<a');
+    expect(html).toContain('href="https://example.com"');
+  });
 });
 
 describe('highlightRenderedCodeBlocks', () => {

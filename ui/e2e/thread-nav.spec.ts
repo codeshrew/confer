@@ -75,6 +75,28 @@ test('"f" opens the focus reader on the focused message; j/k walk the thread; f/
   await expect(reader).not.toBeVisible();
 });
 
+test('"y" copies the focused message\'s full id, in both the focus reader and the peek', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+  await page.getByText(/canaried 0.7.3/).first().click();
+
+  // The peek's Focused card.
+  const peekFocused = page.getByTestId('peek-focused');
+  await expect(peekFocused).toBeVisible();
+  await page.getByTestId('thread-peek').focus();
+  await page.keyboard.press('y');
+  await expect(page.getByTestId('copied-toast')).toBeVisible();
+  await expect(page.getByTestId('copied-toast')).toContainText('copied');
+
+  // The focus reader.
+  await page.keyboard.press('f');
+  const reader = page.getByTestId('focus-reader');
+  await expect(reader).toBeVisible();
+  await page.keyboard.press('y');
+  await expect(reader.getByTestId('copied-toast')).toBeVisible();
+});
+
 test('renders correctly in both themes', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();

@@ -28,6 +28,9 @@
   import { buildTrail, type TrailNode } from '../thread';
   import { isTypingTarget } from '../keys';
   import { api } from '../api';
+  import { copyToClipboard } from '../clipboard';
+  import CopyIdButton from './CopyIdButton.svelte';
+  import CopiedToast from './CopiedToast.svelte';
   import type { Agent, CodeRef, Message as MessageT, RefHit, ThreadNode } from '../types';
 
   interface Props {
@@ -73,6 +76,24 @@
     if (node) onNavigate?.(node.msgId);
   }
 
+  // keyboard-architecture pass — `y` (vim yank) copies the focused
+  // message's FULL id (not the shortened display id — that's what
+  // `confer show <id>` / cross-referencing needs). The header's
+  // CopyIdButton covers the mouse path; `y` needs its own feedback since
+  // there's no button under the pointer when it fires from the keyboard.
+  let toastText = $state<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyFocusedId() {
+    if (!message) return;
+    const ok = await copyToClipboard(message.id);
+    if (!ok) return;
+    toastText = `copied ${shortId(message.id)}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastText = null;
+    }, 1500);
+  }
+
   // The gutter's compact ref chips don't render CodeRefCard's own full
   // preview (too wide for a narrow gutter column) — but the reverse-index
   // hook still needs REAL hit data, not a fabricated empty array implying
@@ -100,6 +121,10 @@
         e.preventDefault();
         goTo(prevNode);
         break;
+      case 'y':
+        e.preventDefault();
+        void copyFocusedId();
+        break;
       case 'Escape':
         // `f` itself is deliberately NOT handled here — App.svelte owns the
         // open/close toggle for it (the single global handler that also
@@ -123,8 +148,10 @@
         <div class="fr-crumbs mono">
           {#if message.topic}<span class="cz">#{message.topic}</span><span class="sep">›</span>{/if}
           <span class="cz here">{shortId(message.id)}</span>
+          <CopyIdButton id={message.id} class="fr-copy-id" />
         </div>
         <span class="fr-badge">◉ focus read</span>
+        <CopiedToast text={toastText} />
         <div class="fr-nav mono">
           {#if prevNode}
             <button type="button" class="fr-hop" onclick={() => goTo(prevNode)} data-testid="reader-prev">◂ {shortId(prevNode.msgId)}</button>
@@ -169,6 +196,7 @@
 
       <div class="fr-keys">
         <span><span class="kk">j</span><span class="kk">k</span> prev · next in thread</span>
+        <span><span class="kk">y</span> copy message id</span>
         <span><span class="kk">f</span> exit focus</span>
         <span><span class="kk">esc</span> exit focus</span>
       </div>
@@ -237,6 +265,13 @@
   }
   .fr-crumbs .sep {
     color: var(--faint);
+  }
+  /* CopyIdButton defaults to opacity:0 (design/41) — reveal it on the
+     header row's own hover/focus, same convention as Message's
+     .msg:hover :global(.msg-copy-id). */
+  .fr-head:hover :global(.fr-copy-id),
+  .fr-head:focus-within :global(.fr-copy-id) {
+    opacity: 1;
   }
   .fr-badge {
     font: 700 9.5px/1 var(--mono);
