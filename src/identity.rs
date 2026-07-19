@@ -352,7 +352,9 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
             let note = AppendArgs {
                 msg_type: "note".into(),
                 text: Some(text),
-                summary: format!("renamed: {me} now displays as '{name}'"),
+                body_file: None,
+                summary: Some(format!("renamed: {me} now displays as '{name}'")),
+                summary_file: None,
                 to: vec!["all".into()],
                 cc: vec![],
                 priority: None,

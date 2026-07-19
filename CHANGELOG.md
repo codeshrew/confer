@@ -11,6 +11,12 @@
   fleet views into `/confer-fleet`. `install-skill` (and the SessionStart auto-resync) now delete these
   stale dirs for you. **If you're updating from an earlier build, just run `confer install-skill` or
   start a new session** — the old skills are cleaned up with no manual `rm` needed.
+- **Quoting-safe message posting.** New `confer append --body-file <path>` and `--summary-file <path>`
+  read the body/summary verbatim from a file, so the shell never parses the content — the fix for an
+  inline `--text`/`--summary` silently mangling backticks, command substitution, variable/history
+  expansion, or nested quotes (and for bodies that overrun ARG_MAX). `--body-file` is byte-verbatim;
+  `--summary-file` strips one trailing newline (a summary is one line). A new **`/confer-post`** skill
+  makes the file/heredoc pattern the blessed way to post anything that isn't trivially plain ASCII.
 
 ## 0.7.3
 

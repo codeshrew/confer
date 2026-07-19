@@ -790,7 +790,9 @@ fn run() -> Result<()> {
         Cmd::Append {
             msg_type,
             text,
+            body_file,
             summary,
+            summary_file,
             to,
             cc,
             priority,
@@ -813,7 +815,9 @@ fn run() -> Result<()> {
         } => cmd_append(AppendArgs {
             msg_type,
             text,
+            body_file,
             summary,
+            summary_file,
             to,
             cc,
             priority,

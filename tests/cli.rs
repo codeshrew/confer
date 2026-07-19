@@ -6383,3 +6383,260 @@ fn apply_forged_result_hash_does_not_spoof_already_landed() {
         "the real diff must actually have been applied, not skipped"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--body-file` / `--summary-file`: shell-free, byte-verbatim posting (no inline
+// arg for content a shell could mangle — backticks/$()/$VAR/!/quotes/fenced code/
+// unicode/ARG_MAX-scale bodies). See src/append.rs `cmd_append` + src/cli.rs `Append`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `show <id> --json`'s `body`/`summary` fields, for exact (not `contains`-based) comparison.
+fn show_json(c: &Clone, id: &str) -> serde_json::Value {
+    let o = c.confer(&["show", id, "--json"]);
+    assert!(ok(&o), "show --json failed: {}", err(&o));
+    serde_json::from_str(out(&o).lines().next().unwrap_or(""))
+        .unwrap_or_else(|e| panic!("show --json must be valid JSON ({e}): {}", out(&o)))
+}
+
+/// Nasty content covering every shell metacharacter class named in the spec: backticks
+/// (command substitution), `$(...)`, `$VAR`/`${VAR}`, `!` (history expansion), single AND
+/// double quotes, a fenced code block, and unicode (⌘K, →, ‼). Starts and ends on a
+/// non-whitespace character (`to_markdown`/`from_markdown` trim body/summary at rest — an
+/// existing, pre-existing invariant of ALL confer messages, not something `--body-file`
+/// changes — so this checks true byte-identity rather than a false negative from that trim).
+fn nasty_body() -> String {
+    "backticks: `date` and `echo hi`\n\
+     command subst: $(whoami) and $(echo pwned)\n\
+     vars: $HOME $USER ${PATH} and $9\n\
+     bang: sudo !! and !$\n\
+     quotes: \"double quoted\" and 'single quoted' and \"nested 'quotes' inside\"\n\
+     unicode: \u{2318}K \u{2192} done \u{203C}\n\
+     ```rust\n\
+     fn main() {\n\
+         println!(\"hello, `world`\");\n\
+     }\n\
+     ```"
+        .to_string()
+}
+
+fn nasty_summary() -> String {
+    "backticks `date` $(whoami) $HOME ${PATH} ! \"double\" 'single' unicode \u{2318}K \u{2192} \u{203C}"
+        .to_string()
+}
+
+#[test]
+fn append_body_file_roundtrips_nasty_bytes_exactly() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bodyfile");
+    let path = dir.join("body.md");
+    let body = nasty_body();
+    std::fs::write(&path, &body).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "nasty body via --body-file",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["body"].as_str().unwrap(),
+        body,
+        "--body-file must round-trip byte-identical"
+    );
+}
+
+#[test]
+fn append_summary_file_roundtrips_nasty_bytes_exactly() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("summaryfile");
+    let path = dir.join("summary.txt");
+    let summary = nasty_summary();
+    std::fs::write(&path, &summary).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["summary"].as_str().unwrap(),
+        summary,
+        "--summary-file must round-trip byte-identical"
+    );
+}
+
+#[test]
+fn append_summary_file_strips_single_trailing_newline() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("summaryfile-nl");
+    // The common case: a summary file written with `echo`/an editor/a heredoc ends in `\n`.
+    // A summary is one line, so that trailing newline is stripped (a `\r` before it too, for
+    // `\r\n` files) — the summary round-trips WITHOUT it. Body/summary-file byte-verbatim
+    // tests above still hold: only this one trailing newline is removed, nothing interior.
+    let path = dir.join("summary.txt");
+    std::fs::write(&path, "a one-line summary with `nasty` $(bits)\n").unwrap();
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["summary"].as_str().unwrap(),
+        "a one-line summary with `nasty` $(bits)",
+        "--summary-file must strip the single trailing newline (not keep it, not the interior)"
+    );
+
+    // `\r\n` line ending: the `\r` before the stripped `\n` goes too.
+    let crlf = dir.join("summary-crlf.txt");
+    std::fs::write(&crlf, "crlf summary\r\n").unwrap();
+    let id2 = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        crlf.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    assert_eq!(show_json(&c, &id2)["summary"].as_str().unwrap(), "crlf summary");
+}
+
+#[test]
+fn append_body_file_and_summary_file_together_roundtrip_both() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bothfile");
+    let body_path = dir.join("body.md");
+    let summary_path = dir.join("summary.txt");
+    let body = nasty_body();
+    let summary = nasty_summary();
+    std::fs::write(&body_path, &body).unwrap();
+    std::fs::write(&summary_path, &summary).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        summary_path.to_str().unwrap(),
+        "--body-file",
+        body_path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(v["body"].as_str().unwrap(), body);
+    assert_eq!(v["summary"].as_str().unwrap(), summary);
+}
+
+#[test]
+fn append_body_file_roundtrips_multi_kb_body_near_arg_max() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bigbodyfile");
+    let path = dir.join("big.md");
+    // A few hundred KB — comfortably past what an inline `--text` arg can carry before
+    // hitting the shell's ARG_MAX, and past confer's own diff/embed size gates (which only
+    // apply to --ref/--patch, not a plain body). Ends on a non-whitespace char (see nasty_body).
+    let mut body = String::new();
+    for i in 0..6000 {
+        body.push_str(&format!("line {i}: the quick brown fox jumps over the lazy dog.\n"));
+    }
+    body.push_str("final line, no trailing newline: `tail` $(marker) end");
+    std::fs::write(&path, &body).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "big body via --body-file",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["body"].as_str().unwrap().len(),
+        body.len(),
+        "big body must round-trip at full length (no truncation)"
+    );
+    assert_eq!(v["body"].as_str().unwrap(), body, "big body must round-trip byte-identical");
+}
+
+#[test]
+fn append_body_file_conflicts_with_text() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("conflict-body");
+    let path = dir.join("body.md");
+    std::fs::write(&path, "file body").unwrap();
+
+    let o = c.append(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "s",
+        "--text",
+        "inline body",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    assert!(!ok(&o), "--body-file combined with --text must be rejected");
+    assert!(
+        err(&o).contains("--body-file") && err(&o).contains("--text"),
+        "error should name both conflicting flags: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn append_summary_file_conflicts_with_summary() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("conflict-summary");
+    let path = dir.join("summary.txt");
+    std::fs::write(&path, "file summary").unwrap();
+
+    let o = c.append(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "inline summary",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "b",
+    ]);
+    assert!(!ok(&o), "--summary-file combined with --summary must be rejected");
+    assert!(
+        err(&o).contains("--summary") && err(&o).contains("--summary-file"),
+        "error should name both conflicting flags: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn append_requires_summary_or_summary_file() {
+    let c = new_hub().clone("alpha");
+    let o = c.append(&["--type", "note", "--to", "beta", "--text", "b"]);
+    assert!(!ok(&o), "append with neither --summary nor --summary-file must be rejected");
+    assert!(err(&o).contains("--summary"), "{}", err(&o));
+}
