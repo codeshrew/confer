@@ -92,9 +92,18 @@ pub(crate) fn cmd_install_skill(
         .collect::<Vec<_>>()
         .join(",");
     println!("wrote {}/{{{names}}}/SKILL.md", dir.display());
-    // Migrate: remove OUR pre-namespacing skill dirs so an agent doesn't keep both /watch and
-    // /confer-watch. Only remove ones clearly OURS (mention confer) — never an unrelated skill.
-    for legacy in ["watch", "check-blackboard"] {
+    // Migrate: remove OUR superseded skill dirs so an agent doesn't keep stale copies alongside the
+    // current set. Two kinds: pre-namespacing names (watch/check-blackboard), and confer-* skills we
+    // retired (fleet-ops/fleetop → folded into /confer-fleet; norms → the SessionStart safety-kernel
+    // hook). Only remove ones clearly OURS (mention confer) — never an unrelated skill. Exact dir
+    // names, so this never touches a current skill (e.g. confer-fleet is untouched by confer-fleetop).
+    for legacy in [
+        "watch",
+        "check-blackboard",
+        "confer-fleet-ops",
+        "confer-fleetop",
+        "confer-norms",
+    ] {
         let sk = dir.join(legacy).join("SKILL.md");
         if std::fs::read_to_string(&sk)
             .map(|s| s.contains("confer"))
