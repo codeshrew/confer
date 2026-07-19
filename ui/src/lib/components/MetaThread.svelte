@@ -111,13 +111,34 @@
   const focusedBody = $derived(focusedNode ? renderedBodyFor(focusedNode.msgId) : null);
 
   // Roving DOM focus, one element per trail row — keeps real keyboard focus
-  // in sync with `localFocusedId` so j/k/h/l work the instant a peek opens
-  // (or the focused node changes) without the reader having to Tab in or
-  // click first.
+  // in sync with `localFocusedId` while the operator is ACTUALLY navigating
+  // WITHIN this pane (j/k/h/l, once thread-peek already holds pane focus).
+  //
+  // keyboard-architecture-pass BUG FIX (found live: focus the Chat stream,
+  // press j/k — after the FIRST move it silently jumps into the meta-
+  // thread, and every subsequent j/k moves the trail instead of the
+  // stream). Root cause: clicking/selecting a stream message opens/updates
+  // this peek as a SIDE EFFECT — that's a content sync, not the operator
+  // asking to navigate here — but this effect used to call `.focus()`
+  // unconditionally on every `focusedNode` change, including that one. The
+  // real `.focus()` call fires a real `focusin` event, which
+  // paneFocus.syncFromFocusEvent (bound once on window) reads as "the
+  // operator moved into thread-peek" and flips the active pane — even
+  // though nothing the operator did asked for that.
+  //
+  // The fix is Stefan's stated principle: the ACTIVE PANE changes only via
+  // explicit nav (Ctrl+hjkl/F6/Ctrl+][) or a genuine click/Tab into a
+  // pane — never as a side effect of a content-sync `.focus()` call. So
+  // this only moves REAL focus when thread-peek is ALREADY the active
+  // pane (meaning a real focusin already put it there, or an explicit
+  // Ctrl+hjkl did) — an externally-driven selection change (a new peek
+  // opened from the stream) just updates the row's `here` highlight,
+  // which is entirely `class:here={isHere}` state already, no focus
+  // needed for that to render correctly.
   let rowEls = $state<Record<string, HTMLElement | null>>({});
   $effect(() => {
     const id = focusedNode?.msgId;
-    if (id) rowEls[id]?.focus();
+    if (id && paneFocus.focusedId === 'thread-peek') rowEls[id]?.focus();
   });
 
   function focusNode(msgId: string) {

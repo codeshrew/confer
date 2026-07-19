@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import MetaThread from './MetaThread.svelte';
+import { paneFocus } from '../paneFocus.svelte';
 import type { Agent, Message, ThreadNode } from '../types';
 
 function agent(id: string, display: string, color: string): Agent {
@@ -329,5 +330,61 @@ describe('MetaThread', () => {
     const zeros = screen.getAllByText('0');
     expect(zeros.length).toBe(3); // topics, messages, agents all zero
     expect(zeros[0]!.closest('.stat')).toBeInTheDocument();
+  });
+});
+
+describe('MetaThread — keyboard-architecture pass, item 0 bug fix: pane focus must not leak from content sync', () => {
+  // Regression for the live bug: focus the Chat stream, press j/k — after
+  // the FIRST move it silently jumped into the meta-thread (every
+  // subsequent j/k moved the trail, not the stream). Root cause: a stream
+  // selection change opens/updates this peek as a SIDE EFFECT, and the old
+  // roving-row-focus effect called real `.focus()` on every such change —
+  // which paneFocus.syncFromFocusEvent (bound on window, not present in
+  // this isolated unit test) reads as "the operator moved into
+  // thread-peek." Simulated directly here via the real paneFocus singleton
+  // (a mock 'stream' pane, explicitly unregistered at the end of the test
+  // that adds one — it's a shared module instance, real state must not
+  // leak into other tests).
+
+  it('does NOT steal real DOM focus when the selection changes while a DIFFERENT pane is active', () => {
+    const streamEl = document.createElement('div');
+    streamEl.tabIndex = -1;
+    document.body.appendChild(streamEl);
+    const stopStream = paneFocus.register({
+      id: 'stream',
+      label: 'Chat stream',
+      el: streamEl,
+      getRect: () => ({ top: 0, left: 0, width: 100, height: 100 }),
+    });
+    paneFocus.focus('stream');
+    expect(document.activeElement).toBe(streamEl);
+
+    const thread = [node('m1', 'reader', 'reader'), node('m2', 'pipeline', 'reader')];
+    render(MetaThread, { thread, agents: [reader, pipeline], focusedMsgId: 'm1' });
+
+    // MetaThread mounted (registered itself as 'thread-peek'), but nothing
+    // EXPLICIT navigated into it — 'stream' must still hold both the
+    // active-pane state AND real DOM focus.
+    expect(paneFocus.focusedId).toBe('stream');
+    expect(document.activeElement).toBe(streamEl);
+
+    stopStream();
+    streamEl.remove();
+  });
+
+  it('DOES move real DOM focus onto the newly-focused row once thread-peek is already the active pane', async () => {
+    const thread = [node('root', 'pipeline', 'reader'), node('reply', 'reader', 'reader', 'x')];
+    const { container } = render(MetaThread, { thread, agents: [reader, pipeline], focusedMsgId: 'root' });
+
+    // Nothing else registered in this test — thread-peek becomes the sole/
+    // default active pane on mount (paneFocus's own "first registrant wins"
+    // rule), matching a genuine "operator is already in the peek" state.
+    expect(paneFocus.focusedId).toBe('thread-peek');
+
+    const user = userEvent.setup();
+    (container.querySelector('.mt') as HTMLElement).focus();
+    await user.keyboard('j');
+
+    expect(within(screen.getByTestId('peek-focused')).getByText('Reader')).toBeInTheDocument();
   });
 });

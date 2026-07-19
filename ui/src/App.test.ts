@@ -270,6 +270,51 @@ describe('App — keyboard-architecture pass: Layer 1 (Ctrl pane focus)', () => 
   });
 });
 
+describe('App — keyboard-architecture pass, item 0 bug fix: pane focus must not leak from stream into the peek', () => {
+  it('clicking a stream message opens the peek (a content-sync side effect), but the active pane stays "stream" — j/k×3 keeps moving the stream selection, not the trail', async () => {
+    appState.drawer = 'none';
+    appState.view = 'chat';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+    await findHubRail();
+
+    // Clicking a message both selects it AND is a genuine trusted click —
+    // real focus lands on the row (inside .stream), and per "clicking a
+    // pane focuses it" the active pane becomes "stream". This ALSO opens
+    // the peek (MetaThread mounts) as a side effect of selection — exactly
+    // the scenario that used to silently steal focus (MetaThread's old
+    // roving-row-focus effect firing unconditionally on mount).
+    const noteText = /canaried 0.7.3/;
+    await user.click(await screen.findByText(noteText));
+    await screen.findByTestId('thread-peek');
+    await waitFor(() => expect(screen.getByTestId('focus-chip')).toHaveTextContent('Chat stream'));
+
+    const firstSelected = appState.selectedMessage?.id;
+    await user.keyboard('j');
+    // Still "stream" — the peek update from the new selection (each j
+    // press re-opens/updates the peek on the newly-selected message) must
+    // not have flipped the active pane. This is THE regression: before the
+    // fix, this first `j` was exactly where focus silently jumped away.
+    expect(screen.getByTestId('focus-chip')).toHaveTextContent('Chat stream');
+
+    await user.keyboard('j');
+    await user.keyboard('j');
+    // The pane held for all three presses — not just the first one.
+    expect(screen.getByTestId('focus-chip')).toHaveTextContent('Chat stream');
+
+    // And it's genuinely the STREAM's own bare-key vocab firing (not the
+    // peek's j/k, which would move the trail instead): the clicked note is
+    // the last message in the topic, so `j` clamped at the end — `k` (still
+    // within the stream's own keydown, still real focus never having left
+    // it) proves the selection actually moves, not just that the chip text
+    // didn't change.
+    await user.keyboard('k');
+    expect(appState.selectedMessage?.id).not.toBe(firstSelected);
+    expect(screen.getByTestId('focus-chip')).toHaveTextContent('Chat stream');
+  });
+});
+
 describe('App — piece 2 workspace tint: the active hub\'s real tier', () => {
   it('tints the workspace "home" for the own-tier default hub, with no world-pill (home is the silent default)', async () => {
     appState.drawer = 'none';

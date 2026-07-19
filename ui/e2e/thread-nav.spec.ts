@@ -75,6 +75,27 @@ test('"f" opens the focus reader on the focused message; j/k walk the thread; f/
   await expect(reader).not.toBeVisible();
 });
 
+test('item 0 bug fix: clicking a stream message opens the peek, but active pane focus stays "stream" — j/k×3 keeps moving the stream, not the trail', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+
+  const chip = page.getByTestId('focus-chip');
+  await page.getByText(/canaried 0.7.3/).first().click();
+
+  // Clicking a message opens the peek as a side effect of selection — the
+  // exact scenario that used to silently steal pane focus.
+  await expect(page.getByTestId('thread-peek')).toBeVisible();
+  await expect(chip).toHaveText(/Chat stream/);
+
+  await page.keyboard.press('j');
+  // Still "stream" after the first move — this is where it used to jump.
+  await expect(chip).toHaveText(/Chat stream/);
+  await page.keyboard.press('j');
+  await page.keyboard.press('j');
+  await expect(chip).toHaveText(/Chat stream/);
+});
+
 test('"y" copies the focused message\'s full id, in both the focus reader and the peek', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('hub-rail').getByText('agent-coord').waitFor();
