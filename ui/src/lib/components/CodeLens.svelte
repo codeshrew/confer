@@ -14,7 +14,7 @@
   import { codeState } from '../stores.svelte';
   import { fileKey, groupRefHitsByFile } from '../codeTree';
   import { formatAge } from '../format';
-  import { buildGutterEntries, gutterColumnCount, hitColorVar, type GutterEntry } from '../codeGutter';
+  import { buildGutterEntries, entryColorVar, gutterColumnCount, type GutterEntry } from '../codeGutter';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
   import FileIcon from './FileIcon.svelte';
@@ -37,9 +37,16 @@
      * (re)loads, so the host can mirror it into the right rail's
      * `ReverseIndexPanel` repo-mode, same contract as `onFileRefs`. */
     onRepoRefs?: (repo: string, hits: RefHit[]) => void;
+    /** Piece 11 Phase 2 (post-verify fix) — the scope currently open in the
+     * Phase-1 anchored reader (App.svelte's own `refContext`, passed straight
+     * through), so the gutter can show WHICH range is active — mock 11/12's
+     * `.cl.r.act`/`.br.act` treatment. `null`/a different repo+path than the
+     * active file means nothing here is active (the reader is showing a
+     * DIFFERENT file, or nothing at all). */
+    activeScope?: { repo: string; path: string | null; range: [number, number] | null } | null;
   }
 
-  let { hub, agents = [], onOpenRefs, onFileRefs, onRepoRefs }: Props = $props();
+  let { hub, agents = [], onOpenRefs, onFileRefs, onRepoRefs, activeScope = null }: Props = $props();
 
   const s = $derived(codeState.forHub(hub));
 
@@ -102,6 +109,19 @@
   const wholeFileHits = $derived(fileRefs.filter((h) => h.range === null));
   const gutterEntries = $derived(buildGutterEntries(fileRefs));
   const gutterColumns = $derived(gutterColumnCount(gutterEntries));
+
+  // Piece 11 Phase 2 (post-verify fix) — is the Phase-1 reader currently
+  // showing THIS file's scope at all? (A reader open on a different
+  // file/repo means nothing here is active.)
+  const isActiveFileScope = $derived(!!active && !!activeScope && activeScope.repo === active.repo && activeScope.path === active.path);
+  const fileLaneActive = $derived(isActiveFileScope && activeScope!.range === null);
+  /** The exact range (as a "start-end" key, matching `buildGutterEntries`'
+   * own grouping key) currently open in the reader — `null` when the
+   * reader isn't scoped to a specific range in this file (whole-file, a
+   * different file, or closed). */
+  const activeEntryKey = $derived(
+    isActiveFileScope && activeScope!.range ? `${activeScope!.range[0]}-${activeScope!.range[1]}` : null
+  );
 
   interface LineSegment {
     entry: GutterEntry;
@@ -329,8 +349,10 @@
           <div class="densefile">
             {#if wholeFileHits.length > 0}
               <!-- Piece 11 Phase 2 — the file-lane: whole-file conversations
-                   live HERE, never pinned to (or cluttering) any one line. -->
-              <button type="button" class="filelane" onclick={clickFileLane} data-testid="file-lane">
+                   live HERE, never pinned to (or cluttering) any one line.
+                   `act` (post-verify fix) when the Phase-1 reader is
+                   currently showing this whole-file scope. -->
+              <button type="button" class="filelane" class:act={fileLaneActive} onclick={clickFileLane} data-testid="file-lane">
                 <span class="fl-ico">▤</span>
                 <span class="fl-tx"
                   ><b>{wholeFileHits.length} conversation{wholeFileHits.length === 1 ? '' : 's'}</b> about the whole file</span
@@ -341,20 +363,23 @@
               {#each lines as line (line.n)}
                 {@const cols = lineColumns.get(line.n) ?? []}
                 {@const tabs = tabsByLine.get(line.n) ?? []}
-                <div class="cl" class:hot={cols.some((c) => c !== null)}>
+                {@const rowActive = cols.some((seg) => !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`)}
+                <div class="cl" class:hot={cols.some((c) => c !== null)} class:act={rowActive}>
                   <span class="g">
                     {#each cols as seg, ci (ci)}
+                      {@const segActive = !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`}
                       <span class="gcol">
                         {#if seg}
                           {#if seg.pos === 'tick'}
-                            <span class="tick" class:drift={seg.entry.drift} style="--bc:{hitColorVar(seg.entry.hits[0]!)}"></span>
+                            <span class="tick" class:drift={seg.entry.drift} class:act={segActive} style="--bc:{entryColorVar(seg.entry)}"></span>
                           {:else}
                             <span
                               class="br"
                               class:s={seg.pos === 'start'}
                               class:e={seg.pos === 'end'}
                               class:drift={seg.entry.drift}
-                              style="--bc:{hitColorVar(seg.entry.hits[0]!)}"
+                              class:act={segActive}
+                              style="--bc:{entryColorVar(seg.entry)}"
                             ></span>
                           {/if}
                         {/if}
@@ -374,7 +399,8 @@
                           type="button"
                           class="tab"
                           class:drift={entry.drift}
-                          style="--tc:{hitColorVar(entry.hits[0]!)}"
+                          class:act={activeEntryKey === `${entry.range[0]}-${entry.range[1]}`}
+                          style="--tc:{entryColorVar(entry)}"
                           title={tabTitle(entry)}
                           onclick={() => clickEntry(entry)}
                           data-testid="gutter-tab"
@@ -491,6 +517,15 @@
   .densefile .cl.hot {
     background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
+  /* Piece 11 Phase 2 (post-verify fix) — the range currently open in the
+     Phase-1 reader (mock 11/12's `.cl.r.act`): a stronger tint than the
+     plain "this line has a conversation" `.hot` state. */
+  .densefile .cl.act {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .densefile .cl.act:hover {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
 
   /* Piece 11 Phase 2 — the file-lane: whole-file conversations, never
      pinned to (or cluttering) any one line. */
@@ -510,6 +545,10 @@
   }
   .filelane:hover {
     background: color-mix(in srgb, var(--state-metric) 15%, transparent);
+  }
+  .filelane.act {
+    background: color-mix(in srgb, var(--state-metric) 22%, transparent);
+    box-shadow: inset 3px 0 0 var(--state-metric);
   }
   .filelane .fl-ico {
     font: 700 11px/1 var(--mono);
@@ -578,6 +617,11 @@
   .br.drift::after {
     background: repeating-linear-gradient(0deg, var(--bc) 0 4px, transparent 4px 7px);
   }
+  /* The range currently open in the reader (mock's `.br.act`) — a
+     stronger fill, same as `.cl.act` above. */
+  .br.act::before {
+    background: color-mix(in srgb, var(--bc) 40%, transparent);
+  }
   /* A single-line hit — "shape = scope": a tick, not a bracket. */
   .tick {
     position: absolute;
@@ -588,6 +632,9 @@
     top: 50%;
     transform: translateY(-50%);
     background: var(--bc);
+  }
+  .tick.act {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bc) 50%, transparent);
   }
   /* A tick's own drift treatment — a bracket has an edge to dash, a tick
      is a single point, so drift reads as a dashed OUTLINE ring instead of
@@ -622,6 +669,10 @@
   }
   .tab.drift {
     border-style: dashed;
+  }
+  .tab.act {
+    background: color-mix(in srgb, var(--tc, var(--accent)) 28%, var(--panel));
+    color: var(--text);
   }
   .ln {
     width: 24px;

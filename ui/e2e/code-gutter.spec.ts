@@ -76,6 +76,27 @@ test('law #3 — the drift marker shows ONLY on a real staleness "changed" hit, 
   await expect(noteTab).not.toHaveClass(/drift/);
 });
 
+test('post-verify fix (Jarvis) — the active-range highlight: opening a range tab lights up its tab, tick/bracket, and code line', async ({ page }) => {
+  // On file load, `onFileRefs` fires and the reader opens on the WHOLE-FILE
+  // scope automatically (App.svelte's `onCodeFileRefs`) — so the file-lane
+  // starts `.act`, before any range tab is ever clicked.
+  const lane = page.getByTestId('file-lane');
+  await expect(lane).toHaveClass(/act/);
+
+  const noteTab = page.getByTestId('gutter-tab').filter({ hasText: '3 ·' });
+  await noteTab.click();
+
+  // Clicking the range tab narrows the reader to THIS range — the
+  // file-lane is no longer the active scope, but the clicked tab, its
+  // bracket, and line 44's row all now read `.act`.
+  await expect(lane).not.toHaveClass(/act/);
+  await expect(noteTab).toHaveClass(/act/);
+
+  const line44 = page.locator('.cl').filter({ has: page.locator('.ln', { hasText: '44' }) });
+  await expect(line44).toHaveClass(/act/);
+  await expect(line44.locator('.br.act')).toHaveCount(1);
+});
+
 test('renders correctly in both themes', async ({ page }) => {
   await expect(page.getByTestId('file-lane')).toBeVisible();
   await expect(page.getByTestId('gutter-tab').filter({ hasText: '3 ·' })).toBeVisible();

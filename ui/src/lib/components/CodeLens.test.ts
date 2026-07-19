@@ -490,6 +490,94 @@ describe('CodeLens — piece 11 Phase 2: the powered gutter', () => {
     expect(tab.textContent).toBe('1 · RE');
     expect(tab.getAttribute('title')).toContain('Reader');
   });
+
+  it('post-verify fix — a mixed-type entry (a resolved `done` hit alongside an open note) does NOT render green "in-flight"', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    // Same identical range, two hits: a resolved `done` (would be
+    // state-flight GREEN under the OLD piece-9-reused mapping) and a
+    // note (state-metric teal, and the more-actionable of the two per the
+    // priority order since 'note' outranks 'resolved'). The entry must
+    // read teal, never the done hit's green.
+    vi.mocked(api.getRefs).mockResolvedValue([{ ...hitOn(44), msgType: 'done' }, { ...hitOn(44), msgId: 'msg_44b', msgType: 'note' }]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+    const tick = container.querySelector('.tick') as HTMLElement;
+    expect(tick.style.getPropertyValue('--bc')).toBe('var(--state-metric)');
+  });
+
+  describe('post-verify fix — the active-range highlight (`activeScope`)', () => {
+    it('the range tab and its bracket/tick show `.act` when `activeScope` matches this file + range exactly', async () => {
+      vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+      vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+      vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+      const { container } = render(CodeLens, {
+        hub: 'agent-coord',
+        activeScope: { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: [44, 44] },
+      });
+
+      await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+      expect(container.querySelector('[data-testid="gutter-tab"]')).toHaveClass('act');
+      expect(container.querySelector('.tick')).toHaveClass('act');
+    });
+
+    it('NO `.act` when activeScope names a different range in the same file', async () => {
+      vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+      vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+      vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+      const { container } = render(CodeLens, {
+        hub: 'agent-coord',
+        activeScope: { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: [45, 45] },
+      });
+
+      await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+      expect(container.querySelector('[data-testid="gutter-tab"]')).not.toHaveClass('act');
+    });
+
+    it('NO `.act` when activeScope names a DIFFERENT file entirely', async () => {
+      vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+      vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+      vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+      const { container } = render(CodeLens, {
+        hub: 'agent-coord',
+        activeScope: { repo: 'wealdlore', path: 'pipeline/plates.py', range: [44, 44] },
+      });
+
+      await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+      expect(container.querySelector('[data-testid="gutter-tab"]')).not.toHaveClass('act');
+    });
+
+    it('the file-lane shows `.act` when activeScope is this file with range:null (whole-file scope open)', async () => {
+      vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+      vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+      vi.mocked(api.getRefs).mockResolvedValue([wholeFileHit()]);
+
+      const { container } = render(CodeLens, {
+        hub: 'agent-coord',
+        activeScope: { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: null },
+      });
+
+      await waitFor(() => expect(container.querySelector('[data-testid="file-lane"]')).toBeInTheDocument());
+      expect(container.querySelector('[data-testid="file-lane"]')).toHaveClass('act');
+    });
+
+    it('no activeScope at all (reader closed) means nothing is active', async () => {
+      vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+      vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+      vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), wholeFileHit()]);
+
+      const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+      await waitFor(() => expect(container.querySelector('[data-testid="gutter-tab"]')).toBeInTheDocument());
+      expect(container.querySelector('[data-testid="gutter-tab"]')).not.toHaveClass('act');
+      expect(container.querySelector('[data-testid="file-lane"]')).not.toHaveClass('act');
+    });
+  });
 });
 
 describe('CodeLens — repo rollup (design/44 §6 item 2.4)', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildGutterEntries, gutterColumnCount, hitColorVar } from './codeGutter';
+import { buildGutterEntries, entryColorVar, gutterColumnCount, hitColorVar } from './codeGutter';
 import type { RefHit } from './types';
 
 function hit(overrides: Partial<RefHit> = {}): RefHit {
@@ -49,13 +49,95 @@ describe('hitColorVar', () => {
     expect(hitColorVar(hit({ msgType: 'request', requestStatus: null }))).toBe('var(--state-open)');
   });
 
-  it('reuses the SAME event palette (piece 9) for claim/done/error/blocked/defer/supersede', () => {
+  it('reuses the SAME event palette (piece 9) for claim/error/blocked/defer/supersede — but NOT done', () => {
     expect(hitColorVar(hit({ msgType: 'claim' }))).toBe('var(--state-flight)');
-    expect(hitColorVar(hit({ msgType: 'done' }))).toBe('var(--state-flight)');
     expect(hitColorVar(hit({ msgType: 'blocked' }))).toBe('var(--state-stuck)');
     expect(hitColorVar(hit({ msgType: 'error' }))).toBe('var(--state-stuck)');
     expect(hitColorVar(hit({ msgType: 'defer' }))).toBe('var(--state-unowned)');
     expect(hitColorVar(hit({ msgType: 'supersede' }))).toBe('var(--muted)');
+  });
+
+  it('post-verify fix (Jarvis) — a `done` hit reads GREY (resolved), not piece 9\'s "just happened" GREEN', () => {
+    expect(hitColorVar(hit({ msgType: 'done' }))).toBe('var(--state-done)');
+    // Same grey a resolved REQUEST already gets — one consistent
+    // "resolved" meaning across msgTypes, not two different hues.
+    expect(hitColorVar(hit({ msgType: 'request', requestStatus: 'DONE' }))).toBe('var(--state-done)');
+  });
+});
+
+describe('entryColorVar', () => {
+  it('a single-hit entry just uses that hit\'s own color', () => {
+    const entry = { hits: [hit({ msgType: 'note' })], range: [44, 49] as [number, number], isTick: false, column: 0, drift: false };
+    expect(entryColorVar(entry)).toBe('var(--state-metric)');
+  });
+
+  it('post-verify fix (Jarvis) — a mixed-type entry reads the MOST-ACTIONABLE color, not hits[0]\'s', () => {
+    // [done, resolved-request, note] — nothing here is genuinely OPEN, but
+    // the note outranks the two resolved hits, so the entry reads the
+    // note's teal — never the resolved grey those two alone would give.
+    const entry = {
+      hits: [
+        hit({ msgId: 'a', msgType: 'done' }),
+        hit({ msgId: 'b', msgType: 'request', requestStatus: 'DONE' }),
+        hit({ msgId: 'c', msgType: 'note' }),
+      ],
+      range: [44, 49] as [number, number],
+      isTick: false,
+      column: 0,
+      drift: false,
+    };
+    expect(entryColorVar(entry)).toBe('var(--state-metric)');
+  });
+
+  it('a blocked hit ALWAYS wins the entry color, regardless of hit order', () => {
+    const withBlockedFirst = {
+      hits: [hit({ msgId: 'a', msgType: 'blocked' }), hit({ msgId: 'b', msgType: 'note' }), hit({ msgId: 'c', msgType: 'done' })],
+      range: [1, 5] as [number, number],
+      isTick: false,
+      column: 0,
+      drift: false,
+    };
+    const withBlockedLast = {
+      hits: [hit({ msgId: 'c', msgType: 'done' }), hit({ msgId: 'b', msgType: 'note' }), hit({ msgId: 'a', msgType: 'blocked' })],
+      range: [1, 5] as [number, number],
+      isTick: false,
+      column: 0,
+      drift: false,
+    };
+    expect(entryColorVar(withBlockedFirst)).toBe('var(--state-stuck)');
+    expect(entryColorVar(withBlockedLast)).toBe('var(--state-stuck)');
+  });
+
+  it('the exact bug Jarvis caught: [note, note, resolved-request, done] never reads green "in-flight" from the done hit', () => {
+    const entry = {
+      hits: [
+        hit({ msgId: 'a', msgType: 'note' }),
+        hit({ msgId: 'b', msgType: 'note' }),
+        hit({ msgId: 'c', msgType: 'request', requestStatus: 'DONE' }),
+        hit({ msgId: 'd', msgType: 'done' }),
+      ],
+      range: [1, 5] as [number, number],
+      isTick: false,
+      column: 0,
+      drift: false,
+    };
+    expect(entryColorVar(entry)).not.toBe('var(--state-flight)');
+    expect(entryColorVar(entry)).toBe('var(--state-metric)');
+  });
+
+  it('an entry with genuinely open work reads that color even alongside resolved/note hits', () => {
+    const entry = {
+      hits: [
+        hit({ msgId: 'a', msgType: 'note' }),
+        hit({ msgId: 'b', msgType: 'done' }),
+        hit({ msgId: 'c', msgType: 'request', requestStatus: 'OPEN' }),
+      ],
+      range: [1, 5] as [number, number],
+      isTick: false,
+      column: 0,
+      drift: false,
+    };
+    expect(entryColorVar(entry)).toBe('var(--state-open)');
   });
 });
 
