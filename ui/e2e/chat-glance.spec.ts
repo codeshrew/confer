@@ -57,6 +57,33 @@ test('the sticky day header stays pinned to the top of the stream while scrollin
   expect(afterScroll?.y).toBeCloseTo(beforeScroll?.y ?? -1, 0);
 });
 
+test('the sticky day bar sits flush — no gap above it (crumb header) or to its right (the scrollbar track), with a REAL scrollbar present', async ({ page }) => {
+  // A short viewport forces the stream to overflow reliably, and
+  // Playwright's bundled Chromium renders real (non-overlay) scrollbars —
+  // exercising exactly the gap this polish pass fixed (Stefan spotted it
+  // live: the bar's negative right margin only cancelled .stream's own
+  // padding, not the scrollbar TRACK sitting inside it too).
+  await page.setViewportSize({ width: 1200, height: 500 });
+  await page.getByRole('button', { name: 'Full', exact: true }).click();
+  await page.getByText('Wired it').first().waitFor();
+
+  const metrics = await page.evaluate(() => {
+    const stream = document.querySelector('.stream')!;
+    const bar = document.querySelector('.daybreak')!;
+    const sRect = stream.getBoundingClientRect();
+    const bRect = bar.getBoundingClientRect();
+    return {
+      hasScrollbar: stream.scrollHeight > stream.clientHeight,
+      topGap: bRect.top - sRect.top,
+      rightGap: sRect.right - bRect.right,
+    };
+  });
+
+  expect(metrics.hasScrollbar).toBe(true); // sanity — the scenario this test exists for
+  expect(metrics.topGap).toBeCloseTo(0, 0);
+  expect(metrics.rightGap).toBeCloseTo(0, 0);
+});
+
 test('the focus reader\'s prev/next uses the minimap\'s dot + kind vocabulary', async ({ page }) => {
   await page.getByText(/canaried 0.7.3/).first().click();
   await page.keyboard.press('f');

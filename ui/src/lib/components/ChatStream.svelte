@@ -172,6 +172,35 @@
 
   // --- scroll behavior -------------------------------------------------
   let streamEl: HTMLDivElement | undefined = $state();
+
+  // piece 4, item 3 polish — the sticky day bar's negative right margin
+  // cancels .stream's own 20px padding to go full-bleed, but a REAL
+  // scrollbar (when content overflows) sits INSIDE that padding too and
+  // was left uncovered — a visible gap to the bar's right that only
+  // showed up once there was actually enough to scroll. Scrollbar width
+  // varies by OS/browser (0 on macOS overlay scrollbars, ~15-17px on
+  // Windows/Linux) — there's no reliable CSS constant for it, so it's
+  // MEASURED (offsetWidth includes the scrollbar track, clientWidth
+  // doesn't) and exposed as a CSS var the bar's own margin reads.
+  // ResizeObserver's content-box reporting reflects the scrollbar-adjusted
+  // box, so this re-fires both on window resize AND whenever new content
+  // toggles the scrollbar on/off — no manual dependency list needed.
+  let scrollbarWidth = $state(0);
+  $effect(() => {
+    // jsdom (vitest) has no ResizeObserver — degrade to "no measurement,
+    // 0px" rather than crash; --sb-w simply falls back to its own 0px
+    // default in that environment, same as it would on a scrollbar-less
+    // (e.g. touch) device.
+    if (!streamEl || typeof ResizeObserver === 'undefined') return;
+    const el = streamEl;
+    const measure = () => {
+      scrollbarWidth = el.offsetWidth - el.clientWidth;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
   // Whether the view should auto-follow new content at the bottom — true on
   // a fresh hub/topic load and while the reader hasn't scrolled away from
   // the bottom; false once they've scrolled up to read history (so a live
@@ -371,6 +400,7 @@
   role="toolbar"
   aria-orientation="vertical"
   tabindex="-1"
+  style="--sb-w: {scrollbarWidth}px"
   bind:this={streamEl}
   onscroll={handleScroll}
   onkeydown={handleStreamKeydown}
@@ -433,7 +463,18 @@
   .stream {
     overflow-y: auto;
     flex: 1;
-    padding: 18px 20px 40px;
+    /* No top padding (piece 4, item 3 polish) — that gap used to sit
+       between the crumb header and the sticky day bar (and reappear
+       above it once pinned, since sticky respects the scrollport's own
+       padding). The bar's own margin-bottom (16px) already gives the
+       first row its breathing room from below, so nothing above is lost. */
+    padding: 0 20px 40px;
+    /* Reserves the scrollbar's track consistently (no layout shift when
+       content grows past the fold) — the bar's own right margin below
+       still needs the MEASURED width (--sb-w) on top of this, since the
+       reserved gutter is what makes a scrollbar possible here at all,
+       not a fixed, known-in-advance pixel amount. */
+    scrollbar-gutter: stable;
   }
   .older-affordance {
     display: flex;
@@ -463,7 +504,12 @@
      rule-flanked divider, which would show scrolled content through its
      gaps once pinned) — negative margins cancel .stream's own horizontal
      padding so it spans edge-to-edge while sticky, matching padding
-     re-applied to keep the label where it visually sat before. */
+     re-applied to keep the label where it visually sat before. The RIGHT
+     margin also cancels the measured scrollbar width (--sb-w, set on
+     .stream from streamEl.offsetWidth - clientWidth) — the scrollbar's
+     own track sits INSIDE that padding too, so -20px alone only reached
+     its left edge, leaving the track itself as an uncovered gap whenever
+     content actually overflowed enough to show one. */
   .daybreak {
     position: sticky;
     top: 0;
@@ -471,8 +517,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 0 -20px 16px;
-    padding: 7px 20px;
+    margin: 0 calc(-20px - var(--sb-w, 0px)) 16px -20px;
+    padding: 7px calc(20px + var(--sb-w, 0px)) 7px 20px;
     background: color-mix(in srgb, var(--panel) 94%, transparent);
     backdrop-filter: blur(6px);
     border-bottom: 1px solid var(--border);
