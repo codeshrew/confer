@@ -34,6 +34,13 @@ pub struct Role {
     /// can verify this role's signed commits. See DESIGN.md.
     #[serde(default)]
     pub pubkey: Option<String>,
+    /// The FULL markdown BODY below the YAML frontmatter of `roles/<id>.md` — the freeform
+    /// role-profile prose (`desc` is only the one-line frontmatter summary). NOT a YAML field:
+    /// it's the text after the closing `---`, captured by `parse_role`, so it's `#[serde(skip)]`
+    /// (never deserialized/serialized) and `None` for the legacy `roles.toml` path or a card with
+    /// no body. Empty/whitespace-only body normalizes to `None`.
+    #[serde(skip)]
+    pub profile: Option<String>,
 }
 
 /// The role's published SSH public key, if any.
@@ -94,6 +101,7 @@ pub fn load(root: &Path) -> Roster {
                             aliases: Vec::new(),
                             status: s("status"),
                             pubkey: None,
+                            profile: None, // legacy roles.toml has no markdown body
                         },
                     );
                 }
@@ -136,7 +144,8 @@ pub fn load(root: &Path) -> Roster {
     m
 }
 
-/// Parse a role card's YAML frontmatter (body is ignored / freeform notes).
+/// Parse a role card's YAML frontmatter, plus the freeform markdown body below it
+/// (surfaced as `Role.profile`; `desc` remains the one-line frontmatter summary).
 fn parse_role(text: &str) -> Option<Role> {
     // Strip a leading UTF-8 BOM before the fence-sniff — keep this identical to `parse_card` in
     // main.rs, so the read side and the write-side key guard can't disagree about whether a BOM'd
@@ -147,14 +156,27 @@ fn parse_role(text: &str) -> Option<Role> {
         return None;
     }
     let mut yaml = String::new();
+    let mut body = String::new();
+    let mut in_body = false;
     for line in lines {
-        if line.trim_end() == "---" {
-            break;
+        if !in_body && line.trim_end() == "---" {
+            in_body = true;
+            continue;
         }
-        yaml.push_str(line);
-        yaml.push('\n');
+        if in_body {
+            body.push_str(line);
+            body.push('\n');
+        } else {
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
     }
     let mut role: Role = serde_yaml::from_str(&yaml).ok()?;
+    // The body below the closing fence — empty/whitespace-only → None (a frontmatter-only card
+    // has no profile). Mirrors `parse_message`'s body split (schema.rs), so a role card and a
+    // message card treat "prose below the frontmatter" identically.
+    let trimmed = body.trim();
+    role.profile = (!trimmed.is_empty()).then(|| trimmed.to_string());
     // Re-derive `pubkey` through the SHARED classifier rather than trusting the typed
     // `Option<String>` deserialize, which stringifies a YAML bareword (`pubkey: true` → "true") that
     // the write-side guard refuses — the split let an attacker poison a peer's TOFU pin (red-team).
@@ -209,5 +231,18 @@ mod tests {
             parse_role("\u{FEFF}---\npubkey: ssh-ed25519 AAAA x\n---\n").unwrap().pubkey.as_deref(),
             Some("ssh-ed25519 AAAA x")
         );
+    }
+
+    #[test]
+    fn parse_role_captures_body_as_profile_but_frontmatter_only_is_none() {
+        // The markdown BODY below the closing fence becomes `profile` (distinct from the
+        // one-line `desc`); a frontmatter-only card, or a body that is only whitespace, → None.
+        let r = parse_role("---\ndisplay: Prosy\ndesc: one-liner\n---\n# Heading\n\nParagraph body.\n").unwrap();
+        assert_eq!(r.desc.as_deref(), Some("one-liner"));
+        assert_eq!(r.profile.as_deref(), Some("# Heading\n\nParagraph body."));
+        // Frontmatter-only (no closing fence content) → no profile.
+        assert_eq!(parse_role("---\ndisplay: Bare\n---\n").unwrap().profile, None);
+        // Closing fence present but body is whitespace-only → normalized to None.
+        assert_eq!(parse_role("---\ndisplay: Bare\n---\n\n   \n").unwrap().profile, None);
     }
 }

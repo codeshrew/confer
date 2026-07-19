@@ -180,6 +180,7 @@ mod tests {
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
             status: None,
             pubkey: None,
+            profile: None,
         }
     }
 
