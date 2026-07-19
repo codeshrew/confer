@@ -1,0 +1,171 @@
+<title>confer · chat glanceability & orientation</title>
+<style>
+  :root{
+    --bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--sticky:#1c2030;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1080px;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--sticky:#dde0ea;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--sticky:#1c2030;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;--shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--sticky:#dde0ea;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;--shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+  .lab{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+
+  .intro{margin-bottom:var(--phi3)}
+  .intro .eyebrow{color:var(--accent)}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.5rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:64ch;margin:0;font-size:.98rem}
+  .intro .tag{display:inline-block;margin-top:var(--phi1);font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.2rem .7rem}
+
+  .screen{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .chrome .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--muted-2);opacity:.6}
+  .chrome .url{margin-left:.4rem;font-family:var(--font-mono);font-size:.74rem;color:var(--muted);background:var(--bg-deep);padding:.18rem .6rem;border-radius:6px;border:1px solid var(--border-soft)}
+
+  .topbar{display:flex;align-items:center;gap:.7rem;padding:.55rem var(--phi1);border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:.8rem}
+  .topbar .crumb b{font-weight:640}
+  .density{margin-left:auto;display:flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .density button{font:600 .7rem var(--font-sans);padding:.25rem .7rem;background:transparent;color:var(--muted);border:0;cursor:pointer}
+  .density button.on{background:var(--accent);color:#0b0e17}
+
+  .streamwrap{max-height:520px;overflow-y:auto;position:relative;background:var(--bg)}
+  /* STICKY day header — always tells you which day you're in */
+  .day{position:sticky;top:0;z-index:5;background:var(--sticky);border-bottom:1px solid var(--border);
+    padding:.35rem var(--phi1);display:flex;align-items:center;gap:.6rem;backdrop-filter:blur(6px)}
+  .day .d{font-weight:640;font-size:.8rem}
+  .day .rel{font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+  .day .count{margin-left:auto;font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+
+  /* NEW marker — the direction/read cue */
+  .newmark{display:flex;align-items:center;gap:.6rem;margin:.5rem var(--phi1)}
+  .newmark .ln{height:1px;flex:1;background:color-mix(in srgb,var(--green) 45%,transparent)}
+  .newmark .t{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:var(--green)}
+
+  /* SUMMARY ROW — one line + chips, NO code blocks / ref cards */
+  .rows{padding:.35rem 0}
+  .row{display:grid;grid-template-columns:1.6rem 1fr auto;gap:.6rem;align-items:baseline;padding:.34rem var(--phi1);border-radius:0}
+  .row:hover{background:var(--surface)}
+  .row .av{width:1.6rem;height:1.6rem;border-radius:6px;display:grid;place-items:center;font:700 .62rem var(--font-mono);color:#0b0e17;align-self:center}
+  .row .rc{min-width:0;display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap}
+  .row .nm{font-weight:640;font-size:.82rem;flex:none}
+  .row .kd{font-family:var(--font-mono);font-size:.54rem;text-transform:uppercase;letter-spacing:.04em;padding:0 .28rem;border-radius:3px;border:1px solid var(--border);color:var(--muted);flex:none}
+  .row .kd.req{color:var(--blue);border-color:color-mix(in srgb,var(--blue) 40%,transparent)}
+  .row .kd.done{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent)}
+  .row .sx{font-size:.8rem;color:var(--fg-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+  .row .chips{display:flex;gap:.3rem;flex:none}
+  .chip{font-family:var(--font-mono);font-size:.58rem;padding:.05rem .32rem;border-radius:4px;border:1px solid var(--border);color:var(--muted);display:inline-flex;gap:.2rem;align-items:center}
+  .chip.code{color:var(--magenta);border-color:color-mix(in srgb,var(--magenta) 35%,transparent)}
+  .chip.ref{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 35%,transparent)}
+  .row .tm{font-family:var(--font-mono);font-size:.62rem;color:var(--muted-2);justify-self:end;align-self:center}
+  .row.mine{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+
+  .hint{padding:.5rem var(--phi1);font-size:.72rem;color:var(--muted);font-style:italic;border-top:1px dashed var(--border)}
+
+  /* prev/next inset — minimap-styled */
+  .aux{margin-top:var(--phi2);display:grid;grid-template-columns:1fr 1fr;gap:var(--phi2)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .card > .lab{display:block;margin-bottom:.7rem;color:var(--muted)}
+  .pn{display:flex;align-items:center;gap:.5rem;font-family:var(--font-mono);font-size:.72rem}
+  .pn .step{display:flex;align-items:center;gap:.4rem;padding:.3rem .5rem;border-radius:7px;border:1px solid var(--border);color:var(--fg-dim)}
+  .pn .step.cur{background:color-mix(in srgb,var(--accent) 12%,transparent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);color:var(--fg)}
+  .pn .step .kn{width:7px;height:7px;border-radius:50%}
+  .pn .step .kd2{font-size:.52rem;text-transform:uppercase;color:var(--muted)}
+  .pn .arrow{color:var(--muted-2)}
+  .before{font-family:var(--font-mono);font-size:.72rem;color:var(--muted);border:1px dashed var(--border);border-radius:7px;padding:.5rem .6rem}
+
+  .rationale{margin-top:var(--phi3)}
+  .rationale > .lab{display:block;margin-bottom:.5rem;color:var(--accent)}
+  .rationale h3{font-size:1.25rem;font-weight:640;margin:.2rem 0 var(--phi2);letter-spacing:-.01em;text-wrap:balance}
+  .moves{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--phi1)}
+  .move{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .move h4{margin:0 0 .4rem;font-size:.94rem;font-weight:640}
+  .move h4 .g{color:var(--accent);font-family:var(--font-mono);margin-right:.3rem}
+  .move p{margin:0;font-size:.85rem;color:var(--fg-dim)}
+  footer{margin-top:var(--phi3);font-size:.75rem;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:var(--phi2)}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · chat glanceability & time-orientation (piece ④)</span>
+    <h1>Always know which day, and read the whole stream in one pass.</h1>
+    <p>Two fixes for "I can't tell what I'm looking at": a <b>sticky day header</b> that pins as you scroll
+      so the current day is always on screen, and a <b>summary density that's actually a summary</b> —
+      one line plus small chips, not shrunk-down full messages with code blocks still in them.</p>
+    <span class="tag mono">prototype · summary density · sticky day · scroll to see it pin</span>
+  </div>
+
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">confer-lab · chat · #review-080</span></div>
+    <div class="topbar">
+      <span class="crumb">◆ <b>#review-080</b></span>
+      <span class="density"><button class="on">Summary</button><button>Full</button></span>
+    </div>
+    <div class="streamwrap">
+      <!-- day 1 sticky header -->
+      <div class="day"><span class="d">Yesterday</span><span class="rel">Jul 17</span><span class="count">6 messages</span></div>
+      <div class="rows">
+        <div class="row"><span class="av" style="background:var(--green)">HE</span><div class="rc"><span class="nm">Herald</span><span class="kd req">req</span><span class="sx">0.8.0 review + test: the serve dashboard + the ref/patch substrate — pull review/0.8.0…</span><span class="chips"><span class="chip ref">◆ 4</span></span></div><span class="tm">8:56 AM</span></div>
+        <div class="row mine"><span class="av" style="background:var(--cyan)">JA</span><div class="rc"><span class="nm">Jarvis</span><span class="kd">note</span><span class="sx">0.8.0 review: GREEN build + 16/16 serve tests; 1 P0, 2×P1 patch-gate bypasses…</span><span class="chips"><span class="chip ref">◆ 6</span></span></div><span class="tm">9:10 AM</span></div>
+        <div class="row"><span class="av" style="background:var(--green)">HE</span><div class="rc"><span class="nm">Herald</span><span class="kd">note</span><span class="sx">all P0/P1/P2 fixed on review/0.8.0 (ba44522) — ValidatedPatch + ServeScope…</span><span class="chips"><span class="chip code">⟨⟩ 1</span><span class="chip ref">◆ 3</span></span></div><span class="tm">11:21 AM</span></div>
+      </div>
+      <!-- day 2 sticky header — the previous one scrolls up, this pins -->
+      <div class="day"><span class="d">Today</span><span class="rel">Jul 18</span><span class="count">3 messages</span></div>
+      <div class="newmark"><span class="ln"></span><span class="t">new · since you last looked</span><span class="ln"></span></div>
+      <div class="rows">
+        <div class="row"><span class="av" style="background:var(--green)">HE</span><div class="rc"><span class="nm">Herald</span><span class="kd">note</span><span class="sx">Boundary set: you own dashboard ui/, I stay backend+CLI. Your trust-tier asks…</span><span class="chips"><span class="chip code">⟨⟩ 1</span></span></div><span class="tm">5:09 PM</span></div>
+        <div class="row mine"><span class="av" style="background:var(--cyan)">JA</span><div class="rc"><span class="nm">Jarvis</span><span class="kd">note</span><span class="sx">Field shapes (piece 1 landed): project per-hub tier + sync on /api/hubs…</span><span class="chips"><span class="chip ref">◆ 2</span></span></div><span class="tm">5:41 PM</span></div>
+        <div class="row"><span class="av" style="background:var(--green)">HE</span><div class="rc"><span class="nm">Herald</span><span class="kd done">done</span><span class="sx">Shipped: tier + sync on /api/hubs AND /api/overview. review/0.8.0 @071e027…</span></div><span class="tm">5:38 PM</span></div>
+      </div>
+      <div class="hint">Summary shows one line + chips (◆ refs · ⟨⟩ code) — the blocks live in Full. The day header above stays pinned while you scroll, so you're never lost in time.</div>
+    </div>
+  </div>
+
+  <div class="aux">
+    <div class="card">
+      <span class="lab">prev / next — borrowing the minimap language</span>
+      <div class="pn">
+        <span class="step"><span class="kn" style="background:var(--cyan)"></span><span class="kd2">note</span>BX4VP1</span>
+        <span class="arrow">‹</span>
+        <span class="step cur"><span class="kn" style="background:var(--green)"></span><span class="kd2">note</span>WKAZ4E</span>
+        <span class="arrow">›</span>
+        <span class="step"><span class="kn" style="background:var(--cyan)"></span><span class="kd2">note</span>VQWX</span>
+      </div>
+      <div style="margin-top:.7rem"><span class="lab" style="font-size:.55rem">was</span><div class="before" style="margin-top:.3rem">◂ 01KXVQRB…  01KXVQV6…  01KXVQWX… ▸  &nbsp;j k prev·next</div></div>
+      <p style="font-size:.82rem;color:var(--fg-dim);margin:.7rem 0 0">Same control, now speaking the map's dot + kind language — you can see you're stepping between two notes and where the current one sits.</p>
+    </div>
+    <div class="card">
+      <span class="lab">what Full density adds back</span>
+      <p style="font-size:.85rem;color:var(--fg-dim);margin:0 0 .5rem">Flip to <b>Full</b> and the same rows expand to the complete message — rendered markdown, inline refs anchored in the prose, and the actual code blocks in the code view. Summary is for <i>scanning</i>; Full is for <i>reading in place</i>; <span class="mono">f</span> is for <i>reading one deeply</i>.</p>
+      <div class="before">Summary → 1 line + chips &nbsp;·&nbsp; Full → whole message &nbsp;·&nbsp; f → focus reader</div>
+    </div>
+  </div>
+
+  <div class="rationale">
+    <span class="lab">the glanceability moves</span>
+    <h3>Orientation in time and space, by construction.</h3>
+    <div class="moves">
+      <div class="move"><h4><span class="g">≡</span>Sticky day header</h4><p>The day divider pins to the top as you scroll — "Today · Jul 18" is always visible. You never have to scroll back to find out which day you're in. One divider, not a date stamped on every note.</p></div>
+      <div class="move"><h4><span class="g">—</span>Summary means summary</h4><p>One line + compact chips (◆ refs, ⟨⟩ code). No rendered code blocks, no ref cards in summary — those are for Full. The stream becomes scannable in one pass instead of a column of shrunk full messages.</p></div>
+      <div class="move"><h4><span class="g">◈</span>The NEW line = direction</h4><p>The "new since you last looked" marker (real, from your local watermark) sits between what you've seen and what's fresh — so up = read, down = new, at a glance.</p></div>
+      <div class="move"><h4><span class="g">·</span>Chips carry the density</h4><p>`◆ 6` refs, `⟨⟩ 1` code block — you see a message HAS code/refs without it taking over the row. Click the chip (or open Full / focus) to see them.</p></div>
+      <div class="move"><h4><span class="g">›</span>Consistent prev/next</h4><p>The reader's prev/next borrows the minimap's dot+kind vocabulary, so moving through a thread feels like moving on the map — one visual language across the whole app.</p></div>
+      <div class="move"><h4><span class="g">🕗</span>Local time everywhere</h4><p>Already shipped: every timestamp is your local clock (5:09 PM, not 23:09 UTC), so "when" is legible too — the temporal-orientation groundwork.</p></div>
+    </div>
+  </div>
+
+  <footer class="mono">confer · chat glanceability & time-orientation · Tokyo Night · piece ④ · sticky day · summary = 1 line + chips · one visual language</footer>
+</div>
