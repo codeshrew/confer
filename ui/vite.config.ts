@@ -34,5 +34,15 @@ export default defineConfig({
     globals: false,
     setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{js,ts}'],
+    // format.ts's formatClock/formatIsoDate render the operator's LOCAL
+    // time (fixed 2026-07-18 — they were silently UTC-only despite their
+    // own comments). Pinning the test-runner's timezone to UTC keeps every
+    // existing "UTC-looking" assertion deterministic (local === UTC under
+    // this pin) without the suite depending on whatever timezone happens to
+    // be running it — a real machine here is MDT, not UTC, so this isn't
+    // hypothetical.
+    env: {
+      TZ: 'UTC',
+    },
   },
 })

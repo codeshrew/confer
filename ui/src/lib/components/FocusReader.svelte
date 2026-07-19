@@ -24,7 +24,7 @@
   // a one-off. The gutter keeps author + refs (both real); "seen" lands for
   // free once piece 4 wires the real projection app-wide.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
-  import { formatClock, formatIso8601 } from '../format';
+  import { formatClock, formatIso8601, formatLocalDateTime } from '../format';
   import { buildTrail, type TrailNode } from '../thread';
   import { isTypingTarget } from '../keys';
   import { api } from '../api';
@@ -151,8 +151,12 @@
               </button>
             {/each}
           {/if}
-          <div class="glab" title={formatIso8601(message.ts)}>timestamp</div>
-          <div class="whosub mono">{formatIso8601(message.ts)}</div>
+          <div class="glab">timestamp</div>
+          <!-- Local primary, UTC alongside it — "both, for clarity" (design/48).
+               Local is what the operator actually reads at a glance; the ISO
+               instant is the unambiguous wire-format fact underneath it. -->
+          <div class="whosub">{formatLocalDateTime(message.ts)}</div>
+          <div class="whosub mono dim">{formatIso8601(message.ts)}</div>
         </aside>
         <article class="fr-reading prose md" bind:this={bodyEl}>
           {#if renderedBody}
@@ -191,7 +195,11 @@
     position: relative;
     z-index: 1;
     width: 100%;
-    max-width: 880px;
+    /* Widened per design feedback (2026-07-18) — the original 880px/63ch
+       read cramped for actual reading. 72ch stays under the ~75ch upper
+       bound where a line starts hurting readability; the panel itself has
+       enough headroom past that for the gutter + margins to breathe. */
+    max-width: 1080px;
     max-height: 88vh;
     display: flex;
     flex-direction: column;
@@ -286,7 +294,9 @@
   .fr-body {
     overflow-y: auto;
     display: grid;
-    grid-template-columns: 148px minmax(0, 63ch);
+    /* 72ch — the reading measure asked for, kept just under the ~75ch point
+       where a line stops being comfortable to track. */
+    grid-template-columns: 160px minmax(0, 72ch);
     justify-content: center;
     gap: var(--phi2, 24px);
     padding: var(--phi2, 24px) var(--phi2, 24px) var(--phi3, 40px);
@@ -315,6 +325,12 @@
   .fr-gutter .whosub {
     color: var(--faint);
     font-size: 10.5px;
+  }
+  /* The secondary UTC line under the primary local timestamp — present
+     (never hidden — "both, for clarity"), just visually quieter. */
+  .fr-gutter .whosub.dim {
+    opacity: 0.68;
+    margin-top: 1px;
   }
   .fr-gutter .gref {
     display: block;

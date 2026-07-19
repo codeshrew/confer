@@ -8,9 +8,16 @@ import {
   formatDayDivider,
   formatIso8601,
   formatIsoDate,
+  formatLocalDateTime,
   groupByDay,
   isStaleAge,
 } from './format';
+
+// formatClock/formatIsoDate render the operator's LOCAL time — these
+// assertions read as "UTC" only because vite.config.ts pins the test
+// runner's TZ to UTC (see its own comment), making local === UTC here. A
+// real machine running this suite is NOT UTC (MDT, confirmed 2026-07-18);
+// without the pin these would be timezone-dependent and flaky.
 
 describe('formatAge', () => {
   it('renders "—" for a null timestamp', () => {
@@ -87,7 +94,7 @@ describe('agePct', () => {
 });
 
 describe('formatClock', () => {
-  it('renders UTC HH:MM, zero-padded', () => {
+  it('renders the LOCAL HH:MM, zero-padded (== UTC under the pinned test TZ)', () => {
     expect(formatClock('2026-07-17T09:05:00Z')).toBe('09:05');
     expect(formatClock('2026-07-17T23:59:00Z')).toBe('23:59');
     expect(formatClock('2026-07-17T00:00:00Z')).toBe('00:00');
@@ -95,15 +102,21 @@ describe('formatClock', () => {
 });
 
 describe('formatIsoDate', () => {
-  it('renders UTC YYYY-MM-DD, zero-padded', () => {
+  it('renders the LOCAL YYYY-MM-DD, zero-padded (== UTC under the pinned test TZ)', () => {
     expect(formatIsoDate('2026-07-17T09:05:00Z')).toBe('2026-07-17');
     expect(formatIsoDate('2026-01-05T23:59:00Z')).toBe('2026-01-05');
   });
+});
 
-  it('a late-UTC timestamp stays on its own UTC day, not the viewer local day', () => {
-    // 23:59 UTC on the 17th is still the 17th in UTC terms, regardless of
-    // what local-timezone `Date` methods would say.
-    expect(formatIsoDate('2026-07-17T23:59:59Z')).toBe('2026-07-17');
+describe('formatLocalDateTime', () => {
+  it('renders a readable date + time + zone label', () => {
+    // en-US Intl output under UTC: "Jul 17, 2026, 9:05 AM UTC" — assert on
+    // the stable substrings rather than the whole string, since exact
+    // Intl punctuation/spacing can vary by ICU version.
+    const label = formatLocalDateTime('2026-07-17T09:05:00Z');
+    expect(label).toContain('Jul 17, 2026');
+    expect(label).toContain('9:05');
+    expect(label).toContain('UTC');
   });
 });
 
@@ -120,11 +133,11 @@ describe('formatIso8601', () => {
 describe('formatDayDivider', () => {
   const now = new Date('2026-07-17T15:00:00Z').getTime();
 
-  it('labels the current UTC day "Today", alongside its ISO date', () => {
+  it('labels the current LOCAL day "Today", alongside its ISO date', () => {
     expect(formatDayDivider('2026-07-17', now)).toBe('Today · 2026-07-17');
   });
 
-  it('labels the previous UTC day "Yesterday", alongside its ISO date', () => {
+  it('labels the previous LOCAL day "Yesterday", alongside its ISO date', () => {
     expect(formatDayDivider('2026-07-16', now)).toBe('Yesterday · 2026-07-16');
   });
 
@@ -135,7 +148,7 @@ describe('formatDayDivider', () => {
 });
 
 describe('groupByDay', () => {
-  it('buckets messages by UTC calendar day, preserving order within a day', () => {
+  it('buckets messages by LOCAL calendar day, preserving order within a day', () => {
     const messages = [
       { id: 'a', ts: '2026-07-16T10:00:00Z' },
       { id: 'b', ts: '2026-07-16T11:00:00Z' },

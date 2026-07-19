@@ -35,27 +35,35 @@ export function agePct(ageSecs: number): number {
   return Math.max(6, Math.round(Math.sqrt(agev / 7200) * 100));
 }
 
-/** Render an ISO timestamp as a local "HH:MM" clock label, as the mockup does. */
+/** Render an ISO timestamp as a LOCAL "HH:MM" clock label — the operator's
+ * own system time, not the wire format's UTC (fixed 2026-07-18: this used
+ * to call the UTC-only `getUTCHours`/`getUTCMinutes` despite the comment
+ * already claiming "local" — every clock in the app was quietly showing
+ * Zulu). Test-suite determinism comes from pinning `TZ=UTC` in vitest's
+ * config, not from the function itself staying UTC. */
 export function formatClock(ts: string): string {
   const d = new Date(ts);
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
-/** Render an ISO timestamp's calendar date (UTC) as `YYYY-MM-DD`. */
+/** Render an ISO timestamp's LOCAL calendar date as `YYYY-MM-DD` (see
+ * `formatClock`'s note — same UTC->local fix, same test-TZ-pinning story). */
 export function formatIsoDate(ts: string): string {
   const d = new Date(ts);
-  const yyyy = String(d.getUTCFullYear()).padStart(4, '0');
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const yyyy = String(d.getFullYear()).padStart(4, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
 /**
  * Render the full ISO8601 instant (UTC, seconds precision, `Z`-suffixed) for
- * a message timestamp — the hover/tap-away detail behind the compact
- * `formatClock` label and the day divider.
+ * a message timestamp — the "also show me the wire-format instant" secondary
+ * line alongside `formatClock`/`formatLocalDateTime`'s local-time labels
+ * (design/48: "both, for clarity" — local primary, UTC alongside it, not
+ * instead of it).
  */
 export function formatIso8601(ts: string): string {
   const d = new Date(ts);
@@ -63,12 +71,31 @@ export function formatIso8601(ts: string): string {
 }
 
 /**
+ * A readable LOCAL date+time+zone label for a full timestamp display (the
+ * focus reader's gutter) — "Jul 17, 2026, 5:09 PM PDT" — as opposed to
+ * `formatClock`'s bare "HH:MM" used in dense list rows. `Intl`-backed via
+ * `toLocaleString`, so it follows the browser's own locale/timezone with no
+ * app-side timezone-name table to maintain.
+ */
+export function formatLocalDateTime(ts: string): string {
+  const d = new Date(ts);
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+/**
  * The day-divider label for a calendar day: "Today"/"Yesterday" (plus the
  * ISO date alongside, so it's never ambiguous) for the two most recent days,
  * else just the ISO date. Both the divider's day and "now" are compared as
- * UTC calendar days (matching `formatIsoDate`'s UTC convention) so the
- * divider lines up with the date it's grouping, regardless of the viewer's
- * own timezone.
+ * LOCAL calendar days (matching `formatIsoDate`'s local convention) so the
+ * divider lines up with the operator's own day boundary, not a UTC one that
+ * can roll over mid-evening for them.
  */
 export function formatDayDivider(dayIso: string, nowMs: number = Date.now()): string {
   const today = formatIsoDate(new Date(nowMs).toISOString());
@@ -80,8 +107,8 @@ export function formatDayDivider(dayIso: string, nowMs: number = Date.now()): st
 
 /**
  * Groups a chronologically-sorted (ascending) message stream into per-day
- * buckets, keyed by each message's UTC calendar day (`formatIsoDate`). A new
- * bucket starts whenever the day changes going down the stream — the
+ * buckets, keyed by each message's LOCAL calendar day (`formatIsoDate`). A
+ * new bucket starts whenever the day changes going down the stream — the
  * ChatStream divider renders one per bucket, in order.
  */
 export function groupByDay<T extends { ts: string }>(messages: T[]): { day: string; messages: T[] }[] {
