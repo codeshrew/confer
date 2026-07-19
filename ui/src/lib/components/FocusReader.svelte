@@ -194,13 +194,17 @@
   .fr-panel {
     position: relative;
     z-index: 1;
-    width: 100%;
-    /* Widened per design feedback (2026-07-18) — the original 880px/63ch
-       read cramped for actual reading. 72ch stays under the ~75ch upper
-       bound where a line starts hurting readability; the panel itself has
-       enough headroom past that for the gutter + margins to breathe. */
-    max-width: 1080px;
-    max-height: 88vh;
+    /* Near-full-screen, tall AND wide (operator feedback, 2026-07-19) — an
+       EXPLICIT size, not content-fit: the previous max-height:88vh/auto
+       let a short message shrink the panel down with it ("got shorter,
+       stayed same width"). A fixed 94vh means a one-line message still
+       gets the full immersive reader (mostly-empty space is fine — see
+       .fr-body below), and a long one scrolls within it. Width stays
+       generous (min(1500px, 95vw)) but the READING COLUMN doesn't stretch
+       with it — .fr-body's own 72ch measure + centering (below) turns the
+       extra width into intentional whitespace, not wider prose. */
+    width: min(1500px, 95vw);
+    height: 94vh;
     display: flex;
     flex-direction: column;
     background: var(--bg);
@@ -292,10 +296,18 @@
     outline-offset: 2px;
   }
   .fr-body {
+    /* Fills the now-EXPLICIT panel height (see .fr-panel) rather than
+       sizing to content — min-height:0 is required alongside flex:1 for
+       overflow-y:auto to actually scroll inside a flex column instead of
+       forcing the panel to grow past its fixed height. */
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     display: grid;
     /* 72ch — the reading measure asked for, kept just under the ~75ch point
-       where a line stops being comfortable to track. */
+       where a line stops being comfortable to track. justify-content:
+       center turns the panel's extra width into balanced whitespace on
+       BOTH sides of [gutter + column], not a lopsided gap on one side. */
     grid-template-columns: 160px minmax(0, 72ch);
     justify-content: center;
     gap: var(--phi2, 24px);
