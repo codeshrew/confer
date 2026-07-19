@@ -67,7 +67,7 @@ Named by the operator (2026-07-18), in priority order:
 |---|-------|------------------------------|--------|
 | 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ✅ done |
 | 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a persistent, trust-tiered rail (Home/Shared/Foreign/Unclassified, real health dots) + workspace tint; first slice of the keyboard-first layer (⌘K palette, rail j/k/gg/G, g+number views, ? which-key). Reference: `redesign-mockups/02-hub-nav.html`. | ✅ done |
-| 3 | **Thread / meta-thread nav (P2)** | Redesign the affordance so you never lose your place — side-peek / pop-over / inline expand + breadcrumb + back. The meta-thread (reference-graph) becomes legible. | ○ queued |
+| 3 | **Thread / meta-thread nav + focus reader (P2)** | SETTLED affordance = **side-peek** (stream stays the anchor, never a page-swap) + breadcrumb trail/stack + the meta-thread drawn as a legible reference-graph trail (cross-topic hops marked, foreign nodes tinted). Plus a **focus reader** for deep single-message reading, reachable from ANY message. Reference: `redesign-mockups/03-thread-nav.html`. | ▶ in progress |
 | 4 | **Chat** | Real read-state: client-side "since you last looked" watermark (localStorage) + real seen-by projected from agents' `ack` read-frontiers (kill the synthesized filler). Inline refs anchored to prose. | ○ queued |
 | 5 | **Board** | Claim / WIP / lifecycle made spatial and honest; the ack-story + claim-norm surfaced (design/48/49). | ○ queued |
 | 6 | **Code** | The ref/patch view under the shared language; density gutter, reverse index. | ○ queued |
