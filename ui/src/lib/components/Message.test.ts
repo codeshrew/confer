@@ -70,10 +70,10 @@ describe('Message', () => {
     expect(container.querySelector('code.mono')?.textContent).toBe('serve --all-hubs');
   });
 
-  it('renders lifecycle types (claim/done/blocked) as an inline sysline, not a message bubble', () => {
+  it('renders lifecycle types (claim/done/blocked) as an inline event row, not a message bubble', () => {
     const { container } = render(Message, { message: claimMessage, fromAgent: herald, seenEntries: [] });
 
-    expect(container.querySelector('.sysline')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="event-row"]')).toBeInTheDocument();
     expect(container.querySelector('.msg')).not.toBeInTheDocument();
     expect(screen.getByText('claimed req_01JQ8f2')).toBeInTheDocument();
   });
@@ -418,9 +418,9 @@ describe('Message', () => {
       expect(container.querySelector('[data-msg-id="msg_01JQ001"]')).toBeInTheDocument();
     });
 
-    it('applies the pulse class to a sysline root too (claim/done/etc. can be scroll targets)', () => {
+    it('applies the pulse class to an event row too (claim/done/etc. can be scroll targets)', () => {
       const { container } = render(Message, { message: claimMessage, fromAgent: herald, seenEntries: [], highlight: true });
-      expect(container.querySelector('.sysline.pulse')).toBeInTheDocument();
+      expect(container.querySelector('.event-row.pulse')).toBeInTheDocument();
       expect(container.querySelector('[data-msg-id="msg_01JQa10"]')).toBeInTheDocument();
     });
   });

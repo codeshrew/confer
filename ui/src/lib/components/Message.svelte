@@ -4,8 +4,10 @@
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { readState } from '../readState.svelte';
   import { api } from '../api';
+  import { SYSLINE_TYPES, type EventSubject } from '../eventSubject';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketMiniCard from './TicketMiniCard.svelte';
+  import EventRow from './EventRow.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import Icon from './Icon.svelte';
@@ -48,6 +50,13 @@
     onOpenNote?: (id: string) => void;
     /** Piece 8b — opens the agent dossier from the seen-by roster. */
     onOpenAgent?: (id: string) => void;
+    /** Piece 9 — the event row's own resolved subject (`null` when it's
+     * dangling — see `eventSubject.ts`'s law-#3 note) and the single
+     * dispatcher ChatStream uses to open it via whichever existing handler
+     * fits the subject's kind (ticket/agent/thread). Irrelevant for any
+     * non-event message. */
+    eventSubject?: EventSubject | null;
+    onOpenEventSubject?: (subject: EventSubject) => void;
   }
 
   let {
@@ -67,9 +76,10 @@
     onOpenFocus,
     onOpenNote,
     onOpenAgent,
+    eventSubject = null,
+    onOpenEventSubject,
   }: Props = $props();
 
-  const SYSLINE_TYPES = new Set(['claim', 'done', 'error', 'defer', 'supersede']);
   const isSysline = $derived(SYSLINE_TYPES.has(message.type));
   const isTicket = $derived(message.type === 'request');
 
@@ -190,11 +200,7 @@
 </script>
 
 {#if isSysline}
-  <div class="sysline" class:pulse={highlight} data-type={message.type} data-msg-id={message.id}>
-    <span class="tick">↳</span>
-    <span><b style="color:{fromColor}">{fromDisplay}</b> {message.summary}</span>
-    <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)} · {message.type.toUpperCase()}</span>
-  </div>
+  <EventRow {message} {fromAgent} subject={eventSubject} {highlight} onOpenSubject={onOpenEventSubject} />
 {:else}
   <div
     class="msg"
@@ -342,31 +348,6 @@
 {/if}
 
 <style>
-  .sysline {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 3px 10px;
-    margin: 2px -10px;
-    color: var(--muted);
-    font-size: 12.5px;
-  }
-  .sysline .tick {
-    width: 24px;
-    display: grid;
-    place-items: center;
-    color: var(--faint);
-  }
-  .sysline b {
-    color: var(--text);
-    font-weight: 600;
-  }
-  .sysline .ts {
-    margin-left: auto;
-    font: 500 10.5px/1 var(--mono);
-    color: var(--faint);
-  }
-
   .msg {
     position: relative;
     display: flex;
@@ -476,10 +457,6 @@
   }
   .msg.pulse {
     animation: msg-pulse 2s ease-out;
-  }
-  .sysline.pulse {
-    animation: msg-pulse 2s ease-out;
-    border-radius: 6px;
   }
   .av {
     width: 26px;

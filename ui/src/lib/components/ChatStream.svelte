@@ -32,6 +32,7 @@
   import MessageComponent from './Message.svelte';
   import type { SeenEntry } from './SeenIndicator.svelte';
   import { formatClock, formatDayDivider, groupByDay } from '../format';
+  import { resolveEventSubject, SYSLINE_TYPES, type EventSubject } from '../eventSubject';
 
   interface Props {
     messages: MessageT[];
@@ -104,6 +105,15 @@
 
   function bucket(message: MessageT): 'note' | 'request' {
     return message.type === 'note' ? 'note' : 'request';
+  }
+
+  // Piece 9 (09-event-type-BRIEF.md) — an event's subject, dispatched to
+  // whichever existing open-handler fits its kind. An event has NO popover
+  // of its own: this is the ONLY thing clicking its subject chip does.
+  function openEventSubject(subject: EventSubject) {
+    if (subject.kind === 'ticket') onSelectTicket?.(subject.id);
+    else if (subject.kind === 'agent') onOpenAgent?.(subject.id);
+    else onSelectMessage?.(subject.msgId); // 'thread' — same peek a plain note row click gives
   }
 
   const topicMessages = $derived(
@@ -362,17 +372,27 @@
     void performScrollTo(target, gen);
   });
 
+  // Piece 9 (09-event-type-BRIEF.md, "keyboard — SETTLED") — events are NOT
+  // primary j/k stops: keeping the reading rhythm on substantive notes/
+  // requests, per the brief's own settled call ("might not be the best
+  // flow" for every claim/done/blocked line to eat a keystroke). The
+  // subject chip is still Tab-focusable + Enter-activatable (a real
+  // `<button>` in EventRow — no extra wiring needed for that). Flip this
+  // one flag to fold events back into the j/k ring if that's revisited.
+  const EVENTS_ARE_KEYNAV_STOPS = false;
+  const keyNavMessages = $derived(EVENTS_ARE_KEYNAV_STOPS ? topicMessages : topicMessages.filter((m) => !SYSLINE_TYPES.has(m.type)));
+
   // keyboard-architecture pass — "stream" is one of the 7 named Layer-1
   // panes; it had no bare-key vocab before this pass (selection was
   // click-only), so j/k here move `selectedMessageId` one message at a time
-  // through the same ordered, filtered `topicMessages` list the stream
-  // already renders — the natural bare-key pair given the app already has an
-  // `f`-to-open-focus-reader affordance that reads that exact selection.
+  // through `keyNavMessages` — the natural bare-key pair given the app
+  // already has an `f`-to-open-focus-reader affordance that reads that
+  // exact selection.
   function selectAdjacent(delta: number) {
-    if (topicMessages.length === 0) return;
-    const i = topicMessages.findIndex((m) => m.id === selectedMessageId);
-    const next = i < 0 ? (delta > 0 ? 0 : topicMessages.length - 1) : Math.min(Math.max(i + delta, 0), topicMessages.length - 1);
-    const msg = topicMessages[next];
+    if (keyNavMessages.length === 0) return;
+    const i = keyNavMessages.findIndex((m) => m.id === selectedMessageId);
+    const next = i < 0 ? (delta > 0 ? 0 : keyNavMessages.length - 1) : Math.min(Math.max(i + delta, 0), keyNavMessages.length - 1);
+    const msg = keyNavMessages[next];
     if (msg) onSelectMessage?.(msg.id);
   }
 
@@ -463,6 +483,8 @@
           {onOpenNote}
           {onOpenAgent}
           {onOpenRefs}
+          eventSubject={SYSLINE_TYPES.has(message.type) ? resolveEventSubject(message, requests, messages, agents) : null}
+          onOpenEventSubject={openEventSubject}
         />
       {/each}
     {/each}
