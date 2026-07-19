@@ -47,6 +47,7 @@ mod roster;
 mod schema;
 mod screen;
 mod secrets;
+mod arm;
 mod seen;
 #[cfg(feature = "serve")]
 mod serve;
@@ -1054,6 +1055,7 @@ fn run() -> Result<()> {
                 delivery,
             })
         }
+        Cmd::Arm { role } => arm::run(role),
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]

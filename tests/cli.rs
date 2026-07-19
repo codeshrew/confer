@@ -4072,9 +4072,16 @@ fn install_skill_is_generic_no_coresident_clobber() {
         "no baked role"
     );
     assert!(
-        first.contains("watch --replace"),
-        "arms via the role-auto-resolving `watch --replace`"
+        first.contains("/confer-arm"),
+        "delegates arming to the role-generic /confer-arm skill (design/49)"
     );
+    // The deterministic arm operation ships as its own Monitor-only skill (design/49): it exists
+    // and cannot background the watch, because Bash isn't in its tool scope.
+    let arm = std::fs::read_to_string(sk.join("confer-arm").join("SKILL.md"))
+        .expect("confer-arm skill is installed");
+    assert!(arm.contains("allowed-tools: Monitor"), "arm skill is Monitor-scoped");
+    assert!(!arm.contains("allowed-tools: Monitor, Bash"), "arm skill must NOT grant Bash");
+    assert!(arm.contains("arm"), "arm skill hosts `confer arm`");
     let _ = std::fs::remove_dir_all(&sk);
 }
 

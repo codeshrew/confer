@@ -19,33 +19,21 @@ reactive to it and teaches the *workflow* — for the exact commands and flags, 
 source of truth**: run `{CONFER} --help` and `{CONFER} <command> --help`. Don't assume flags, and don't
 expect this skill to list every command (the CLI grows; the help won't rot).
 
-## Arm the watch (reactive, dormant — the whole point)
-Run confer commands **from your own hub clone** — confer resolves YOUR role from the clone you're
-in, so no command below hard-codes a role (that's deliberate: this one skill is shared by every
-agent on the machine). Not sure which clone is yours? `{CONFER} clones` lists confer-managed clones;
-`cd` into the one for your role. Then start a **persistent Monitor** on:
+## Arm the watch — via /confer-arm (reactive, dormant — the whole point)
+To arm or re-arm your watcher, use the **/confer-arm** skill. It hosts `{CONFER} arm` under the Monitor
+tool — which self-locates your role's clone, takes over any orphan (`--replace`), and stamps
+`--delivery monitor` so `{CONFER} watch-status` can confirm you're actually *receiving* wakes (not just
+that a process runs). One command, nothing to look up or paste.
 
-    {CONFER} watch --replace --delivery monitor
+/confer-arm is **Monitor-only by construction**, so it CANNOT make the one mistake that silently breaks
+you: backgrounding the watch (`run_in_background`, a trailing `&`, `nohup`, or a `> file` / `> /dev/null`
+redirect) sends the wakes nowhere and you go dark with no error until someone notices. Never arm the
+watch from here with Bash — always route through /confer-arm. There must be exactly one watcher per role
+per machine; `confer arm`'s `--replace` reclaims your own compaction orphan cleanly. `watch` is reactive:
+you stay free and are woken only when a peer posts — zero turns burned while idle.
 
-(`--delivery monitor` stamps HOW you armed it, so `{CONFER} watch-status` can later confirm this
-watcher actually *delivers* wakes — not just that a process is running. Arming it any other way, or
-without the flag, leaves that unconfirmable.)
-
-⚠ **Host it under the Monitor tool — never background Bash.** `confer watch` is a LONG-LIVED
-streamer. If you launch it with `run_in_background`, a trailing `&`, `nohup`, or you redirect its
-output (`> file`, `> /dev/null`), the harness REAPS it after its first output burst (or the wakes go
-nowhere): it dies **silently** and you stop receiving peer messages with no error — you just go dark
-until someone notices. The Monitor tool is the persistent host that keeps it alive and pipes each wake
-to you; that is what the `Monitor` in this skill's allowed-tools is for. No Monitor tool in your
-environment? Use the `/confer-poll` skill under `/loop` — never a raw backgrounded watch.
-
-`--replace` matters: if your previous session compacted or ended, its background watch may still be
-running and would race this one on the shared cursor (silently stealing your events). `--replace`
-takes over cleanly — there must be exactly one watcher per role on a machine. (After a compaction,
-the SessionStart auto-heal hook prints your exact `cd <hub> && confer watch --replace` — so you
-rarely type it by hand.)
-`watch` is reactive: you stay free and are woken only when a peer posts — zero turns burned while idle.
-(No Monitor tool in your environment? Use the `/confer-poll` skill under `/loop` — the poll fallback.)
+(No Monitor tool in your environment? Use the `/confer-poll` skill under `/loop` — the poll fallback,
+never a raw backgrounded watch.)
 
 ## Own & heal your watcher (do this FIRST, every session start)
 Your watcher is owned by your ROLE on this MACHINE — **not** your session. After a compaction
@@ -54,7 +42,7 @@ you will NOT remember starting it; that's normal, and you don't need to. Before 
     {CONFER} watch-status
 
 - **healthy** → you're already watching on the current build; carry on.
-- **not-watching / stale / outdated** → re-arm (safe): `{CONFER} watch --replace`
+- **not-watching / stale / outdated** → re-arm via the **/confer-arm** skill (safe — it `--replace`s your own orphan)
 
 `--replace` is ALWAYS safe: the lock is keyed by role+machine, so it reclaims *your own* orphan
 (e.g. a watcher a compacted session left running, possibly on an old build) and starts fresh —
@@ -242,8 +230,60 @@ for each via `CONFER_HUB=`. (To focus ONE hub the human names, add `| grep -i <n
   floor. Don't dump raw output unless asked.
 "#;
 
-pub(crate) const CONFER_SKILLS: [(&str, &str); 4] = [
+// The deterministic setup operation (design/49): arming the watcher has exactly ONE correct way,
+// so it gets its OWN tool-scoped skill — `allowed-tools: Monitor` only, so an agent following it
+// CANNOT background `confer watch` (the mistake that sends wakes nowhere). `confer-watch` keeps the
+// judgment/workflow; this keeps the mechanism, safe by construction.
+const ARM_SKILL: &str = r#"---
+name: confer-arm
+description: Arm (or re-arm) your confer watcher the ONE correct way — as a persistent Monitor that reads the watcher's output and delivers each peer message to you as a wake. Use at session start, right after a compaction, or whenever watch-status / the session-heal hook says your watcher is not healthy. This is the deterministic setup operation; there is exactly one right way and this skill is it.
+allowed-tools: Monitor
+disallowed-tools: Bash, AskUserQuestion
+---
+
+Arm your confer watcher. There is exactly one correct way, and this skill removes every other one:
+the watcher runs under the **Monitor** tool, which reads its stdout and delivers each peer message to
+you as a wake. This skill has **no Bash** on purpose — so you cannot background `confer watch`
+(`run_in_background`, a trailing `&`, `nohup`) or redirect it to a file, which sends your wakes nowhere
+and makes you go dark with no error. The wrong way is made unavailable, not merely discouraged.
+
+## Arm it (persistent Monitor, always)
+
+Host this one command under a **persistent** Monitor:
+
+    {CONFER} arm
+
+That is the whole command. `confer arm` self-locates your role's clone (the current clone, or the
+single watch target this session owns), takes over any orphaned watcher (`--replace`), and stamps how
+it delivers wakes (`--delivery monitor`) so `{CONFER} watch-status` can confirm you're actually
+receiving them. Nothing to look up, no path to paste. If you own several roles on this machine and it
+can't tell which, it says so — re-run from your role's clone dir, or `{CONFER} arm --role <r>`.
+
+Set the Monitor **persistent** — this is a long-lived streamer, not a one-shot. Each stdout line is one
+wake: `KIND <shortid> | HH:MM | from -> to — summary`.
+
+## Confirm it's live
+
+You armed correctly when a wake actually arrives (a peer post, or a `⚠ N unread for you` line). Seeing
+the Monitor start is not the same as receiving a wake — the first delivered event is the proof. If
+`{CONFER} watch-status` still says the delivery method isn't recorded, something hosted it without
+`confer arm` — re-arm through this skill.
+
+## After it's armed
+
+Reacting to wakes — triage, claiming, referencing docs, task hygiene — is judgment, and it lives in the
+**/confer-watch** skill (the source of truth for the workflow). This skill does one thing: get you armed
+the right way. Once armed, follow /confer-watch for what to do with what arrives.
+
+## Rules
+- Never background or redirect `confer arm`/`confer watch` — always host under the Monitor. That is the
+  entire reason this skill exists and has no Bash.
+- One watcher per role per machine. `confer arm` guarantees it (`--replace`); never start a second.
+"#;
+
+pub(crate) const CONFER_SKILLS: [(&str, &str); 5] = [
     ("confer-watch", WATCH_SKILL),
+    ("confer-arm", ARM_SKILL),
     ("confer-poll", CHECK_BLACKBOARD_SKILL),
     ("confer-board", BOARD_SKILL),
     ("confer-fleet", FLEET_SKILL),
