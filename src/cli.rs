@@ -121,17 +121,30 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Append one message (Markdown body via --text or stdin).
+    /// Append one message (Markdown body via --text, --body-file, or stdin).
     Append {
         /// message type: note | request | claim | done | error | supersede
         #[arg(long = "type")]
         msg_type: String,
         /// REQUIRED one-line summary — the triage field peers read before opening the body.
+        /// Exactly one of --summary / --summary-file.
         #[arg(long)]
-        summary: String,
+        summary: Option<String>,
+        /// read the summary verbatim from a file (raw bytes, no shell expansion) — the
+        /// shell-free affordance for a summary containing backticks/$()/$VAR/quotes/etc.
+        /// Mutually exclusive with --summary. A single trailing newline is stripped (a
+        /// summary is one line).
+        #[arg(long = "summary-file")]
+        summary_file: Option<String>,
         /// message body; if omitted, read from stdin (supports multi-line/fenced)
         #[arg(long)]
         text: Option<String>,
+        /// read the message body verbatim from a file (raw bytes, no shell expansion,
+        /// no interpretation) — the shell-free affordance for a body containing
+        /// backticks/$()/$VAR/!/quotes/fenced code/etc. Mutually exclusive with --text
+        /// and bypasses the stdin fallback (never combine with piped stdin).
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
         /// primary addressee target(s) — role id, group, or `all`; repeatable
         /// (--to a --to b). REQUIRED for `request`.
         #[arg(long = "to")]

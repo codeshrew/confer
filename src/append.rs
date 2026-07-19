@@ -17,7 +17,12 @@ use crate::{
 pub(crate) struct AppendArgs {
     pub(crate) msg_type: String,
     pub(crate) text: Option<String>,
-    pub(crate) summary: String,
+    /// read the body verbatim from a file — mutually exclusive with `text` and bypasses
+    /// the stdin fallback (never combined with piped stdin).
+    pub(crate) body_file: Option<String>,
+    pub(crate) summary: Option<String>,
+    /// read the summary verbatim from a file — mutually exclusive with `summary`.
+    pub(crate) summary_file: Option<String>,
     pub(crate) to: Vec<String>,
     pub(crate) cc: Vec<String>,
     pub(crate) priority: Option<String>,
@@ -866,7 +871,9 @@ pub(crate) fn cmd_lifecycle(
     cmd_append(AppendArgs {
         msg_type: msg_type.to_string(),
         text: a.text, // optional body; summary-only still allowed (allow_empty_body)
-        summary: a.summary.unwrap_or(default_summary),
+        body_file: None,
+        summary: Some(a.summary.unwrap_or(default_summary)),
+        summary_file: None,
         // Addressing passes straight through to append. Empty --to/--cc leaves
         // cmd_append to auto-address the request's author (via --of); an explicit
         // --to or --reply-to overrides that (append resolves the precedence).
@@ -901,7 +908,9 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
     cmd_append(AppendArgs {
         msg_type: msg_type.to_string(),
         text: a.text,
-        summary: a.summary,
+        body_file: None,
+        summary: Some(a.summary),
+        summary_file: None,
         to: a.to,
         cc: a.cc,
         priority: a.priority,
@@ -973,6 +982,35 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             ));
         }
     }
+    // Summary: --summary, or --summary-file (verbatim bytes, no shell) — never both.
+    if a.summary.is_some() && a.summary_file.is_some() {
+        return Err(anyhow!(
+            "--summary and --summary-file are mutually exclusive — pass exactly one"
+        ));
+    }
+    let summary = match (a.summary, &a.summary_file) {
+        (Some(s), None) => s,
+        (None, Some(path)) => {
+            let mut s = std::fs::read_to_string(path)
+                .map_err(|e| anyhow!("--summary-file {path}: {e}"))?;
+            // A summary is a single line; strip ONE trailing newline (and its `\r` for a
+            // `\r\n` file) — almost every file ends in `\n` (echo/editors/heredocs), so
+            // requiring none would be an ironic footgun inside the anti-footgun flag.
+            if s.ends_with('\n') {
+                s.pop();
+                if s.ends_with('\r') {
+                    s.pop();
+                }
+            }
+            s
+        }
+        (None, None) => {
+            return Err(anyhow!(
+                "--summary <text> or --summary-file <path> is required"
+            ))
+        }
+        (Some(_), Some(_)) => unreachable!("checked above"),
+    };
     let mut refs = a
         .refs
         .iter()
@@ -1041,7 +1079,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             "--supersedes <id> is required for type 'supersede'"
         ));
     }
-    if a.summary.trim().is_empty() {
+    if summary.trim().is_empty() {
         return Err(anyhow!(
             "--summary must not be empty (it's the triage line peers read)"
         ));
@@ -1190,7 +1228,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         &role,
         &to,
         &a.cc,
-        &a.summary,
+        &summary,
     );
 
     // Reference advisory (point-vs-carry): if a --ref points at a repo the
@@ -1229,15 +1267,26 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         }
     }
 
-    // Body: --text, else stdin (multi-line / fenced Markdown). A literal
-    // `--text -` means "read stdin" (Unix convention) — not the body text "-";
-    // taking it literally silently wrote a bare "-" body and dropped real detail.
-    let mut body = match a.text {
-        Some(t) if t == "-" => String::new(),
-        Some(t) => t,
-        None => String::new(),
+    // Body: --body-file (verbatim bytes, no shell), else --text, else stdin (multi-line /
+    // fenced Markdown). A literal `--text -` means "read stdin" (Unix convention) — not the
+    // body text "-"; taking it literally silently wrote a bare "-" body and dropped real detail.
+    if a.body_file.is_some() && a.text.is_some() {
+        return Err(anyhow!(
+            "--body-file is mutually exclusive with --text (and with stdin) — pass the body in exactly one way"
+        ));
+    }
+    let mut body = if let Some(path) = &a.body_file {
+        std::fs::read_to_string(path).map_err(|e| anyhow!("--body-file {path}: {e}"))?
+    } else {
+        match a.text {
+            Some(t) if t == "-" => String::new(),
+            Some(t) => t,
+            None => String::new(),
+        }
     };
-    if body.is_empty() && !std::io::stdin().is_terminal() {
+    // --body-file NEVER falls through to stdin — it is the one blessed shell-free path, and
+    // combining it with piped stdin would silently pick a winner instead of failing clearly.
+    if a.body_file.is_none() && body.is_empty() && !std::io::stdin().is_terminal() {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s)?;
         body = s.trim_end().to_string();
@@ -1271,7 +1320,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Secret-shape lint (a review finding): the log is permanent + fleet-wide, so a pasted
     // token/key would leak forever. Block on a match unless explicitly overridden.
     if !a.allow_secret {
-        let findings = secrets::scan(&format!("{}\n{body}", a.summary));
+        let findings = secrets::scan(&format!("{}\n{body}", summary));
         if !findings.is_empty() {
             return Err(anyhow!(
                 "refusing to send — the message looks like it contains a secret: {}. \
@@ -1297,7 +1346,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             c as u32
         ));
     }
-    if let Some(c) = a.summary.chars().find(|c| c.is_control()) {
+    if let Some(c) = summary.chars().find(|c| c.is_control()) {
         return Err(anyhow!(
             "refusing to send — the --summary contains a control character (U+{:04X}); \
              it must be a single clean line.",
@@ -1325,7 +1374,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             defer: a.defer,
             via: None,
             src: a.src,
-            summary: Some(a.summary),
+            summary: Some(summary),
             refs,
         },
         body,

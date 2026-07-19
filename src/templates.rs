@@ -223,10 +223,60 @@ the right way. Once armed, follow /confer-watch for what to do with what arrives
 - One watcher per role per machine. `confer arm` guarantees it (`--replace`); never start a second.
 "#;
 
-pub(crate) const CONFER_SKILLS: [(&str, &str); 5] = [
+const POST_SKILL: &str = r#"---
+name: confer-post
+description: Post a confer message (append/note/request) without the shell mangling it — the blessed, quoting-safe pattern for any summary or body that isn't trivially plain ASCII. Use whenever the content has backticks, `$(...)`, `$VAR`, `!`, quotes, a fenced code block, unicode, or is long — anything an inline shell arg could silently corrupt.
+allowed-tools: Bash
+disallowed-tools: AskUserQuestion
+---
+
+Posting a confer message is a normal shell command — so an inline `--text "..."` or `--summary "..."`
+is parsed BY THE SHELL first. Backticks and `$(...)` run as command substitution, `$VAR` expands,
+`!` can trigger history expansion, and quotes inside quotes truncate the arg — all SILENTLY, with no
+error, so a corrupted message goes out looking fine to you. `confer <cmd> --help` is the source of
+truth for exact flags; this skill is the one workflow to reach for.
+
+## The one blessed pattern
+Never put untrusted or rich content inline in a shell arg. Write it to a file, then post with a
+`--*-file` flag — no shell parses the file's bytes:
+
+    cat > /tmp/body.md <<'PLAINEOF'
+    whatever you want, verbatim: `backticks`, $(cmd), $VAR, !, "quotes", 'quotes',
+    and fenced code blocks all pass through untouched.
+    PLAINEOF
+    {CONFER} append --type note --to <role> --summary-file /tmp/summary.txt --body-file /tmp/body.md
+
+Use a real **quoted heredoc** (`<<'PLAINEOF'`, quotes around the delimiter) — an unquoted delimiter
+still expands `$(...)`/`$VAR` while writing the file, defeating the whole point.
+
+## Summary field too
+`--summary` is just as exposed as the body — it's still a shell arg. If the summary itself has any
+of the special characters above, write it to a file too and pass `--summary-file` (shown above).
+A summary file is a single line; a single trailing newline is stripped for you (so a plain
+`echo ... > /tmp/summary.txt` works), but a summary can't contain interior control characters.
+
+## Long bodies / ARG_MAX
+A very large `--text` value can also blow past the shell's argument-length limit (ARG_MAX),
+truncating or failing outright with no clear error. `--body-file` has no such ceiling — always
+prefer it for anything beyond a short one-liner, not just for special characters.
+
+## Fallback: stdin
+No `--body-file` available (older confer)? Pipe the body instead of inlining it — still shell-free
+for the body itself:
+
+    {CONFER} append --type note --to <role> --summary "plain one-liner" --text - < /tmp/body.md
+
+## Rule
+If you didn't type the summary/body yourself character-by-character as plain ASCII, write it to a
+file first. Never inline untrusted or rich content in a shell arg — that includes content you
+generated yourself (code, diffs, other agents' words) just as much as human input.
+"#;
+
+pub(crate) const CONFER_SKILLS: [(&str, &str); 6] = [
     ("confer-watch", WATCH_SKILL),
     ("confer-arm", ARM_SKILL),
     ("confer-poll", CHECK_BLACKBOARD_SKILL),
     ("confer-board", BOARD_SKILL),
     ("confer-fleet", FLEET_SKILL),
+    ("confer-post", POST_SKILL),
 ];
