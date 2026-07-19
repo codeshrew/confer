@@ -1,0 +1,261 @@
+<title>confer · repos — the map of what your work is about</title>
+<style>
+  :root{
+    --bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    --tracked:#9ece6a;--notlocal:#e0af68;--shadow:#7aa2f7;
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow-sh:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1080px;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --tracked:#4f6d2e;--notlocal:#8a6c2f;--shadow:#2e5db5;
+    --shadow-sh:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;--tracked:#9ece6a;--notlocal:#e0af68;--shadow:#7aa2f7;--shadow-sh:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;--tracked:#4f6d2e;--notlocal:#8a6c2f;--shadow:#2e5db5;--shadow-sh:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+  .lab{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+
+  .intro{margin-bottom:var(--phi3)}
+  .intro .eyebrow{color:var(--accent)}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.5rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:66ch;margin:0;font-size:.98rem}
+  .intro .tag{display:inline-block;margin-top:var(--phi1);font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.2rem .7rem}
+
+  .screen{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-sh);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .chrome .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--muted-2);opacity:.6}
+  .chrome .url{margin-left:.4rem;font-family:var(--font-mono);font-size:.74rem;color:var(--muted);background:var(--bg-deep);padding:.18rem .6rem;border-radius:6px;border:1px solid var(--border-soft)}
+  .stage{padding:var(--phi2)}
+
+  /* header + integrity strip */
+  .rhead{display:flex;align-items:baseline;gap:var(--phi2);margin-bottom:var(--phi1);flex-wrap:wrap}
+  .rhead h2{font-size:1.05rem;font-weight:640;margin:0}
+  .rhead .v{font-family:var(--font-mono);font-size:.72rem;color:var(--muted)}
+  .rhead .v b{color:var(--fg)}
+  .rhead .health{margin-left:auto;font-family:var(--font-mono);font-size:.72rem}
+  .rhead .health.ok{color:var(--tracked)} .rhead .health.warn{color:var(--notlocal)}
+
+  /* group headers */
+  .grp{margin-top:var(--phi2)}
+  .grp:first-of-type{margin-top:var(--phi1)}
+  .grp-h{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem}
+  .grp-h .h{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+  .grp-h.tracked .h{color:var(--tracked)} .grp-h.notlocal .h{color:var(--notlocal)} .grp-h.shadow .h{color:var(--shadow)}
+  .grp-h .c{font-family:var(--font-mono);font-size:.6rem;color:var(--muted)}
+  .grp-h .desc{font-size:.72rem;color:var(--muted)}
+  .grp-h .ln{height:1px;flex:1;background:var(--border)}
+
+  /* repo card */
+  .repos{display:flex;flex-direction:column;gap:.5rem}
+  .repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.7rem .85rem;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.9rem;cursor:pointer;transition:border-color .12s,transform .12s;position:relative}
+  .repo::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:2px;background:var(--c)}
+  .repo:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .repo.tracked{--c:var(--tracked)} .repo.notlocal{--c:var(--notlocal)} .repo.shadow{--c:var(--shadow);border-style:dashed}
+  .repo .rl{min-width:0}
+  .repo .slug{font-family:var(--font-mono);font-size:.88rem;font-weight:640;color:var(--fg);display:flex;align-items:center;gap:.5rem}
+  .repo .slug .role{font-family:var(--font-mono);font-size:.54rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:.05rem .3rem}
+  .repo .meta{font-family:var(--font-mono);font-size:.64rem;color:var(--muted);margin-top:.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* reference density */
+  .repo .dens{display:flex;flex-direction:column;align-items:flex-end;gap:.3rem}
+  .repo .dens .n{font-family:var(--font-mono);font-size:.72rem;color:var(--fg-dim)}
+  .repo .dens .n b{color:var(--accent)}
+  .repo .densbar{display:flex;gap:1.5px;align-items:flex-end;height:16px}
+  .repo .densbar i{width:3px;background:color-mix(in srgb,var(--accent) 40%,transparent);border-radius:1px;min-height:2px}
+  /* clone status pill */
+  .repo .clone{font-family:var(--font-mono);font-size:.6rem;padding:.12rem .42rem;border-radius:5px;border:1px solid var(--border);display:inline-flex;align-items:center;gap:.3rem}
+  .repo.tracked .clone{color:var(--tracked);border-color:color-mix(in srgb,var(--tracked) 35%,transparent)}
+  .repo.notlocal .clone{color:var(--notlocal);border-color:color-mix(in srgb,var(--notlocal) 40%,transparent)}
+  .repo.shadow .clone{color:var(--shadow);border-color:color-mix(in srgb,var(--shadow) 40%,transparent)}
+  .repo .act{font-family:var(--font-mono);font-size:.6rem;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);border-radius:5px;padding:.12rem .45rem;opacity:0;transition:opacity .12s}
+  .repo:hover .act{opacity:1}
+
+  /* ===== repo drill-in ===== */
+  .rdcap{text-align:center;color:var(--muted);font-size:.85rem;margin:var(--phi3) 0 .9rem}
+  .rdcap b{color:var(--fg-dim)}
+  .rdetail{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-sh);overflow:hidden}
+  .rd-head{display:flex;align-items:center;gap:.6rem;padding:.85rem 1.1rem;border-bottom:1px solid var(--border);background:var(--surface)}
+  .rd-head .slug{font-family:var(--font-mono);font-size:.95rem;font-weight:640}
+  .rd-head .role{font-family:var(--font-mono);font-size:.56rem;font-weight:700;text-transform:uppercase;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:.08rem .34rem}
+  .rd-head .clone{margin-left:auto;font-family:var(--font-mono);font-size:.64rem;color:var(--tracked)}
+  .rd-close{font-family:var(--font-mono);font-size:.64rem;color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:.1rem .4rem;cursor:pointer}
+  .rd-grid{display:grid;grid-template-columns:1fr 280px}
+  .rd-main{padding:1rem 1.2rem;border-right:1px solid var(--border)}
+  .rd-main > .lab{display:block;margin-bottom:.6rem}
+  /* files ranked by conversation density = mini code-ref cards */
+  .filerow{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.7rem;padding:.4rem .5rem;border-radius:7px;cursor:pointer;transition:background .12s}
+  .filerow:hover{background:var(--panel)}
+  .filerow .gutter{width:2.4rem;display:flex;gap:1.5px;align-items:flex-end;height:15px;justify-content:flex-end}
+  .filerow .gutter i{width:3px;background:var(--cyan);border-radius:1px;min-height:2px;opacity:.7}
+  .filerow .path{font-family:var(--font-mono);font-size:.72rem;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .filerow .conv{font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+  .filerow .conv b{color:var(--cyan)}
+  .rd-side{padding:1rem;background:color-mix(in srgb,var(--surface) 45%,var(--bg-deep));display:flex;flex-direction:column;gap:.9rem}
+  .kv .k{font-family:var(--font-mono);font-size:.58rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:.2rem}
+  .kv .v{color:var(--fg-dim);font-size:.76rem;display:flex;align-items:center;gap:.4rem}
+  .kv .v.mono{font-family:var(--font-mono);font-size:.68rem;word-break:break-all}
+  .access{display:flex;gap:.35rem;flex-wrap:wrap}
+  .access .a{font-family:var(--font-mono);font-size:.6rem;color:var(--fg-dim);border:1px solid var(--border);border-radius:4px;padding:.08rem .34rem;display:inline-flex;align-items:center;gap:.25rem}
+  .access .a .av{width:.85rem;height:.85rem;border-radius:3px;display:grid;place-items:center;font:700 .42rem var(--font-mono);color:#0b0e17}
+  .rd-actions{display:flex;flex-direction:column;gap:.4rem;margin-top:.2rem}
+  .rd-actions .btn{font-family:var(--font-mono);font-size:.66rem;color:var(--fg-dim);border:1px solid var(--border);border-radius:6px;padding:.35rem .5rem;text-align:center;cursor:pointer}
+  .rd-actions .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .rd-actions .btn.gate{color:var(--notlocal);border-color:color-mix(in srgb,var(--notlocal) 40%,transparent)}
+  /* deferred (state-mutating) actions — kept as intent, not yet active (read-only serve today) */
+  .deferred{margin-top:.6rem;padding-top:.6rem;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:.3rem;opacity:.55}
+  .deferred .dbtn{font-family:var(--font-mono);font-size:.64rem;color:var(--muted);border:1px dashed var(--border);border-radius:6px;padding:.3rem .5rem;text-align:center;cursor:not-allowed}
+  .repo .act.deferred-pill{opacity:.5;border-style:dashed;color:var(--muted);border-color:var(--border);cursor:not-allowed}
+
+  /* rationale */
+  .rationale{margin-top:var(--phi4)}
+  .rationale > .lab{display:block;margin-bottom:.5rem;color:var(--accent)}
+  .rationale h3{font-size:1.25rem;font-weight:640;margin:.2rem 0 var(--phi2);letter-spacing:-.01em;text-wrap:balance}
+  .qa{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:var(--phi1)}
+  .q{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .q h4{margin:0 0 .4rem;font-size:.92rem;font-weight:640}
+  .q h4 .g{color:var(--accent);font-family:var(--font-mono);margin-right:.35rem}
+  .q p{margin:0;font-size:.85rem;color:var(--fg-dim)}
+  footer{margin-top:var(--phi3);font-size:.75rem;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:var(--phi2)}
+  @media (max-width:720px){.repo{grid-template-columns:1fr auto}.rd-grid{grid-template-columns:1fr}.rd-main{border-right:none;border-bottom:1px solid var(--border)}}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · repos redesign</span>
+    <h1>Not a list of repos — the map of what your work is about.</h1>
+    <p>Repos are what <code>--ref</code> points into. So this tab answers two things a flat list never did:
+      <b>integrity</b> — is every referenced repo registered and cloned so refs resolve? — and <b>gravity</b>
+      — which repos is the fleet actually talking about? It surfaces the gaps (referenced-but-untracked
+      <b>shadow</b> repos) and lets you close them.</p>
+    <span class="tag mono">mockup · mapping health + reference density + drill-in</span>
+  </div>
+
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">127.0.0.1:8422 · confer-lab · repos</span></div>
+    <div class="stage">
+
+      <div class="rhead">
+        <h2>repos</h2>
+        <span class="v"><b>5</b> registered</span>
+        <span class="v"><b>4</b> cloned here</span>
+        <span class="v"><b>1</b> shadow</span>
+        <span class="health warn">◑ 1 not registered · 1 not cloned</span>
+      </div>
+
+      <!-- TRACKED -->
+      <div class="grp">
+        <div class="grp-h tracked"><span class="h">✓ tracked</span><span class="c">4</span><span class="desc">registered + cloned — refs resolve to real code</span><span class="ln"></span></div>
+        <div class="repos">
+          <div class="repo tracked">
+            <div class="rl"><div class="slug">confer <span class="role">tooling</span></div><div class="meta">1 remote · github.com/codeshrew/confer · 1 clone (~/git/confer)</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">✓ 1 clone</span><span class="n"><b>48</b> refs</span><span class="densbar"><i style="height:6px"></i><i style="height:10px"></i><i style="height:16px"></i><i style="height:12px"></i><i style="height:14px"></i></span></div>
+          </div>
+          <div class="repo tracked">
+            <div class="rl"><div class="slug">confer-lab <span class="role">tooling · the hub</span></div><div class="meta">1 remote · github.com/codeshrew/confer-lab · <b style="color:var(--fg-dim)">3 clones</b> — one managed per agent (jarvis, herald, …)</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">✓ 3 clones</span><span class="n"><b>21</b> refs</span><span class="densbar"><i style="height:5px"></i><i style="height:9px"></i><i style="height:7px"></i><i style="height:12px"></i><i style="height:6px"></i></span></div>
+          </div>
+          <div class="repo tracked">
+            <div class="rl"><div class="slug">popos-managment <span class="role">system</span></div><div class="meta"><b style="color:var(--fg-dim)">local-only · no remote</b> · 1 clone (~/git/popos-managment)</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">✓ local</span><span class="n"><b>7</b> refs</span><span class="densbar"><i style="height:4px"></i><i style="height:6px"></i><i style="height:5px"></i><i style="height:8px"></i><i style="height:3px"></i></span></div>
+          </div>
+          <div class="repo tracked">
+            <div class="rl"><div class="slug">git-conversations <span class="role">design</span></div><div class="meta"><b style="color:var(--fg-dim)">2 remotes</b> (origin, upstream) · 1 clone (~/git/git-conversations)</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">✓ 1 clone</span><span class="n"><b>12</b> refs</span><span class="densbar"><i style="height:8px"></i><i style="height:5px"></i><i style="height:11px"></i><i style="height:4px"></i><i style="height:7px"></i></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- REGISTERED, NOT LOCAL -->
+      <div class="grp">
+        <div class="grp-h notlocal"><span class="h">◑ registered · not on this machine</span><span class="c">1</span><span class="desc">refs stay pointer-only until you map a clone</span><span class="ln"></span></div>
+        <div class="repos">
+          <div class="repo notlocal">
+            <div class="rl"><div class="slug">lelas-knowledge-base <span class="role">shared</span></div><div class="meta">github.com/codeshrew/lelas-knowledge-base · no local clone</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">◑ not cloned</span><span class="n"><b>3</b> refs</span><button class="act deferred-pill" title="later — human-action layer">map clone</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SHADOW -->
+      <div class="grp">
+        <div class="grp-h shadow"><span class="h">◇ shadow · referenced, not registered</span><span class="c">1</span><span class="desc">a repo peers --ref but the hub inventory doesn't know</span><span class="ln"></span></div>
+        <div class="repos">
+          <div class="repo shadow">
+            <div class="rl"><div class="slug">openjarvis <span class="role">?</span></div><div class="meta">referenced by 2 messages · no inventory card, no url</div></div>
+            <div></div>
+            <div class="dens"><span class="clone">◇ shadow</span><span class="n"><b>2</b> refs</span><button class="act deferred-pill" title="later — human-action layer">register</button></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- drill-in -->
+  <p class="rdcap">Open a repo → its <b>hot files</b> (ranked by conversation density) as mini code-ref cards → the big code view, plus its identity and the actions to keep it mapped.</p>
+  <div class="rdetail">
+    <div class="rd-head">
+      <span class="slug">confer</span><span class="role">tooling</span>
+      <span class="clone">✓ cloned · ~/git/confer</span>
+      <span class="rd-close" style="margin-left:.7rem">esc ✕</span>
+    </div>
+    <div class="rd-grid">
+      <div class="rd-main">
+        <span class="lab">hot files · most referenced in conversation</span>
+        <div class="filerow"><span class="gutter"><i style="height:5px"></i><i style="height:9px"></i><i style="height:15px"></i></span><span class="path">src/api.rs</span><span class="conv"><b>9</b> conversations</span></div>
+        <div class="filerow"><span class="gutter"><i style="height:6px"></i><i style="height:11px"></i><i style="height:8px"></i></span><span class="path">src/patch.rs</span><span class="conv"><b>7</b> conversations</span></div>
+        <div class="filerow"><span class="gutter"><i style="height:4px"></i><i style="height:5px"></i><i style="height:9px"></i></span><span class="path">ui/src/lib/components/Overview.svelte</span><span class="conv"><b>5</b> conversations</span></div>
+        <div class="filerow"><span class="gutter"><i style="height:3px"></i><i style="height:4px"></i><i style="height:6px"></i></span><span class="path">src/serve.rs</span><span class="conv"><b>3</b> conversations</span></div>
+        <div class="filerow" style="color:var(--muted)"><span class="gutter"></span><span class="path" style="color:var(--muted)">+ 18 more referenced files</span><span class="conv"></span></div>
+      </div>
+      <div class="rd-side">
+        <div class="kv"><span class="k">remotes · 1</span><span class="v mono">origin → github.com/codeshrew/confer</span></div>
+        <div class="kv"><span class="k">local clones · 1</span><span class="v mono" style="color:var(--tracked)">~/git/confer ✓ mapped</span></div>
+        <div class="kv"><span class="k">role</span><span class="v mono">tooling</span></div>
+        <div class="kv"><span class="k">access</span><div class="access"><span class="a"><span class="av" style="background:var(--cyan)">JA</span>jarvis</span><span class="a"><span class="av" style="background:var(--green)">HE</span>gitconv</span></div></div>
+        <div class="kv"><span class="k">referenced</span><span class="v">48 refs · across 22 messages · 6 topics</span></div>
+        <div class="rd-actions">
+          <span class="btn">open in code view ›</span>
+        </div>
+        <!-- DEFERRED: state-mutating actions (map / register / re-discover / pull) wait on the
+             read/write "human-action layer" — confer serve is read-only today. Kept here as intent. -->
+        <div class="deferred">
+          <span class="lab" style="display:block;margin-bottom:.35rem;font-size:.54rem">later · needs the human-action layer</span>
+          <span class="dbtn">map / re-discover clone</span>
+          <span class="dbtn">pull latest · human-gated</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rationale">
+    <span class="lab">what the repos tab is really for</span>
+    <h3>Integrity and gravity — the two questions a list can't answer.</h3>
+    <div class="qa">
+      <div class="q"><h4><span class="g">✓</span>Mapping integrity</h4><p>Three tiers: <b>tracked</b> (resolves), <b>registered-not-local</b> (pointer-only — map a clone), <b>shadow</b> (referenced but unregistered). The health line calls out the gap. No more silent "not registered" surprises.</p></div>
+      <div class="q"><h4><span class="g">◇</span>Shadow repos surfaced</h4><p>A repo peers <code>--ref</code> but the inventory doesn't know = a ghost row you can <b>register</b> in one step. The gap becomes a to-do, not a silent warning.</p></div>
+      <div class="q"><h4><span class="g">▁▃▅</span>Reference gravity</h4><p>Each repo shows how much it's talked about (refs + a density spark). You see what the fleet's work actually centers on — <code>confer</code> is hot, others quiet.</p></div>
+      <div class="q"><h4><span class="g">◈</span>Drill-in composes cards</h4><p>Open a repo → its <b>hot files</b> ranked by conversation density (mini code-ref cards → the big code view). Repos → Code is one continuous thread.</p></div>
+      <div class="q"><h4><span class="g">⌛</span>Actions — deferred</h4><p>Map / register / pull are the fix-the-gap moves — but <code>serve</code> is <b>read-only</b> today, so they wait on a future <b>human-action layer</b>. Kept in the design as intent (dashed, inactive); the read-only view still <i>surfaces</i> every gap now.</p></div>
+      <div class="q"><h4><span class="g">✓</span>Honest by construction</h4><p>Registration, clone-map, access, and ref counts are all real (inventory + <code>repos.json</code> + reverse index). Shadow detection is a pure diff. Nothing invented.</p></div>
+    </div>
+  </div>
+
+  <footer class="mono">confer · repos redesign · Tokyo Night · integrity + gravity · shadow repos surfaced · drill-in → code</footer>
+</div>
