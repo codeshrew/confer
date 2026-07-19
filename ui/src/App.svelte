@@ -1146,12 +1146,24 @@
       </div>
       <div class="ctx-body">
         {#if contextMode === 'refs'}
+          <!-- Piece 11 Phase 1 (11-code-view-BUILD-BRIEF.md) — Code view's
+               "stop jumping to Chat" fix: `anchored` is on ONLY while
+               actually IN Code view. Chat's own inline-ref-chip lookup
+               keeps the OLD behavior (`onSelectHit={openHitInChat}` fires
+               on a bare row click — you're already reading Chat, jumping
+               to a different message there is expected). In Code,
+               `onSelectHit` is unused — `onOpenThread` (the anchored
+               reader's own explicit "open full thread ›" link) is the ONLY
+               thing that still calls `openHitInChat`. -->
           <ReverseIndexPanel
             hits={refHits}
             repo={refContext?.repo ?? null}
             path={refContext?.path ?? null}
             range={refContext?.range ?? null}
+            anchored={appState.view === 'code'}
+            agents={overview?.fleet ?? []}
             onSelectHit={openHitInChat}
+            onOpenThread={openHitInChat}
             onWholeFile={backToWholeFile}
             onWidenToRepo={() => refContext?.repo && widenToRepo(refContext.repo)}
             onSelectFile={selectFileFromRepoMode}
