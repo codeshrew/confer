@@ -498,6 +498,7 @@ mod tests {
             id: id.into(),
             display: display.into(),
             desc: Some("test agent".into()),
+            profile: None,
             expected_host: None,
             last_ts: Some("2026-07-10T04:00:00Z".into()),
             last_host: None,

@@ -397,6 +397,14 @@ fn agent_row_json(
         "id": a.id,
         "display": sanitize_term(&a.display, false),
         "desc": a.desc.as_deref().map(|d| sanitize_term(d, false)),
+        // The full role-card markdown body (design gap Jarvis flagged): `desc` stays the
+        // one-line fallback, `profileMarkdown` is the prose below the frontmatter. Sanitized
+        // the SAME way a message body is (`sanitize_term(.., true)` — multiline: strip
+        // terminal-hostile control chars but KEEP `\n`/`\t`), never trust-gated: `desc` and the
+        // message `body` are both peer-authored card prose surfaced as-is, and the frontend
+        // renders the markdown itself, so this matches the existing prose precedent rather than
+        // inventing a policy. `null` when the card has no body.
+        "profileMarkdown": a.profile.as_deref().map(|p| sanitize_term(p, true)),
         "expectedHost": a.expected_host,
         "lastTs": a.last_ts,
         "lastHost": a.last_host,

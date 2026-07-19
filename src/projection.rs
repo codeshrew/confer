@@ -365,6 +365,10 @@ pub struct AgentRow {
     pub id: String,
     pub display: String,
     pub desc: Option<String>,
+    /// The role card's full markdown BODY (`roster::Role.profile`) — the freeform profile
+    /// prose below the frontmatter, distinct from the one-line `desc`. `None` when the role has
+    /// no `.md` card or the card is frontmatter-only.
+    pub profile: Option<String>,
     pub expected_host: Option<String>,
     /// Most recent post ts (RFC3339) and the host it came from, if any.
     pub last_ts: Option<String>,
@@ -416,6 +420,7 @@ pub fn agents(
             AgentRow {
                 display: roster::display(roster, &id).to_string(),
                 desc: roster.get(&id).and_then(|r| r.desc.clone()),
+                profile: roster.get(&id).and_then(|r| r.profile.clone()),
                 expected_host: roster::host(roster, &id).map(str::to_string),
                 last_ts,
                 last_host,
