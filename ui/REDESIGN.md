@@ -34,11 +34,14 @@ piece, never retrofitted. The model (build up across pieces, discoverable via a 
 - **`⌘K` command palette** — fuzzy jump to any hub / thread / action (fzf-like), the macOS-native entry point.
 - **vim motions wherever there's a list** — `j`/`k` move selection, `g g`/`G` top/bottom, `/` filter-in-place,
   `Enter` or `l` open/drill, `Esc` or `h` back/up-a-level. (Rail hubs, chat messages, board rows, code refs.)
-- **`g`-prefix / leader for view + actions** (avoids browser-shortcut clashes) — e.g. `g` then a mnemonic to
-  switch view (Overview/Chat/Board/Fleet/Code), plus action keys (claim/done) where they apply.
+- **`g` leader for views + actions (SETTLED with operator 2026-07-18)** — the operator's tmux prefix is
+  `Ctrl+Space`, which clashes with browser chords, so the web dashboard uses a vim-native **`g` leader**.
+  View switching: **`g` then a number `1`–`5`** (Overview/Chat/Board/Fleet/Code — mirrors tmux window-number
+  muscle memory) is primary, with first-letter aliases where unambiguous. Action keys (`c` claim / `d` done)
+  where they apply.
 - **`?`** opens a which-key-style overlay of available keys, so nothing has to be memorized blind.
 - Every affordance reachable without a mouse — this composes with the `:focus-visible` work already in place.
-Full binding table to be settled with the operator; land the first slice (rail `j`/`k` + `⌘K`) in piece 2.
+First slice lands in piece 2: rail `j`/`k` navigation + `⌘K` palette + `g`+number view switching + `?` overlay.
 
 ---
 
