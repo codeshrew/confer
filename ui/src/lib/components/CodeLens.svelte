@@ -15,6 +15,7 @@
   import { fileKey, groupRefHitsByFile } from '../codeTree';
   import { formatAge } from '../format';
   import { buildGutterEntries, entryColorVar, gutterColumnCount, type GutterEntry } from '../codeGutter';
+  import { buildMinimapSegments, computeViewportIndicator, type ViewportIndicator } from '../codeMinimap';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
   import FileIcon from './FileIcon.svelte';
@@ -109,6 +110,59 @@
   const wholeFileHits = $derived(fileRefs.filter((h) => h.range === null));
   const gutterEntries = $derived(buildGutterEntries(fileRefs));
   const gutterColumns = $derived(gutterColumnCount(gutterEntries));
+
+  // Piece 11 Phase 2b — the conversation minimap: the SAME gutter entries,
+  // compressed to a proportional strip. Built off the file's real first/last
+  // line numbers (a snippet doesn't necessarily start at line 1), never off
+  // whatever's currently SCROLLED into view — the whole point is that
+  // clusters in folded regions (Phase 3, not built yet) still show up here.
+  // (`buildMinimapSegments` still honestly drops an entry that doesn't
+  // intersect the LOADED file at all, e.g. a dangling `offline` ref to lines
+  // that no longer exist here — same as the per-line gutter already does.)
+  const minimapSegments = $derived.by(() => {
+    if (lines.length === 0) return [];
+    return buildMinimapSegments(gutterEntries, lines[0]!.n, lines[lines.length - 1]!.n);
+  });
+
+  // The viewport indicator (mock 12's `.mmview`) — real scroll geometry, not
+  // a decorative fixed band. `scrollEl`/`codeEl` are bound below; `undefined`
+  // (not yet mounted, or a different view branch is showing) degrades to
+  // "whole file in view" via `computeViewportIndicator`'s own 0-height guard.
+  let scrollEl = $state<HTMLElement | undefined>();
+  let codeEl = $state<HTMLElement | undefined>();
+  let viewport = $state<ViewportIndicator>({ top: 0, height: 1 });
+
+  function updateViewport() {
+    viewport = computeViewportIndicator({
+      containerScrollTop: scrollEl?.scrollTop ?? 0,
+      containerClientHeight: scrollEl?.clientHeight ?? 0,
+      codeOffsetTop: codeEl?.offsetTop ?? 0,
+      codeScrollHeight: codeEl?.scrollHeight ?? 0,
+    });
+  }
+
+  $effect(() => {
+    // Re-run when a new file's lines land (the code element's scrollHeight
+    // changes) as well as on real scroll/resize.
+    void lines;
+    const el = scrollEl;
+    if (!el) return;
+    updateViewport();
+    el.addEventListener('scroll', updateViewport, { passive: true });
+    window.addEventListener('resize', updateViewport);
+    return () => {
+      el.removeEventListener('scroll', updateViewport);
+      window.removeEventListener('resize', updateViewport);
+    };
+  });
+
+  /** Click-to-scroll (the brief's own bullet) — jump the code pane to an
+   * entry's first line. Queries by the real `data-line` attribute each `.cl`
+   * row carries, rather than keeping a second line->element map in sync. */
+  function scrollToRange(range: [number, number]) {
+    const target = scrollEl?.querySelector<HTMLElement>(`[data-line="${range[0]}"]`);
+    target?.scrollIntoView({ block: 'center' });
+  }
 
   // Piece 11 Phase 2 (post-verify fix) — is the Phase-1 reader currently
   // showing THIS file's scope at all? (A reader open on a different
@@ -328,7 +382,7 @@
       <span class="ct-hint">conversation gutter · shape=scope, color=meaning, column=overlap · click a range tab to read it</span>
     </div>
     <div class="codepage">
-      <div class="densitywrap">
+      <div class="densitywrap" bind:this={scrollEl} onscroll={updateViewport}>
         {#if loading}
           <Skeleton rows={4} />
         {:else if !active.mapped}
@@ -359,12 +413,12 @@
                 >
               </button>
             {/if}
-            <div class="code" data-lang={lang} style="--gutter-cols:{gutterColumns}">
+            <div class="code" data-lang={lang} bind:this={codeEl} style="--gutter-cols:{gutterColumns}">
               {#each lines as line (line.n)}
                 {@const cols = lineColumns.get(line.n) ?? []}
                 {@const tabs = tabsByLine.get(line.n) ?? []}
                 {@const rowActive = cols.some((seg) => !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`)}
-                <div class="cl" class:hot={cols.some((c) => c !== null)} class:act={rowActive}>
+                <div class="cl" class:hot={cols.some((c) => c !== null)} class:act={rowActive} data-line={line.n}>
                   <span class="g">
                     {#each cols as seg, ci (ci)}
                       {@const segActive = !!seg && activeEntryKey === `${seg.entry.range[0]}-${seg.entry.range[1]}`}
@@ -414,6 +468,27 @@
           </div>
         {/if}
       </div>
+      {#if minimapSegments.length > 0}
+        <!-- Piece 11 Phase 2b — the conversation minimap: the whole file
+             compressed, folded regions included (there's nothing to fold
+             yet — Phase 3 — but this is already built off the FULL hit set,
+             not the viewport, so it's correct the moment collapse lands).
+             Law #3: omitted entirely when the file has no ranged
+             conversations, same convention as the file-lane above. -->
+        <div class="minimap" data-testid="code-minimap" title="conversation minimap — whole file">
+          {#each minimapSegments as seg (seg.range[0] + '-' + seg.range[1])}
+            <button
+              type="button"
+              class="mm"
+              style="top:{seg.top * 100}%;height:{seg.height * 100}%;--bc:{seg.color}"
+              title={`lines ${seg.range[0]}–${seg.range[1]}`}
+              onclick={() => scrollToRange(seg.range)}
+              data-testid="minimap-segment"
+            ></button>
+          {/each}
+          <div class="mmview" style="top:{viewport.top * 100}%;height:{viewport.height * 100}%" data-testid="minimap-viewport"></div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -684,5 +759,42 @@
   }
   .cc {
     color: var(--text);
+  }
+
+  /* Piece 11 Phase 2b — the conversation minimap: a thin strip on the far
+     edge of the code pane, `.codepage`'s second flex child (`.densitywrap`
+     stays the scrollable one). Reuses `entryColorVar`'s SAME state palette
+     as the gutter — one meaning, one hue, everywhere it shows up. */
+  .minimap {
+    flex: 0 0 auto;
+    width: 10px;
+    position: relative;
+    background: var(--panel-2);
+    border-left: 1px solid var(--border);
+  }
+  .mm {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    border: 0;
+    border-radius: 2px;
+    padding: 0;
+    cursor: pointer;
+    background: var(--bc);
+  }
+  .mm:hover {
+    outline: 1.5px solid color-mix(in srgb, var(--bc) 60%, transparent);
+    outline-offset: 0.5px;
+  }
+  /* The viewport indicator (mock 12's `.mmview`) — real scroll geometry,
+     not decorative; see `computeViewportIndicator` in `codeMinimap.ts`. */
+  .mmview {
+    position: absolute;
+    left: -1px;
+    right: -1px;
+    border: 1.5px solid var(--faint);
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    pointer-events: none;
   }
 </style>

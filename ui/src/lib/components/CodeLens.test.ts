@@ -633,3 +633,56 @@ describe('CodeLens — repo rollup (design/44 §6 item 2.4)', () => {
     expect(await screen.findByText('No conversations reference this repo yet')).toBeInTheDocument();
   });
 });
+
+describe('CodeLens — piece 11 Phase 2b: the conversation minimap', () => {
+  beforeEach(() => {
+    // jsdom has no real layout engine and doesn't implement scrollIntoView
+    // at all — stub it so click-to-scroll is observable.
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it('renders one minimap segment per gutter entry, colored by the SAME entryColorVar the gutter itself uses', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    const noteHit = hitOn(44); // msgType 'note' -> --state-metric
+    const blockedHit = { ...hitOn(46), msgType: 'request' as const, requestStatus: 'BLOCKED' as const }; // -> --state-stuck
+    vi.mocked(api.getRefs).mockResolvedValue([noteHit, blockedHit]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="minimap-segment"]').length).toBe(2));
+    const bcValues = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="minimap-segment"]')).map((s) =>
+      s.style.getPropertyValue('--bc').trim()
+    );
+    expect(bcValues).toContain('var(--state-metric)');
+    expect(bcValues).toContain('var(--state-stuck)');
+  });
+
+  it('law #3 — no minimap at all when the file has no ranged conversations (never a fabricated empty strip)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([wholeFileHit()]); // whole-file only, no ranged hits
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(screen.getByTestId('file-lane')).toBeInTheDocument());
+    expect(screen.queryByTestId('code-minimap')).not.toBeInTheDocument();
+  });
+
+  it('click-to-scroll: clicking a segment scrolls its entry\'s start line into view, not just anywhere', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(45)]);
+
+    const { container } = render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() => expect(container.querySelector('[data-testid="minimap-segment"]')).toBeInTheDocument());
+    const user = userEvent.setup();
+    await user.click(container.querySelector('[data-testid="minimap-segment"]') as HTMLElement);
+
+    const line45 = container.querySelector('[data-line="45"]');
+    expect(line45).not.toBeNull();
+    expect(vi.mocked(Element.prototype.scrollIntoView)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(Element.prototype.scrollIntoView).mock.instances[0]).toBe(line45);
+  });
+});
