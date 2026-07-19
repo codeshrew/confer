@@ -21,6 +21,12 @@ pub struct Repo {
     /// clone URL; omitted for a private/unshared repo.
     #[serde(default)]
     pub url: Option<String>,
+    /// root-commit SHA — the durable, URL-independent identity anchor (design/40,
+    /// `crosshub::root_sha`): a mapped local clone is "this repo" iff its root SHA
+    /// matches, so a fork / mirror / renamed remote still resolves. Optional
+    /// (trust-on-first-use if absent).
+    #[serde(default)]
+    pub root_sha: Option<String>,
     /// role ids that can clone/read it; empty = every hub participant.
     #[serde(default)]
     pub access: Vec<String>,

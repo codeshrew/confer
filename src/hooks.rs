@@ -186,8 +186,9 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
             ),
         };
         nudges.push(format!(
-            "• role '{}' @ {}: {reason} → cd {} && confer watch --role {} --replace",
-            t.role, t.hub, t.hub, t.role
+            "• role '{}' @ {}: {reason} → re-arm with the /confer-arm skill (hosts it under the \
+             Monitor; do NOT background confer watch). manual: cd {} && confer arm",
+            t.role, t.hub, t.hub
         ));
     }
     // L2 — roster sync: fold the current fleet roster into SessionStart context

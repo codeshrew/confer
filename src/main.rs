@@ -8,6 +8,8 @@
 #![warn(clippy::too_many_lines)]
 
 mod alias;
+#[cfg(feature = "serve")]
+mod api;
 mod append;
 mod autoheal;
 mod cli;
@@ -33,14 +35,20 @@ mod keygen_release;
 mod keyring;
 mod knownhubs;
 mod machineconfig;
+mod patch;
 mod presence;
 mod projection;
 mod reconnect;
+mod refcode;
+mod repomap;
 mod repos;
+mod reposdiscover;
 mod roster;
 mod schema;
 mod screen;
 mod secrets;
+mod arm;
+mod seen;
 #[cfg(feature = "serve")]
 mod serve;
 mod skills;
@@ -55,7 +63,7 @@ mod watch;
 mod watchlock;
 
 use anyhow::{anyhow, Result};
-use append::{cmd_append, cmd_lifecycle, AppendArgs};
+use append::{cmd_append, cmd_create, cmd_lifecycle, cmd_suggest, AppendArgs};
 use clap::Parser;
 use cli::{Cli, Cmd};
 use config_hub::{cmd_config, cmd_hub, cmd_rewatch, cmd_status};
@@ -299,7 +307,272 @@ pub(crate) fn format_line(
     )
 }
 
-/// Compact pointer tag for the one-line view: ` ⟶ repo:path` (first ref, +N more).
+/// `confer repos map <slug> [path]` — record this machine's clone of a repo (design/40
+/// layer 2). Local-only (`~/.confer/repos.json`), never in the hub. Warns if the slug
+/// isn't in the hub's repos registry (peers can't resolve `--ref <slug>:…` until it is).
+fn cmd_repos_map(slug: String, path: Option<String>) -> Result<()> {
+    if !valid_slug(&slug) {
+        return Err(anyhow!(
+            "invalid repo slug '{slug}': must match a repos/<slug> key ([a-z0-9][a-z0-9-]*)"
+        ));
+    }
+    let dir = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let abs = repomap::set(&slug, &dir)?;
+    println!("mapped {slug} → {}", abs.display());
+    if let Some(rsha) = crosshub::root_sha(&abs) {
+        println!("  root-sha {} (identity anchor)", &rsha[..rsha.len().min(12)]);
+    }
+    // Layer-1 check: without a hub card, the slug is private to this machine — peers
+    // can't resolve it. Surface that as a diagnostic (stderr), not an error.
+    let known = config::repo_root().ok().map(|r| repos::load(&r).contains_key(&slug)).unwrap_or(false);
+    if !known {
+        eprintln!(
+            "note: '{slug}' isn't in this hub's repos/ registry — peers can't resolve `--ref {slug}:…` \
+             until it's shared (add repos/{slug}.md with its url + root_sha)."
+        );
+    }
+    Ok(())
+}
+
+/// `confer repos discover [--root <dir>]…` — local-only backfill: match every repo
+/// registered in a hub you follow to a git clone already on this machine, and record it
+/// (`repomap::set`), so a fresh machine (or one that never ran `repos map`) doesn't need
+/// each slug typed in by hand. Never touches a hub card, never commits. A REPORT (exit 0)
+/// — even an all-unmatched run is not an error. See `reposdiscover.rs`.
+fn cmd_repos_discover(roots: Vec<String>) -> Result<()> {
+    let roots: Vec<std::path::PathBuf> = roots.into_iter().map(std::path::PathBuf::from).collect();
+    let report = reposdiscover::run(&roots)?;
+    for (slug, path) in &report.mapped {
+        println!("mapped {slug} → {}", path.display());
+    }
+    for (slug, url) in &report.unmatched {
+        let url = url.as_deref().unwrap_or("(no url)");
+        println!("unmatched {slug} ({url}) — no local clone found");
+    }
+    if report.mapped.is_empty() && report.unmatched.is_empty() {
+        println!("no repos registered across the hubs you follow — nothing to discover.");
+    }
+    Ok(())
+}
+
+/// Parse a reverse-lookup target `repo[:path[@sha][#Lstart-Lend]]` into
+/// `(repo, path?, range?)`. The sha is accepted but ignored for the query — we match
+/// by file + line-range across ALL shas ("what was ever said about these lines").
+pub(crate) fn parse_ref_query(s: &str) -> Result<(String, Option<String>, Option<[u64; 2]>)> {
+    let bad = || anyhow!("invalid refs target '{s}': expected repo[:path[#Lstart-Lend]]");
+    let (repo, rest) = match s.split_once(':') {
+        Some((r, rest)) => (r.to_string(), Some(rest)),
+        None => (s.to_string(), None),
+    };
+    if repo.is_empty() {
+        return Err(bad());
+    }
+    let (path, range) = match rest {
+        None => (None, None),
+        Some(rest) => {
+            let (before_hash, range) = match rest.split_once('#') {
+                Some((p, span)) => (p, Some(append::parse_range(span)?)),
+                None => (rest, None),
+            };
+            let path = before_hash.split('@').next().unwrap_or(before_hash);
+            (if path.is_empty() { None } else { Some(path.to_string()) }, range)
+        }
+    };
+    Ok((repo, path, range))
+}
+
+/// `confer refs <repo[:path[#range]]>` — the reverse index (design/40 #4): the threads
+/// that reference this code. A report; `--check` is a predicate (exit 1 if none).
+fn cmd_refs(target: String, check: bool, all_hubs: bool, json: bool) -> Result<()> {
+    let (repo, path, range) = parse_ref_query(&target)?;
+    let hubs: Vec<std::path::PathBuf> =
+        if all_hubs { crosshub::hub_dirs() } else { vec![config::repo_root()?] };
+
+    // (hub_label, hit, staleness). Staleness compares the pinned blob OID vs HEAD's in
+    // the locally-mapped clone (design/40 #5) — "unknown" when the repo isn't cloned here.
+    let mut hits: Vec<(String, projection::RefHit, &'static str)> = Vec::new();
+    for hub in &hubs {
+        let Ok(msgs) = store::all_messages(hub) else { continue };
+        let idx = projection::RefIndex::fold(&msgs);
+        let repo_inv = repos::load(hub);
+        let label = crosshub::hub_label(hub);
+        let mut clone_cache: std::collections::HashMap<String, Option<std::path::PathBuf>> =
+            std::collections::HashMap::new();
+        for h in idx.query(&repo, path.as_deref(), range) {
+            let clone = clone_cache
+                .entry(h.repo.clone())
+                .or_insert_with(|| refcode::clone_for(&repo_inv, &h.repo))
+                .clone();
+            // design/45 §1.7: a patch's staleness IS the landed-detection (result_hash vs
+            // HEAD:<path>), not the ordinary base-drift signal (patch refs carry no content_hash).
+            let st = if h.kind == projection::RefKind::Patch {
+                refcode::patch_staleness(clone.as_deref(), &h.path, h.result_hash.as_deref()).label()
+            } else {
+                refcode::staleness_ex(
+                    clone.as_deref(),
+                    &h.sha,
+                    &h.path,
+                    h.content_hash.as_deref(),
+                    h.base_ref.as_deref(),
+                    h.fork_point.as_deref(),
+                )
+                .label()
+            };
+            hits.push((label.clone(), h.clone(), st));
+        }
+    }
+
+    // Predicate: 0 if something references it, 1 if not. No listing (stdout stays clean).
+    if check {
+        return if hits.is_empty() { Err(PredicateFalse.into()) } else { Ok(()) };
+    }
+
+    if json {
+        for (hub, h, st) in &hits {
+            let mut refj = serde_json::json!({ "repo": h.repo, "path": h.path, "sha": h.sha });
+            if let Some(r) = h.range {
+                refj["range"] = serde_json::json!(r);
+            }
+            if let Some(ch) = &h.content_hash {
+                refj["content_hash"] = serde_json::json!(ch);
+            }
+            if let Some(n) = &h.ref_name {
+                refj["ref_name"] = serde_json::json!(n);
+            }
+            if let Some(t) = &h.ref_type {
+                refj["ref_type"] = serde_json::json!(t);
+            }
+            if let Some(d) = &h.commit_date {
+                refj["commit_date"] = serde_json::json!(d);
+            }
+            if h.dirty {
+                refj["dirty"] = serde_json::json!(true);
+            }
+            if h.untracked {
+                refj["untracked"] = serde_json::json!(true);
+            }
+            if let Some(b) = &h.base_ref {
+                refj["base_ref"] = serde_json::json!(b);
+            }
+            if let Some(f) = &h.fork_point {
+                refj["fork_point"] = serde_json::json!(f);
+            }
+            if h.kind == projection::RefKind::Patch {
+                refj["patch"] = serde_json::json!(true);
+            }
+            if let Some(rh) = &h.result_hash {
+                refj["result_hash"] = serde_json::json!(rh);
+            }
+            let line = serde_json::json!({
+                "event": "ref-hit",
+                "hub": hub,
+                "ref": refj,
+                "staleness": st,
+                "message": {
+                    "id": h.msg_id, "from": h.from, "type": h.msg_type,
+                    "ts": h.ts, "topic": h.topic, "summary": h.summary,
+                },
+                "thread": { "root": h.thread_root, "status": h.request_status },
+            });
+            println!("{}", serde_json::to_string(&line)?);
+        }
+        return Ok(());
+    }
+
+    let target_disp = match (&path, range) {
+        (Some(p), Some(r)) => format!("{repo}:{p}#L{}-{}", r[0], r[1]),
+        (Some(p), None) => format!("{repo}:{p}"),
+        (None, _) => repo.clone(),
+    };
+    if hits.is_empty() {
+        println!("no conversations reference {target_disp}");
+        return Ok(());
+    }
+    println!("{} conversation(s) reference {target_disp}:", hits.len());
+    for (hub, h, st) in &hits {
+        let hubp = if all_hubs { format!("{hub} · ") } else { String::new() };
+        let loc = h.topic.as_deref().map(|t| format!("#{t}")).unwrap_or_else(|| "—".into());
+        let status = h.request_status.map(|s| format!(" [{s}]")).unwrap_or_default();
+        let rng = h.range.map(|r| format!("#L{}-{}", r[0], r[1])).unwrap_or_default();
+        let paren = refcode::identity_paren(h.ref_name.as_deref(), h.ref_type.as_deref(), h.commit_date.as_deref());
+        // Flag drift: mark a ref whose code moved/changed under the pin, or is off the
+        // current history entirely (silent when "current"/"unknown" — no clone, or
+        // unchanged, needs no callout). "unpinned" reads as a legacy marker.
+        let stmark = match *st {
+            "changed" => "  ⚠changed",
+            "moved" => "  ⚠moved",
+            "reachable" => "  ⚠reachable",
+            "offline" => "  ⚠offline",
+            "squashed" => "  ⚠squashed",
+            "unpinned" => "  ⚠unpinned — legacy",
+            _ => "",
+        };
+        let flags = match (h.dirty, h.untracked) {
+            (true, true) => "  [dirty][untracked]",
+            (true, false) => "  [dirty]",
+            (false, true) => "  [untracked]",
+            (false, false) => "",
+        };
+        // design/45 §1.7: the patch chip — "proposed a change here (applied/open)", `applied`
+        // read straight off the landed-detection staleness computed above.
+        let patch_chip = if h.kind == projection::RefKind::Patch {
+            format!("  ⟳ proposed a change here ({})", if *st == "landed" { "applied" } else { "open" })
+        } else {
+            String::new()
+        };
+        println!(
+            "  {hubp}{loc}  {}  {}{status}  {}  ({}:{}{paren}{rng}){stmark}{flags}{patch_chip}",
+            short_id(&h.msg_id),
+            h.from,
+            h.summary,
+            h.repo,
+            h.path
+        );
+    }
+    Ok(())
+}
+
+/// `confer ref-contains <sha> [<ref>] [--repo <slug>]` — plumbing predicate (design/44
+/// Addendum 1): is `<sha>` reachable from `<ref>` (default `HEAD`)? Exit 0 if yes, 1 if
+/// no — `git merge-base --is-ancestor` under the hood, a more robust liveness check
+/// than "is it still HEAD" (HEAD advances constantly; ancestry doesn't go stale on
+/// every further commit). Resolves the repo via `--repo <slug>`'s machine-local clone
+/// map, else the git working tree at the current directory — no fetch either way.
+fn cmd_ref_contains(sha: String, against: String, repo: Option<String>) -> Result<()> {
+    let dir = match repo {
+        Some(slug) => {
+            let hub = config::repo_root()?;
+            let repo_inv = repos::load(&hub);
+            refcode::clone_for(&repo_inv, &slug).ok_or_else(|| {
+                anyhow!("repo '{slug}' has no mapped clone here (`confer repos map {slug} <path>`)")
+            })?
+        }
+        None => {
+            let cwd = std::env::current_dir()?;
+            let o = gitcmd::output(&cwd, &["rev-parse", "--show-toplevel"])?;
+            if !o.status.success() {
+                return Err(anyhow!(
+                    "not inside a git working tree — pass --repo <slug> to resolve via the clone map"
+                ));
+            }
+            std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())
+        }
+    };
+    if refcode::is_ancestor(&dir, &sha, &against) {
+        println!("{sha} is reachable from {against}");
+        Ok(())
+    } else {
+        println!("{sha} is NOT reachable from {against}");
+        Err(PredicateFalse.into())
+    }
+}
+
+/// Compact pointer tag for the one-line view: ` ⟶ repo:path (branch · date)` (first
+/// ref, +N more). The parenthetical (design/44 §5.1) is omitted when neither field is
+/// present — legacy refs render exactly as before.
 fn render_refs(refs: &[schema::CodeRef]) -> String {
     let Some(first) = refs.first() else {
         return String::new();
@@ -309,7 +582,12 @@ fn render_refs(refs: &[schema::CodeRef]) -> String {
     } else {
         String::new()
     };
-    format!(" ⟶ {}:{}{more}", first.repo, first.path)
+    let paren = refcode::identity_paren(
+        first.ref_name.as_deref(),
+        first.ref_type.as_deref(),
+        first.commit_date.as_deref(),
+    );
+    format!(" ⟶ {}:{}{paren}{more}", first.repo, first.path)
 }
 
 /// Render a target list (`to`) as ` → a, b` with role display names resolved
@@ -404,16 +682,30 @@ impl std::fmt::Display for StopHookBlock {
 }
 impl std::error::Error for StopHookBlock {}
 
+/// `confer apply --check`'s distinct "already landed" verdict (design/45 §1.5, design/37 exit
+/// vocabulary: 0 applies cleanly, 1 conflicts, 2 already landed, 3 unresolvable) — landing isn't a
+/// failure, but it IS distinct from "would apply cleanly" for a scriptable caller, so it gets its
+/// own code (2) rather than overloading `PredicateFalse`'s 1.
+#[derive(Debug)]
+pub(crate) struct AlreadyLanded;
+impl std::fmt::Display for AlreadyLanded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("already landed")
+    }
+}
+impl std::error::Error for AlreadyLanded {}
+
 /// Exit-code contract (DESIGN.md): 0 = success / report produced / predicate YES; 1 = predicate NO (a
-/// valid negative, ONLY from predicate commands); 2 = usage (clap) or the Stop-hook block; 3 =
-/// execution/environment error. Codes return UP through here — never `process::exit` mid-stack — so
-/// clone locks and cursor state always `Drop`.
+/// valid negative, ONLY from predicate commands); 2 = usage (clap), the Stop-hook block, or `confer
+/// apply --check`'s "already landed" verdict; 3 = execution/environment error. Codes return UP
+/// through here — never `process::exit` mid-stack — so clone locks and cursor state always `Drop`.
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.is::<PredicateFalse>() => ExitCode::from(1),
         Err(e) if e.is::<StopHookBlock>() => ExitCode::from(2),
+        Err(e) if e.is::<AlreadyLanded>() => ExitCode::from(2),
         Err(e) => {
             // Match Rust's default Result-termination output so error TEXT is unchanged; only the CODE
             // moves (1 → 3), decoupling "confer failed" from a predicate's "the answer is no".
@@ -498,7 +790,9 @@ fn run() -> Result<()> {
         Cmd::Append {
             msg_type,
             text,
+            body_file,
             summary,
+            summary_file,
             to,
             cc,
             priority,
@@ -513,10 +807,17 @@ fn run() -> Result<()> {
             resolution,
             defer,
             allow_secret,
+            ref_from,
+            allow_dirty,
+            patch,
+            patch_repo,
+            allow_large_patch,
         } => cmd_append(AppendArgs {
             msg_type,
             text,
+            body_file,
             summary,
+            summary_file,
             to,
             cc,
             priority,
@@ -531,12 +832,36 @@ fn run() -> Result<()> {
             allow_secret,
             resolution,
             defer,
+            ref_from,
+            allow_dirty,
+            patch,
+            patch_repo,
+            allow_large_patch,
         }),
-        Cmd::Claim { args } => cmd_lifecycle("claim", args, None),
-        Cmd::Done { args, resolution } => cmd_lifecycle("done", args, resolution),
-        Cmd::Error { args } => cmd_lifecycle("error", args, None),
-        Cmd::Blocked { args } => cmd_lifecycle("blocked", args, None),
-        Cmd::Defer { args } => cmd_lifecycle("defer", args, None),
+        Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
+        Cmd::Note { args } => cmd_create("note", args, None),
+        Cmd::Claim { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("claim", args, None)
+        }
+        Cmd::Done { mut args, resolution } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("done", args, resolution)
+        }
+        Cmd::Error { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("error", args, None)
+        }
+        Cmd::Blocked { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("blocked", args, None)
+        }
+        Cmd::Defer { mut args } => {
+            args.of = args.resolved_of()?;
+            cmd_lifecycle("defer", args, None)
+        }
+        Cmd::Suggest { args } => cmd_suggest(args),
+        Cmd::Apply { id, check, repo_dir, force } => patch::cmd_apply(id, check, repo_dir, force),
         Cmd::Poll {
             advance,
             topic,
@@ -583,7 +908,7 @@ fn run() -> Result<()> {
             blocked,
         } => cmd_requests(open, mine, role, json, backlog, blocked),
         Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
-        Cmd::Threads {
+        Cmd::Topics {
             open,
             closed,
             stale,
@@ -647,7 +972,13 @@ fn run() -> Result<()> {
             ssh,
             https,
         } => cmd_invite(role, host, scheme_from(ssh, https)),
-        Cmd::Repos { json } => cmd_repos(json),
+        Cmd::Repos { action, json } => match action {
+            Some(cli::ReposAction::Map { slug, path }) => cmd_repos_map(slug, path),
+            Some(cli::ReposAction::Discover { root }) => cmd_repos_discover(root),
+            None => cmd_repos(json),
+        },
+        Cmd::Refs { target, check, all_hubs, json } => cmd_refs(target, check, all_hubs, json),
+        Cmd::RefContains { sha, against, repo } => cmd_ref_contains(sha, against, repo),
         Cmd::Verify { id, strict } => cmd_verify(id, strict),
         Cmd::ConfirmKey { role } => cmd_confirm_key(role),
         Cmd::Doctor { dir, fix, json, check } => cmd_doctor(dir, fix, json, check),
@@ -701,20 +1032,25 @@ fn run() -> Result<()> {
             replace,
             all,
             min_priority,
+            wake_on,
             no_version_notice,
             delivery,
             ..
         } => {
-            let min_priority = match min_priority.as_str() {
-                "low" => 0,
-                "normal" => 1,
-                "high" => 2,
-                other => {
-                    return Err(anyhow!(
-                        "invalid --min-priority '{other}': expected low | normal | high"
-                    ))
-                }
-            };
+            // Resolve wake_on/min_priority/topic/all: explicit CLI flag > saved per-(hub,role)
+            // machine-config preference > built-in default (design/51 §6/Phase B). Saves the
+            // resolved bundle back when any flag on this run was explicit.
+            let root = config::repo_root()?;
+            let hub_key = config::hub_key(&root);
+            let resolved_role = config::resolve_role(role.clone(), &root).unwrap_or_default();
+            let (wake_on, min_priority, topic, all) = watch::resolve_watch_prefs(
+                &hub_key,
+                &resolved_role,
+                wake_on.as_deref(),
+                min_priority.as_deref(),
+                topic.as_deref(),
+                all,
+            )?;
             watch::run(watch::WatchOpts {
                 topic,
                 role,
@@ -724,25 +1060,26 @@ fn run() -> Result<()> {
                 replace,
                 all,
                 min_priority,
+                wake_on,
                 no_version_notice,
                 delivery,
             })
+        }
+        Cmd::Arm { role, topic, all, min_priority, wake_on } => {
+            arm::run(role, topic, all, min_priority, wake_on)
         }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]
         Cmd::Dashboard { all_hubs } => cmd_dashboard(all_hubs),
         #[cfg(feature = "serve")]
-        Cmd::Serve { all_hubs, port, bind } => {
-            // Precedence: explicit --bind (full addr, for non-localhost) > --port (localhost
-            // shorthand) > CONFER_SERVE_PORT env > default 8422 (8787 collides with RStudio et al.).
-            let bind = bind.unwrap_or_else(|| {
-                let p = port
-                    .or_else(|| std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok()))
-                    .unwrap_or(8422);
-                format!("127.0.0.1:{p}")
-            });
-            serve::run(resolve_hubs(all_hubs)?, &bind)
+        Cmd::Serve { all_hubs, lan, port, bind } => {
+            // Precedence (see serve::resolve_bind): explicit --bind always wins; else --lan
+            // binds 0.0.0.0; else loopback-only (127.0.0.1) is the private default. Port comes
+            // from --port, else CONFER_SERVE_PORT, else 8422.
+            let env_port = std::env::var("CONFER_SERVE_PORT").ok().and_then(|s| s.parse().ok());
+            let bind = serve::resolve_bind(&serve::BindFlags { bind, lan, port, env_port });
+            serve::run(resolve_hubs(all_hubs)?, &bind, all_hubs)
         }
         Cmd::InstallHook { project } => cmd_install_hook(project),
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
@@ -798,8 +1135,12 @@ pub(crate) fn ssh_keygen_path() -> String {
 /// so `done --of X` already reaches the opener; `--to`/`--reply-to` override that.
 #[derive(clap::Args)]
 pub(crate) struct LifecycleArgs {
-    /// the request id this update is about
-    #[arg(long)]
+    /// the request id this update is about (positional shorthand for --of; matching
+    /// `show`/`ack`, which already take a bare id — this closes that inconsistency)
+    id: Option<String>,
+    /// the request id this update is about — same as the positional id; give at most
+    /// one (both are fine if they agree)
+    #[arg(long, default_value = "")]
     of: String,
     /// one-line summary (a sensible default is used if omitted)
     #[arg(long)]
@@ -825,6 +1166,95 @@ pub(crate) struct LifecycleArgs {
     /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
     #[arg(long = "ref")]
     refs: Vec<String>,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    allow_dirty: bool,
+}
+
+impl LifecycleArgs {
+    /// Reconcile the positional id with `--of`: either alone is fine; given both, they
+    /// must agree (a clear error otherwise beats silently preferring one over the other).
+    fn resolved_of(&self) -> Result<String> {
+        let of = self.of.trim();
+        match (self.id.as_deref().map(str::trim), of) {
+            (Some(pos), of) if !pos.is_empty() && !of.is_empty() && pos != of => Err(anyhow!(
+                "conflicting request id: positional '{pos}' vs --of '{of}' — pass just one"
+            )),
+            (Some(pos), _) if !pos.is_empty() => Ok(pos.to_string()),
+            (_, of) if !of.is_empty() => Ok(of.to_string()),
+            _ => Err(anyhow!("a request id is required: pass it positionally or via --of")),
+        }
+    }
+}
+
+/// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
+/// wrappers over `append --type <request|note>` with the type fixed, so they
+/// accept the same creation flags `append` does — add a flag here once and both
+/// verbs gain it. `--type` itself isn't exposed here — these verbs exist so it
+/// doesn't need to be.
+#[derive(clap::Args)]
+pub(crate) struct CreateArgs {
+    /// REQUIRED one-line summary — the triage field peers read before opening the body.
+    #[arg(long)]
+    summary: String,
+    /// message body; if omitted, read from stdin (supports multi-line/fenced)
+    #[arg(long)]
+    text: Option<String>,
+    /// primary addressee target(s) — role id, group, or `all`; repeatable
+    /// (--to a --to b). REQUIRED for `request`.
+    #[arg(long = "to")]
+    to: Vec<String>,
+    /// secondary audience target(s) — role id, group, or `all`; repeatable
+    #[arg(long = "cc")]
+    cc: Vec<String>,
+    /// triage hint: low | normal | high
+    #[arg(long)]
+    priority: Option<String>,
+    /// thread/topic slug (folder); defaults to "general"
+    #[arg(long)]
+    topic: Option<String>,
+    /// override the writing role (defaults to the joined role)
+    #[arg(long)]
+    from: Option<String>,
+    /// content provenance: agent | web | human (external → downweight)
+    #[arg(long)]
+    src: Option<String>,
+    /// point at a durable doc/spec instead of re-transmitting it:
+    /// `repo:path[@sha][#Lstart-Lend]` (repo resolves against `confer repos`);
+    /// repeatable. sha defaults to HEAD.
+    #[arg(long = "ref")]
+    refs: Vec<String>,
+    /// allow a summary-only message (empty body) — otherwise an empty/`-` body
+    /// is rejected, so content isn't silently lost.
+    #[arg(long)]
+    allow_empty_body: bool,
+    /// mark a request as backlog/someday — captured but kept OFF the active
+    /// `requests` board until promoted. (`request` only.)
+    #[arg(long)]
+    defer: bool,
+    /// post anyway even if the body looks like it contains a secret (the lint
+    /// blocks common token/key shapes — history is permanent + fleet-wide).
+    #[arg(long = "allow-secret")]
+    allow_secret: bool,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    allow_dirty: bool,
+    /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch` (design/45)
+    /// — see `append --patch`. Requires --repo.
+    #[arg(long)]
+    patch: Option<String>,
+    /// the `repos/<slug>` --patch is against (see `append --repo`).
+    #[arg(long = "repo")]
+    patch_repo: Option<String>,
+    /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
+    #[arg(long = "allow-large-patch")]
+    allow_large_patch: bool,
 }
 
 struct PollArgs {

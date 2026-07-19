@@ -1,0 +1,266 @@
+<meta charset="utf-8">
+<title>confer · code — the conversation stays with the code</title>
+<style>
+  :root{
+    --bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    /* semantic (settled palette) */
+    --open:#7dcfff;--flight:#9ece6a;--attn:#e0af68;--stuck:#f7768e;--done:#565f89;--metric:#2ac3de;
+    /* revision orientation */
+    --head:#9ece6a;--pinned:#e0af68;--gone:#f7768e;
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow-sh:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1180px;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --open:#2959aa;--flight:#4f6d2e;--attn:#8a6c2f;--stuck:#d81f57;--done:#7a80a0;--metric:#0f7c93;
+    --head:#4f6d2e;--pinned:#8a6c2f;--gone:#d81f57;
+    --shadow-sh:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--cyan:#7dcfff;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--accent:#7dcfff;--open:#7dcfff;--flight:#9ece6a;--attn:#e0af68;--stuck:#f7768e;--done:#565f89;--metric:#2ac3de;--head:#9ece6a;--pinned:#e0af68;--gone:#f7768e;}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--cyan:#2959aa;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--accent:#2959aa;--open:#2959aa;--flight:#4f6d2e;--attn:#8a6c2f;--stuck:#d81f57;--done:#7a80a0;--metric:#0f7c93;--head:#4f6d2e;--pinned:#8a6c2f;--gone:#d81f57;}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+
+  .intro{margin-bottom:var(--phi2)}
+  .intro .eyebrow{color:var(--accent);font-family:var(--font-mono);font-size:.7rem;letter-spacing:.13em;text-transform:uppercase}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.45rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:70ch;margin:0;font-size:.98rem}
+
+  .screen{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-sh);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:.5rem;padding:.55rem .9rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .chrome .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--muted-2);opacity:.6}
+  .chrome .url{margin-left:.4rem;font-family:var(--font-mono);font-size:.72rem;color:var(--muted);background:var(--bg-deep);padding:.16rem .6rem;border-radius:6px;border:1px solid var(--border-soft)}
+  .tabs{margin-left:auto;display:flex;gap:.15rem}
+  .tabs span{font-size:.72rem;color:var(--muted);padding:.16rem .5rem;border-radius:6px}
+  .tabs span.on{color:var(--fg);background:var(--highlight)}
+
+  /* ===== three-pane code view ===== */
+  .cv{display:grid;grid-template-columns:196px 1fr 336px;height:560px;min-height:0}
+  .cv > *{min-width:0;min-height:0}
+
+  /* left — tree navigator */
+  .ctree{background:var(--panel);border-right:1px solid var(--border);overflow:auto;padding:.5rem 0}
+  .ctree .th{font-family:var(--font-mono);font-size:.58rem;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);padding:.3rem .8rem .4rem}
+  .trow{display:flex;align-items:center;gap:.45rem;padding:.24rem .8rem;font-size:.78rem;color:var(--fg-dim);cursor:pointer;white-space:nowrap}
+  .trow:hover{background:var(--highlight)}
+  .trow.on{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--fg);box-shadow:inset 2px 0 0 var(--accent)}
+  .trow .ico{width:.85rem;text-align:center;color:var(--muted);font-size:.72rem}
+  .trow.dir{color:var(--fg);font-weight:560}
+  .trow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:.72rem}
+  .trow .rc{font-family:var(--font-mono);font-size:.56rem;font-weight:700;color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);border-radius:4px;padding:.04rem .3rem}
+  .trow.indent{padding-left:1.6rem} .trow.indent2{padding-left:2.4rem}
+
+  /* center — code + revision bar */
+  .cmain{display:flex;flex-direction:column;background:var(--bg-deep);overflow:hidden}
+  .revbar{display:flex;align-items:center;gap:.6rem;padding:.5rem .85rem;border-bottom:1px solid var(--border);background:var(--surface);flex:0 0 auto;flex-wrap:wrap}
+  .crumb{font-family:var(--font-mono);font-size:.74rem;color:var(--fg-dim);font-weight:560}
+  .crumb b{color:var(--fg)}
+  .rev{display:inline-flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.66rem;padding:.16rem .5rem;border-radius:6px;border:1px solid var(--border)}
+  .rev .sha{color:var(--fg)}
+  .rev .who{color:var(--muted)}
+  .rev.pinned{color:var(--pinned);border-color:color-mix(in srgb,var(--pinned) 42%,transparent);background:color-mix(in srgb,var(--pinned) 12%,transparent)}
+  .rev.head{color:var(--head);border-color:color-mix(in srgb,var(--head) 40%,transparent);background:color-mix(in srgb,var(--head) 11%,transparent)}
+  .rev .glyph{font-size:.7rem}
+  .revspacer{flex:1}
+  .rtoggle{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;font-family:var(--font-mono);font-size:.62rem}
+  .rtoggle button{background:transparent;border:0;color:var(--muted);padding:.2rem .55rem;cursor:pointer}
+  .rtoggle button.on{background:var(--highlight);color:var(--fg)}
+  .rcompare{font-family:var(--font-mono);font-size:.62rem;color:var(--muted);border:1px dashed var(--border);border-radius:6px;padding:.18rem .5rem;cursor:pointer}
+  .rcompare:hover{color:var(--fg-dim);border-color:var(--muted-2)}
+
+  .codescroll{flex:1;overflow:auto;padding:.5rem 0 1.4rem}
+  .code{font:500 12px/1.62 var(--font-mono)}
+
+  /* fold separator (PR-style collapse) */
+  .fold{display:flex;align-items:center;gap:.6rem;padding:.2rem .85rem;margin:.15rem 0;color:var(--muted);cursor:pointer;background:color-mix(in srgb,var(--blue) 6%,transparent);border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft)}
+  .fold:hover{background:color-mix(in srgb,var(--blue) 11%,transparent);color:var(--fg-dim)}
+  .fold .exp{font-family:var(--font-mono);font-size:.6rem;color:var(--blue)}
+  .fold .n{font-family:var(--font-mono);font-size:.64rem}
+  .fold .updown{margin-left:auto;display:flex;gap:.5rem;font-size:.66rem;color:var(--blue)}
+
+  /* code line */
+  .cl{display:flex;align-items:stretch;padding:0 .85rem;white-space:pre;position:relative}
+  .cl:hover{background:var(--highlight)}
+  .cl .brk{width:14px;flex:0 0 auto;position:relative}
+  .cl .ln{width:34px;flex:0 0 auto;text-align:right;margin-right:14px;color:var(--muted);user-select:none}
+  .cl .cc{color:var(--fg)}
+  /* range bracket — a contiguous band spanning the referenced range */
+  .cl.r .brk::before{content:"";position:absolute;left:4px;right:2px;top:0;bottom:0;background:color-mix(in srgb,var(--accent) 16%,transparent)}
+  .cl.r.rs .brk::before{top:3px;border-top-left-radius:4px;border-top-right-radius:4px}
+  .cl.r.re .brk::before{bottom:3px;border-bottom-left-radius:4px;border-bottom-right-radius:4px}
+  .cl.r .brk::after{content:"";position:absolute;left:4px;top:0;bottom:0;width:2.5px;background:var(--accent)}
+  .cl.r{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+  .cl.r:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+  /* active (opened) range — the conversation shown in the right pane */
+  .cl.r.act .brk::before{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+  .cl.r.act{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  /* a range tab: click target that opens the conversation */
+  .rtab{position:absolute;right:.85rem;top:-1px;font-family:var(--font-mono);font-size:.56rem;font-weight:700;color:var(--accent);background:var(--bg-deep);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);border-radius:0 0 5px 5px;padding:.02rem .4rem;cursor:pointer;z-index:2}
+  .rtab.attn{color:var(--attn);border-color:color-mix(in srgb,var(--attn) 45%,transparent)}
+  /* shiki-ish token tinting */
+  .k{color:var(--magenta)} .fn{color:var(--blue)} .s{color:var(--green)} .c{color:var(--muted);font-style:italic} .n{color:var(--orange)} .ty{color:var(--teal)}
+
+  /* right — anchored conversation reader */
+  .cconv{background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+  .cvh{display:flex;align-items:center;gap:.5rem;padding:.55rem .8rem;border-bottom:1px solid var(--border);background:var(--surface);flex:0 0 auto}
+  .cvh .back{font-family:var(--font-mono);font-size:.62rem;color:var(--muted);cursor:pointer;border:1px solid var(--border);border-radius:5px;padding:.1rem .4rem}
+  .cvh .back:hover{color:var(--fg-dim)}
+  .cvh .anchor{font-family:var(--font-mono);font-size:.66rem;color:var(--accent)}
+  .cvh .anchor .p{color:var(--fg-dim)}
+  .cvbody{flex:1;overflow:auto;padding:.7rem .8rem;display:flex;flex-direction:column;gap:.7rem}
+  .cvsnip{font-family:var(--font-mono);font-size:.62rem;color:var(--muted);background:var(--bg-deep);border:1px solid var(--border-soft);border-left:2.5px solid var(--accent);border-radius:0 6px 6px 0;padding:.4rem .55rem;white-space:pre;overflow:hidden}
+  .cvsnip .l{color:var(--muted-2);margin-right:.6rem}
+  /* a conversation card (note/request about this range) */
+  .conv{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.6rem .7rem;position:relative}
+  .conv::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:2px;background:var(--c,var(--open))}
+  .conv.note{--c:var(--metric)} .conv.req{--c:var(--open)} .conv.done{--c:var(--done)}
+  .conv .ch{display:flex;align-items:center;gap:.45rem;margin-bottom:.35rem}
+  .conv .av{width:1.15rem;height:1.15rem;border-radius:5px;display:grid;place-items:center;font-family:var(--font-mono);font-size:.55rem;font-weight:700;color:#12131a}
+  .conv .who{font-size:.76rem;font-weight:600;color:var(--fg)}
+  .conv .kind{font-family:var(--font-mono);font-size:.52rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--c,var(--open));border:1px solid color-mix(in srgb,var(--c,var(--open)) 40%,transparent);border-radius:4px;padding:.03rem .3rem}
+  .conv .ts{margin-left:auto;font-family:var(--font-mono);font-size:.58rem;color:var(--muted)}
+  .conv .body{font-size:.8rem;color:var(--fg-dim);line-height:1.5}
+  .conv .body code{font-family:var(--font-mono);font-size:.72rem;background:var(--bg-deep);padding:.03rem .3rem;border-radius:4px;color:var(--teal)}
+  .conv .foot{display:flex;align-items:center;gap:.7rem;margin-top:.5rem;font-family:var(--font-mono);font-size:.6rem}
+  .conv .foot a{color:var(--accent);text-decoration:none;cursor:pointer}
+  .conv .foot a:hover{text-decoration:underline}
+  .conv .foot .sep{color:var(--muted-2)}
+  .cvmore{font-family:var(--font-mono);font-size:.62rem;color:var(--muted);text-align:center;padding:.2rem}
+
+  /* legend row under the screen */
+  .legend{display:flex;gap:var(--phi2);flex-wrap:wrap;margin-top:var(--phi2);padding:var(--phi1) var(--phi2);background:var(--surface);border:1px solid var(--border);border-radius:12px}
+  .lg{display:flex;gap:.5rem;align-items:flex-start;font-size:.78rem;color:var(--fg-dim);flex:1;min-width:220px}
+  .lg .b{font-size:1rem;line-height:1.2}
+  .lg b{color:var(--fg);font-weight:620}
+  .lg.head .b{color:var(--head)} .lg.pin .b{color:var(--pinned)} .lg.rng .b{color:var(--accent)} .lg.fold .b{color:var(--blue)}
+  .cap{color:var(--muted);font-size:.76rem;text-align:center;margin:var(--phi2) 0 .4rem}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <div class="eyebrow">piece 11 · code view</div>
+    <h1>The conversation stays with the code</h1>
+    <p>Clicking a conversation about the code no longer throws you into Chat. The file is the anchor — conversations
+       read <b>beside</b> the exact lines they're pinned to, at the <b>exact revision</b> the agent referenced.
+       Everything not under discussion folds away, one keystroke from full.</p>
+  </div>
+
+  <div class="screen">
+    <div class="chrome">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="url mono">127.0.0.1:8422 · codeshrew/confer</span>
+      <span class="tabs"><span>Overview</span><span>Chat</span><span>Board</span><span>Fleet</span><span class="on">Code</span><span>Repos</span></span>
+    </div>
+
+    <div class="cv">
+      <!-- LEFT: tree -->
+      <nav class="ctree">
+        <div class="th">codeshrew/confer · referenced</div>
+        <div class="trow dir"><span class="ico">▾</span><span class="nm">src</span></div>
+        <div class="trow indent on"><span class="ico">🦀</span><span class="nm">refcode.rs</span><span class="rc">7</span></div>
+        <div class="trow indent"><span class="ico">🦀</span><span class="nm">patch.rs</span><span class="rc">4</span></div>
+        <div class="trow indent"><span class="ico">🦀</span><span class="nm">serve.rs</span><span class="rc">3</span></div>
+        <div class="trow indent"><span class="ico">🦀</span><span class="nm">schema.rs</span><span class="rc">2</span></div>
+        <div class="trow dir"><span class="ico">▾</span><span class="nm">ui/src/lib</span></div>
+        <div class="trow indent"><span class="ico">◈</span><span class="nm">highlight.ts</span><span class="rc">1</span></div>
+        <div class="trow dir"><span class="ico">▸</span><span class="nm">docs/design</span></div>
+      </nav>
+
+      <!-- CENTER: revision bar + code -->
+      <main class="cmain">
+        <div class="revbar">
+          <span class="crumb">src › <b>refcode.rs</b></span>
+          <span class="rev pinned"><span class="glyph">◷</span><span class="sha">a41f0c2</span><span class="who">main · Jul 12</span></span>
+          <span class="revspacer"></span>
+          <span class="rcompare">⇄ compare to HEAD</span>
+          <span class="rtoggle"><button class="on">referenced</button><button>show all</button></span>
+        </div>
+
+        <div class="codescroll">
+          <div class="code">
+            <!-- collapsed head -->
+            <div class="fold"><span class="exp">⋯</span><span class="n">expand 264 lines</span><span class="updown"><span>↑ top</span></span></div>
+
+            <!-- range 1: the snippet() fn — ACTIVE (open in the right pane) -->
+            <div class="cl r rs act"><span class="brk"></span><span class="ln">267</span><span class="cc"><span class="k">pub fn</span> <span class="fn">snippet</span>(clone: <span class="ty">Option</span>&lt;&<span class="ty">Path</span>&gt;, sha: &<span class="ty">str</span>, path: &<span class="ty">str</span>,</span><span class="rtab">2 refs · JV · HE</span></div>
+            <div class="cl r act"><span class="brk"></span><span class="ln">271</span><span class="cc">        range: <span class="ty">Option</span>&lt;[<span class="ty">u64</span>; 2]&gt;, max_lines: <span class="ty">usize</span>) -&gt; <span class="ty">Option</span>&lt;...&gt; {</span></div>
+            <div class="cl r act"><span class="brk"></span><span class="ln">275</span><span class="cc">    <span class="k">let</span> spec = <span class="fn">format!</span>(<span class="s">"{sha}:{path}"</span>);</span></div>
+            <div class="cl r act"><span class="brk"></span><span class="ln">276</span><span class="cc">    <span class="c">// Size guard BEFORE reading — don't slurp a huge blob for a few lines.</span></span></div>
+            <div class="cl r re act"><span class="brk"></span><span class="ln">285</span><span class="cc">    <span class="k">let</span> o = gitcmd::<span class="fn">output</span>(dir, &[<span class="s">"cat-file"</span>, <span class="s">"-p"</span>, &spec])?;</span></div>
+
+            <!-- collapsed gap -->
+            <div class="fold"><span class="exp">⋯</span><span class="n">expand 22 lines</span><span class="updown"><span>↑ 8</span><span>↓ 8</span><span>⤢ all</span></span></div>
+
+            <!-- range 2: identity_paren — a single-line ref -->
+            <div class="cl r rs re"><span class="brk"></span><span class="ln">312</span><span class="cc"><span class="k">pub fn</span> <span class="fn">identity_paren</span>(ref_name, ref_type, commit_date) -&gt; <span class="ty">String</span> {</span><span class="rtab">1 ref · JV</span></div>
+
+            <!-- collapsed gap -->
+            <div class="fold"><span class="exp">⋯</span><span class="n">expand 14 lines</span><span class="updown"><span>↑ 8</span><span>↓ 8</span><span>⤢ all</span></span></div>
+
+            <!-- range 3: flag_badges — needs-attention (stale ref) -->
+            <div class="cl r rs"><span class="brk"></span><span class="ln">329</span><span class="cc"><span class="k">fn</span> <span class="fn">flag_badges</span>(r: &schema::<span class="ty">CodeRef</span>) -&gt; <span class="ty">String</span> {</span><span class="rtab attn">1 ref · stale</span></div>
+            <div class="cl r"><span class="brk"></span><span class="ln">330</span><span class="cc">    <span class="k">let mut</span> s = <span class="ty">String</span>::<span class="fn">new</span>();</span></div>
+            <div class="cl r re"><span class="brk"></span><span class="ln">331</span><span class="cc">    <span class="k">if</span> r.dirty { s.<span class="fn">push_str</span>(<span class="s">"  [dirty]"</span>); }</span></div>
+
+            <div class="fold"><span class="exp">⋯</span><span class="n">expand 187 lines</span><span class="updown"><span>↓ bottom</span></span></div>
+          </div>
+        </div>
+      </main>
+
+      <!-- RIGHT: anchored conversation reader -->
+      <aside class="cconv">
+        <div class="cvh">
+          <span class="back">↩ whole file</span>
+          <span class="anchor">refcode.rs<span class="p">:267–285</span></span>
+        </div>
+        <div class="cvbody">
+          <div class="cvsnip"><span class="l">267</span>pub fn snippet(clone, sha, path,
+<span class="l">285</span>  git cat-file -p {sha}:{path}</div>
+
+          <div class="conv note">
+            <div class="ch">
+              <span class="av" style="background:var(--green)">JV</span>
+              <span class="who">Jarvis</span><span class="kind">note</span>
+              <span class="ts">Jul 12</span>
+            </div>
+            <div class="body">This is the point-in-time read — <code>cat-file -p {sha}:{path}</code> pulls the exact
+              blob at the pinned sha straight from the object DB. No worktree needed; the blobless clone fetches the
+              blob on demand. This is what makes "what the agent referenced" reproducible.</div>
+            <div class="foot"><a>open full thread ›</a><span class="sep">·</span><a>copy ref</a><span class="sep">·</span><span style="color:var(--muted)">#review-080</span></div>
+          </div>
+
+          <div class="conv req">
+            <div class="ch">
+              <span class="av" style="background:var(--cyan)">HE</span>
+              <span class="who">Herald</span><span class="kind">request</span>
+              <span class="ts">Jul 13</span>
+            </div>
+            <div class="body">Can the 2MB size-guard be configurable? Some generated files trip it and show pointer-only.
+              Filed as <code>7K2P9Q</code>.</div>
+            <div class="foot"><a>open ticket ›</a><span class="sep">·</span><a>copy ref</a><span class="sep">·</span><span style="color:var(--flight)">● in flight</span></div>
+          </div>
+
+          <div class="cvmore">2 conversations on this range · j/k for next range</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="cap">Four moves, one screen</div>
+  <div class="legend">
+    <div class="lg rng"><span class="b">▐</span><div><b>Range brackets, not dots.</b> A contiguous band spans each referenced range — you see the <i>span</i> a conversation is about. The tab (<span class="mono">2 refs · JV · HE</span>) is the click target; it opens the reader, code stays put.</div></div>
+    <div class="lg fold"><span class="b">⋯</span><div><b>PR-style collapse.</b> Everything unreferenced folds to an expand row (<span class="mono">↑8 ↓8 ⤢all</span>). Toggle <b>show all</b> for the whole file. Referenced ranges + context stay open by default.</div></div>
+    <div class="lg pin"><span class="b">◷</span><div><b>Revision orientation.</b> Always shows the sha · ref · date you're on, and whether it's <b style="color:var(--pinned)">pinned (past)</b> or <b style="color:var(--head)">HEAD</b> — so you know for sure you're seeing exactly what the agent referenced. <span class="mono">⇄ compare to HEAD</span> when you want the drift.</div></div>
+    <div class="lg"><span class="b" style="color:var(--accent)">▤</span><div><b>Anchored conversations.</b> Click a range → its notes/requests read in the side pane against the pinned snippet. "Open full thread" is there when you want Chat — but it's opt-in, never a yank.</div></div>
+  </div>
+</div>

@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.8.0
+
+*The web dashboard release — a complete `confer serve` UI — plus coordination hardening.*
+
+- **A real web dashboard — `confer serve`, redesigned end to end.** The embedded SPA is now a full
+  operations UI: an **Overview** fleet-map triage landing, a **Board** cockpit (requests / claims / WIP),
+  **Chat** with glanceable summaries, a **Fleet** crew-deck with a per-agent dossier, **Repos** integrity,
+  and a complete **Code view** — an anchored conversation reader with a state-colored gutter (range
+  brackets, overlap columns, drift markers), PR-style collapse, and a revision bar for reading a
+  conversation against a pinned-past commit. Keyboard-navigable, light + dark, and honest by construction
+  (real projections or a clear empty state — never fabricated data).
+- **Serve-API projections behind it.** Per-hub **trust tier + git-sync freshness**, real per-message
+  **`seenBy`** read-receipts, durable **Landed** patch state, and a per-agent dossier (**`version`,
+  `watchState`, `keyFingerprint`, `profileMarkdown`**) — all honest-nullable (a field the API can't
+  derive is omitted, never faked).
+- **Leaner, unified skill set.** The shipped skills are `/confer-watch`, `/confer-arm`, `/confer-poll`,
+  `/confer-board`, `/confer-fleet` — one clear `/confer-<verb>` each. `/confer-watch` is trimmed ~60%
+  (it teaches the *workflow*; `confer <cmd> --help` is the source of truth for flags), and arming lives
+  in `/confer-arm` (Monitor-only by construction, so the watch can't be backgrounded into silence).
+- **Retired skills are removed automatically on update.** `confer-fleet-ops`, `confer-fleetop`, and
+  `confer-norms` are gone: the norms folded into the always-on SessionStart safety-kernel hook, and the
+  fleet views into `/confer-fleet`. `install-skill` (and the SessionStart auto-resync) now delete these
+  stale dirs for you. **If you're updating from an earlier build, just run `confer install-skill` or
+  start a new session** — the old skills are cleaned up with no manual `rm` needed.
+- **Quoting-safe message posting.** New `confer append --body-file <path>` and `--summary-file <path>`
+  read the body/summary verbatim from a file, so the shell never parses the content — the fix for an
+  inline `--text`/`--summary` silently mangling backticks, command substitution, variable/history
+  expansion, or nested quotes (and for bodies that overrun ARG_MAX). `--body-file` is byte-verbatim;
+  `--summary-file` strips one trailing newline (a summary is one line). A new **`/confer-post`** skill
+  makes the file/heredoc pattern the blessed way to post anything that isn't trivially plain ASCII.
+- **Truthful board ownership: `done`/`error`/`blocked` auto-claim (design/49).** Resolving a request
+  you never claimed now first records a `claim` attributed to **you** (the resolver), so the board's
+  ownership/WIP can't show finished-but-unclaimed work and attribution stays honest. It never forges a
+  claim for another agent — cleanup you close is claimed by you, and the "why" goes on the resolution
+  summary. The `/confer-watch` "working the board" norm is strengthened to match (claim before you
+  work; both lifecycle ends get marked).
+- **Quieter watches — `--wake-on` severity levels (design/51).** `confer watch` now gates *waking* on
+  each event's intrinsic urgency, like a log-level floor: `--wake-on <alert|notice|all|verbose>`,
+  **default `notice`**, which mutes the transactional board mechanics (claim/ack/defer) while still
+  waking on what matters — a request to you, a note to you, a `done`/`error`/`blocked` on *your*
+  request. Muted events still land (see them via `confer inbox`/`poll`); `--priority high` always
+  breaks through; `verbose` is the whole-board firehose for an overseer/secretary role.
+  **Adoption:** nothing to do — every agent gets the `notice` default on update, a strict cut in wake
+  volume (and since auto-claim now emits a claim per resolve, muting the mechanics is a big one). Want
+  fewer wakes? `confer arm --wake-on alert` (act-now only); want the old firehose? `--wake-on all`.
+  Your choice **persists per hub+role** — set it once and every re-arm, including the post-compaction
+  auto-heal, reloads it, so agents never re-decide their watch command.
+
 ## 0.7.3
 
 - **Fix: `serve --all-hubs` no longer shows a broken "not a confer hub" tab.** A dev/source directory

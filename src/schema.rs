@@ -25,6 +25,13 @@ fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
 }
 
 /// A structured pointer to code, resilient across moves/renames.
+///
+/// Temporal-identity fields (design/44 §3), all additive/optional so old messages parse
+/// unchanged and old binaries parse new refs (serde ignores unknown fields, and every new
+/// field here is `Option`/defaulted). `sha` stays a required String — it's either full
+/// 40/64-hex or the literal `"unresolved"` — so an old binary's non-full-hex → `Unpinned`
+/// path (`refcode::staleness`) keeps rendering both legacy `HEAD` refs AND new `unresolved`
+/// refs correctly with zero compat work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeRef {
     pub repo: String,
@@ -34,6 +41,49 @@ pub struct CodeRef {
     pub range: Option<[u64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// The one branch or tag name in play at capture (never a list — see design/44 §1.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_name: Option<String>,
+    /// How the pinned commit was reached: `branch` | `tag` | `detached`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_type: Option<String>,
+    /// `%cI` (strict ISO 8601, committer's own offset) of the pinned commit, stored verbatim —
+    /// the timeline's load-bearing field (design/44 §5.2). Never lexically sort across offsets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_date: Option<String>,
+    /// The referenced range had uncommitted working-tree changes at capture (only via
+    /// `--allow-dirty`) — the body carries a `confer-ref` fence with what was actually seen.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dirty: bool,
+    /// The path wasn't in git at all at capture (implies `sha: "unresolved"` + a mandatory fence).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub untracked: bool,
+    /// The raw rev token as typed (`HEAD`, a branch name, …), preserved intent — only present
+    /// when `sha == "unresolved"` (never alongside a real pin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+    /// The branch this ref's branch forked from (design/44 Addendum 2) — best-effort:
+    /// configured upstream, else the repo's default branch. Only present when
+    /// `ref_type == "branch"` and it differs from `ref_name` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    /// `merge-base(sha, base_ref)`, full hex (design/44 Addendum 2) — the divergence
+    /// commit, which survives a squash/merge that GCs the branch's own commits. Omitted
+    /// when `base_ref` is unknown or equals `sha` itself (no real divergence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<String>,
+    /// design/45 §1.2: this ref anchors a proposed change to `path`, carried in the message's
+    /// `confer-patch` body fence (the anti-spoof pairing rule: the fence is honored only when a
+    /// `patch: true` ref matching its repo+sha covers the path). Default false, omitted — old
+    /// binaries/messages ignore it entirely (additive-safe).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub patch: bool,
+    /// design/45 §1.2: the blob OID `path` would have AFTER applying the patch — computed at
+    /// write time from a temp-index apply (§1.4). Absent on a deletion. `content_hash` stays the
+    /// *base* blob OID (absent on a file creation); this is the landed-detection field
+    /// (`HEAD:<path>` == `result_hash` ⇒ the patch has landed, `Staleness::Landed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_hash: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -328,5 +378,114 @@ mod tests {
     fn is_actionable_excludes_notes() {
         assert!(is_actionable(&msg("request", "x")));
         assert!(!is_actionable(&msg("note", "x")));
+    }
+
+    #[test]
+    fn code_ref_new_fields_round_trip() {
+        // design/44 §3: the temporal-identity fields serialize and deserialize intact.
+        let r = CodeRef {
+            repo: "mylib".into(),
+            sha: "a".repeat(40),
+            path: "f.rs".into(),
+            range: Some([1, 2]),
+            content_hash: Some("b".repeat(40)),
+            ref_name: Some("main".into()),
+            ref_type: Some("branch".into()),
+            commit_date: Some("2026-07-18T09:26:31-06:00".into()),
+            dirty: true,
+            untracked: false,
+            rev: None,
+            base_ref: Some("main".into()),
+            fork_point: Some("c".repeat(40)),
+            patch: false,
+            result_hash: None,
+        };
+        let yaml = serde_yaml::to_string(&r).unwrap();
+        let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.ref_name.as_deref(), Some("main"));
+        assert_eq!(back.ref_type.as_deref(), Some("branch"));
+        assert_eq!(back.commit_date.as_deref(), Some("2026-07-18T09:26:31-06:00"));
+        assert!(back.dirty);
+        assert!(!back.untracked);
+        assert_eq!(back.rev, None);
+        assert_eq!(back.base_ref.as_deref(), Some("main"));
+        assert_eq!(back.fork_point.as_deref(), Some("c".repeat(40).as_str()));
+    }
+
+    #[test]
+    fn legacy_ref_without_new_fields_parses_with_defaults() {
+        // A pre-design/44 message's ref carries none of the new fields at all — must
+        // still parse, with every addition defaulting (old messages parse unchanged).
+        let yaml = "repo: mylib\nsha: HEAD\npath: f.rs\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(r.sha, "HEAD");
+        assert_eq!(r.ref_name, None);
+        assert_eq!(r.ref_type, None);
+        assert_eq!(r.commit_date, None);
+        assert!(!r.dirty);
+        assert!(!r.untracked);
+        assert_eq!(r.rev, None);
+        assert_eq!(r.base_ref, None);
+        assert_eq!(r.fork_point, None);
+        assert!(!r.patch);
+        assert_eq!(r.result_hash, None);
+    }
+
+    #[test]
+    fn patch_and_result_hash_round_trip() {
+        // design/45 §1.2: the patch primitive's two new fields serialize and deserialize intact,
+        // and `patch` is omitted from the YAML entirely when false (additive-safe default).
+        let r = CodeRef {
+            repo: "app".into(),
+            sha: "a".repeat(40),
+            path: "src/lib.rs".into(),
+            range: Some([10, 20]),
+            content_hash: None,
+            ref_name: Some("main".into()),
+            ref_type: Some("branch".into()),
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+            base_ref: None,
+            fork_point: None,
+            patch: true,
+            result_hash: Some("b".repeat(40)),
+        };
+        let yaml = serde_yaml::to_string(&r).unwrap();
+        assert!(yaml.contains("patch: true"), "yaml: {yaml}");
+        assert!(yaml.contains("result_hash:"), "yaml: {yaml}");
+        let back: CodeRef = serde_yaml::from_str(&yaml).unwrap();
+        assert!(back.patch);
+        assert_eq!(back.result_hash.as_deref(), Some("b".repeat(40).as_str()));
+
+        // patch: false (the common case) is OMITTED from the YAML — not written as `patch: false`.
+        let mut plain = r.clone();
+        plain.patch = false;
+        plain.result_hash = None;
+        let yaml2 = serde_yaml::to_string(&plain).unwrap();
+        assert!(!yaml2.contains("patch:"), "yaml2: {yaml2}");
+        assert!(!yaml2.contains("result_hash:"), "yaml2: {yaml2}");
+    }
+
+    #[test]
+    fn legacy_ref_without_patch_fields_defaults_to_a_plain_ref() {
+        // A pre-design/45 ref (or one from an old binary) carries neither field at all — must
+        // still parse, defaulting `patch` to false and `result_hash` to None.
+        let yaml = "repo: app\nsha: HEAD\npath: f.rs\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert!(!r.patch);
+        assert_eq!(r.result_hash, None);
+    }
+
+    #[test]
+    fn unresolved_sha_ref_parses_like_any_other_ref() {
+        // The new `sha: "unresolved"` marker (forced no-pin case) round-trips fine —
+        // it's just a required string, same as any other value.
+        let yaml = "repo: mylib\nsha: unresolved\npath: new.rs\nuntracked: true\nrev: HEAD\n";
+        let r: CodeRef = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(r.sha, "unresolved");
+        assert!(r.untracked);
+        assert_eq!(r.rev.as_deref(), Some("HEAD"));
     }
 }

@@ -151,6 +151,17 @@ confer read         # the feed, with verification glyphs
 confer inbox        # what's addressed to you, unread — frontend's request shows here
 ```
 
+**6. Reference code** — point at exact lines, pinned to a commit: the conversation *behind* the code.
+
+```sh
+confer repos map reader ~/src/reader           # once: where your clone lives (local-only, not in the hub)
+confer append --type note --to backend \
+  --summary "look at the assembly" --ref reader:src/bundle.rs#L44-49   # the sha is pinned for you
+confer refs reader:src/bundle.rs#L44-49         # reverse: every thread that referenced those lines
+```
+
+`confer show` renders the referenced lines inline and flags if the code has changed since it was pinned.
+
 ## Security model (in brief)
 
 confer assumes the hub repo is **private** but treats its *contents* as untrusted — anyone with

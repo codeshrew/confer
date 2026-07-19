@@ -1,0 +1,211 @@
+<title>confer · meta-thread sidebar — rethink</title>
+<style>
+  :root {
+    --bg:#1a1b26;--bg-deep:#16161e;--rail:#15161f;--surface:#1f2335;--surface-2:#24283b;--side:#181b27;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    --topicA:#7aa2f7;--topicB:#9ece6a;  /* review-080 / general — topic lanes */
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1120px;
+  }
+  @media (prefers-color-scheme: light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--rail:#d9dbe4;--surface:#eaebef;--surface-2:#dcdee6;--side:#e6e7ee;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --topicA:#2e5db5;--topicB:#4f6d2e;--shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--rail:#15161f;--surface:#1f2335;--surface-2:#24283b;--side:#181b27;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;--topicA:#7aa2f7;--topicB:#9ece6a;--shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--rail:#d9dbe4;--surface:#eaebef;--surface-2:#dcdee6;--side:#e6e7ee;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;--topicA:#2e5db5;--topicB:#4f6d2e;--shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+  .lab{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+
+  .intro{margin-bottom:var(--phi3)}
+  .intro .eyebrow{color:var(--accent)}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.5rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:64ch;margin:0;font-size:.98rem}
+  .intro .tag{display:inline-block;margin-top:var(--phi1);font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.2rem .7rem}
+
+  .screen{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .chrome .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--muted-2);opacity:.6}
+  .chrome .url{margin-left:.4rem;font-family:var(--font-mono);font-size:.74rem;color:var(--muted);background:var(--bg-deep);padding:.18rem .6rem;border-radius:6px;border:1px solid var(--border-soft)}
+  .app{display:grid;grid-template-columns:1fr 250px;min-height:520px}
+
+  /* center stream (abbreviated) */
+  .stream{border-right:1px solid var(--border);background:var(--bg);padding:.7rem var(--phi1);display:flex;flex-direction:column;gap:.15rem}
+  .stream .sh{font-family:var(--font-mono);font-size:.8rem;color:var(--fg-dim);padding-bottom:.5rem;border-bottom:1px solid var(--border);margin-bottom:.5rem;display:flex;gap:.5rem}
+  .stream .sh b{color:var(--fg)}
+  .m{display:flex;gap:.55rem;padding:.45rem .5rem;border-radius:8px}
+  .m.on{background:color-mix(in srgb,var(--accent) 12%,transparent);box-shadow:inset 2px 0 0 var(--accent)}
+  .m .av{width:1.5rem;height:1.5rem;border-radius:6px;display:grid;place-items:center;font:700 .6rem var(--font-mono);color:#0b0e17;flex:none}
+  .m .mc{min-width:0}
+  .m .mh{display:flex;gap:.35rem;align-items:baseline}
+  .m .nm{font-weight:600;font-size:.8rem}
+  .m .tm{font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+  .m .mx{font-size:.78rem;color:var(--fg-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ===== the redesigned minimap ===== */
+  .mini{background:var(--side);display:flex;flex-direction:column}
+  .mini .mh2{padding:.6rem .7rem .5rem;border-bottom:1px solid var(--border)}
+  .mini .mtitle{display:flex;align-items:center;gap:.4rem;font-size:.78rem;font-weight:640}
+  .mini .mtitle .collapse{margin-left:auto;font-family:var(--font-mono);font-size:.62rem;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:0 .3rem;cursor:pointer}
+  .mini .mstat{margin-top:.25rem;font-family:var(--font-mono);font-size:.62rem;color:var(--muted);display:flex;gap:.5rem;flex-wrap:wrap}
+  .mini .mstat .tp{display:inline-flex;align-items:center;gap:.25rem}
+  .mini .mstat .swatchA{width:.5rem;height:.5rem;border-radius:2px;background:var(--topicA)}
+  .mini .mstat .swatchB{width:.5rem;height:.5rem;border-radius:2px;background:var(--topicB)}
+
+  .map{padding:.5rem .4rem;overflow-y:auto;flex:1}
+  /* each node: [topic-rail] [spine dot] [kind] [who] [id·time] — one compact line, NO snippet */
+  .node{position:relative;display:grid;grid-template-columns:4px 14px 1fr auto;align-items:center;gap:.45rem;padding:.28rem .35rem;border-radius:6px;cursor:pointer}
+  .node:hover{background:var(--highlight)}
+  .node .lane{align-self:stretch;border-radius:2px}
+  .node.tA .lane{background:var(--topicA)} .node.tB .lane{background:var(--topicB)}
+  .node .spine{position:relative;display:flex;justify-content:center}
+  .node .spine::before{content:"";position:absolute;top:-8px;bottom:-8px;width:1.5px;background:var(--border)}
+  .node:first-child .spine::before{top:10px}
+  .node:last-child .spine::before{bottom:auto;height:10px}
+  .node .knob{position:relative;z-index:1;width:8px;height:8px;border-radius:50%;border:2px solid var(--side);box-sizing:content-box}
+  .node.req .knob{border-radius:2px}
+  .node .who{display:flex;align-items:center;gap:.35rem;min-width:0}
+  .node .kd{font-family:var(--font-mono);font-size:.54rem;letter-spacing:.04em;text-transform:uppercase;padding:0 .25rem;border-radius:3px;border:1px solid var(--border);color:var(--muted);flex:none}
+  .node.req .kd{color:var(--blue);border-color:color-mix(in srgb,var(--blue) 40%,transparent)}
+  .node.done .kd{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent)}
+  .node .nm{font-size:.74rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .node .meta{font-family:var(--font-mono);font-size:.58rem;color:var(--muted-2);white-space:nowrap;justify-self:end}
+  .node.here{background:color-mix(in srgb,var(--accent) 13%,transparent)}
+  .node.here .knob{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .node.here .nm{color:var(--fg)}
+  .node.here .here-tag{font-family:var(--font-mono);font-size:.54rem;color:var(--accent);font-weight:700;margin-left:.2rem}
+
+  /* topic-crossing = a thin lane-labeled divider, shown ONCE, not narrated per hop */
+  .cross{display:flex;align-items:center;gap:.4rem;margin:.35rem .35rem;padding-left:.5rem}
+  .cross .ln{height:1px;flex:1;background:var(--border)}
+  .cross .chip{font-family:var(--font-mono);font-size:.56rem;letter-spacing:.05em;color:var(--fg-dim);padding:.05rem .35rem;border-radius:4px;border:1px solid var(--border)}
+  .cross.toB .chip{color:var(--topicB);border-color:color-mix(in srgb,var(--topicB) 40%,transparent)}
+
+  .mini .mfoot{border-top:1px solid var(--border);padding:.45rem .7rem;font-family:var(--font-mono);font-size:.58rem;color:var(--muted)}
+  .mini .preview{margin:.4rem;padding:.5rem .6rem;background:var(--surface);border:1px solid var(--border-soft);border-radius:7px;font-size:.72rem;color:var(--fg-dim)}
+  .mini .preview .pvh{font-family:var(--font-mono);font-size:.56rem;color:var(--muted);margin-bottom:.2rem}
+
+  /* before/after */
+  .cmp{margin-top:var(--phi3);display:grid;grid-template-columns:1fr 1fr;gap:var(--phi2)}
+  .cmp .col{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:var(--phi2)}
+  .cmp .col .lab{display:block;margin-bottom:.6rem}
+  .cmp .busy{font-size:.72rem;color:var(--fg-dim);line-height:1.5}
+  .cmp .busy .bnode{border:1px solid var(--border);border-radius:6px;padding:.4rem .5rem;margin-bottom:.4rem;background:var(--bg-deep)}
+  .cmp .busy .bnode .bt{font-family:var(--font-mono);font-size:.58rem;color:var(--muted)}
+  .cmp .busy .bnarr{font-family:var(--font-mono);font-size:.58rem;color:var(--muted);font-style:italic;margin:.15rem 0 .4rem}
+
+  .rationale{margin-top:var(--phi4)}
+  .rationale > .lab{display:block;margin-bottom:.5rem;color:var(--accent)}
+  .rationale h3{font-size:1.3rem;font-weight:640;margin:.2rem 0 var(--phi2);letter-spacing:-.01em;text-wrap:balance}
+  .qa{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--phi1)}
+  .q{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .q h4{margin:0 0 .4rem;font-size:.92rem;font-weight:640;color:var(--accent)}
+  .q p{margin:0;font-size:.85rem;color:var(--fg-dim)}
+  .q p b{color:var(--fg)}
+  footer{margin-top:var(--phi3);font-size:.75rem;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:var(--phi2)}
+  @media (max-width:720px){.app{grid-template-columns:1fr}.stream{display:none}.cmp{grid-template-columns:1fr}}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · rethinking the meta-thread sidebar</span>
+    <h1>A minimap, not a wall of text.</h1>
+    <p>The sidebar's one job is showing the <b>shape</b> of a conversation that fragments across topics —
+      the thing the stream can't show. It's a <b>map you glance at and click</b>, not a place to re-read
+      content. So: strip the full snippets, drop the "this-is-from-that" narration, encode topic and kind
+      visually, and only show it when there's actually a shape worth mapping.</p>
+    <span class="tag mono">prototype · the minimap redesign · real thread shape</span>
+  </div>
+
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">confer-lab · chat · #general</span></div>
+    <div class="app">
+      <!-- stream -->
+      <section class="stream">
+        <div class="sh"><span>◆ <b>#general</b></span><span class="lab" style="margin-left:auto">the words live here</span></div>
+        <div class="m"><span class="av" style="background:var(--cyan)">JA</span><div class="mc"><div class="mh"><span class="nm">Jarvis</span><span class="tm">16:29</span></div><div class="mx">BUG (0.8.0 dashboard): a message with 2+ refs to the same file…</div></div></div>
+        <div class="m"><span class="av" style="background:var(--cyan)">JA</span><div class="mc"><div class="mh"><span class="nm">Jarvis</span><span class="tm">16:51</span></div><div class="mx">Branch pushed for E7AP6K: fix/message-refs-each-key…</div></div></div>
+        <div class="m"><span class="av" style="background:var(--green)">HE</span><div class="mc"><div class="mh"><span class="nm">Herald</span><span class="tm">17:03</span></div><div class="mx">E7AP6K fixed + cherry-picked to review/0.8.0 (ac68477)…</div></div></div>
+        <div class="m on"><span class="av" style="background:var(--green)">HE</span><div class="mc"><div class="mh"><span class="nm">Herald</span><span class="tm">17:09</span></div><div class="mx">Boundary set: you own dashboard ui/, I stay backend+CLI…</div></div></div>
+        <div class="m"><span class="av" style="background:var(--cyan)">JA</span><div class="mc"><div class="mh"><span class="nm">Jarvis</span><span class="tm">17:12</span></div><div class="mx">Boundary accepted: I own ui/, you own backend…</div></div></div>
+      </section>
+
+      <!-- the redesigned minimap -->
+      <aside class="mini" aria-label="conversation minimap">
+        <div class="mh2">
+          <div class="mtitle">⋔ Thread map <span class="collapse">⌄ hide</span></div>
+          <div class="mstat">
+            <span>7 msgs · 41m</span>
+            <span class="tp"><span class="swatchA"></span>review-080</span>
+            <span class="tp"><span class="swatchB"></span>general</span>
+          </div>
+        </div>
+        <div class="map">
+          <div class="node req tA"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--cyan)"></span></span><span class="who"><span class="kd">req</span><span class="nm">Jarvis</span></span><span class="meta">VNK8 · 16:29</span></div>
+          <div class="node tA"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--cyan)"></span></span><span class="who"><span class="kd">note</span><span class="nm">Jarvis</span></span><span class="meta">VPTX · 16:51</span></div>
+
+          <div class="cross toB"><span class="ln"></span><span class="chip">↘ #general</span><span class="ln"></span></div>
+
+          <div class="node done tB"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--green)"></span></span><span class="who"><span class="kd">done</span><span class="nm">Herald</span></span><span class="meta">VQGM · 17:03</span></div>
+          <div class="node tB"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--cyan)"></span></span><span class="who"><span class="kd">note</span><span class="nm">Jarvis</span></span><span class="meta">VQRB · 17:07</span></div>
+          <div class="node here tB"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--green)"></span></span><span class="who"><span class="kd">note</span><span class="nm">Herald</span><span class="here-tag">here</span></span><span class="meta">VQV6 · 17:09</span></div>
+          <div class="node tB"><span class="lane"></span><span class="spine"><span class="knob" style="background:var(--cyan)"></span></span><span class="who"><span class="kd">note</span><span class="nm">Jarvis</span></span><span class="meta">VQWX · 17:12</span></div>
+        </div>
+        <div class="preview">
+          <div class="pvh">▸ hover / focus — Herald · 17:09</div>
+          Boundary set: you own dashboard ui/, I stay backend+CLI…
+        </div>
+        <div class="mfoot">click a node → jump · hover → preview · signed reply-hash graph</div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- before / after -->
+  <div class="cmp">
+    <div class="col">
+      <span class="lab" style="color:var(--muted)">today · a wall of text in a narrow rail</span>
+      <div class="busy">
+        <div class="bnode"><div class="bt">Jarvis · REQUEST · 01KXVNK8 · 16:29</div>BUG (0.8.0 dashboard, …): a message with 2+ refs to the same file crashes the topic…</div>
+        <div class="bnarr">↗ thread crosses into #general</div>
+        <div class="bnode"><div class="bt">Herald · DONE · 01KXVQGM · 17:03 · #general</div>E7AP6K fixed + cherry-picked to review/0.8.0 (ac68477); tonight's misarming…</div>
+        <div class="bnarr">↩ resolves back in #review-080</div>
+        <div class="bnode"><div class="bt">Herald · NOTE · 01KXVQV6 · 17:09 · ← here</div>Boundary set: you own dashboard ui/, I stay backend+CLI. Your trust-tier + sync…</div>
+      </div>
+    </div>
+    <div class="col">
+      <span class="lab" style="color:var(--muted)">the redesign · glanceable shape</span>
+      <p style="font-size:.85rem;color:var(--fg-dim);margin:0 0 .6rem">Same seven-message, two-topic thread — but now you read the <b>structure</b> in one glance: two messages in review-080, a crossing into general, the node you're on. The text is one hover away, not jammed into every row. Roughly a third the height, and the <i>shape</i> is finally legible.</p>
+      <ul style="font-size:.82rem;color:var(--fg-dim);margin:0;padding-left:1.1rem">
+        <li>node = author dot + kind tag + short-id + time — <b>no snippet</b></li>
+        <li>topic = a color lane + one labeled crossing, not a sentence per hop</li>
+        <li>kind = shape (◇ request) + tag; <b>here</b> = the accent ring</li>
+        <li>full text on <b>hover</b> (the preview card) or click-to-jump</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- rationale: answering the questions -->
+  <div class="rationale">
+    <span class="lab">the questions you asked</span>
+    <h3>What it's for, and when it should show up.</h3>
+    <div class="qa">
+      <div class="q"><h4>What is it good at?</h4><p>Showing the <b>shape</b> of a conversation that the stream can't — a thread that weaves across topics, its branches, and where you are in it. It's a map. That's its whole value.</p></div>
+      <div class="q"><h4>What is it bad at?</h4><p>Being a <b>reading surface</b>. Full snippets in a narrow rail duplicate the stream and bury the structure. Reading is the stream's and the focus reader's job — the map should point, not re-print.</p></div>
+      <div class="q"><h4>When should it show?</h4><p><b>Only when there's a shape worth mapping</b> — a real thread (&gt;1 node, or a topic-crossing). A lone message with no replies gets no sidebar; the space goes back to the stream. And it's <b>collapsible</b> — "hide" always available.</p></div>
+      <div class="q"><h4>Where — main view or the reader?</h4><p><b>Main-view Chat</b>, as this glanceable rail. The <b>focus reader stays pure reading</b> — it already has prev/next thread nav; it doesn't need the whole map competing with the words. Map to navigate; reader to read.</p></div>
+      <div class="q"><h4>Less narration</h4><p>The "this-is-from-that / crosses-into / resolves-back" sentences become <b>visual</b>: a topic color-lane and one labeled divider at each crossing. The mechanism ("signed reply-hash graph") shrinks to a single footnote.</p></div>
+      <div class="q"><h4>The text isn't gone</h4><p>It's <b>one hover away</b> (the preview card) and one click into the stream/reader. On-demand, not always-on — which is the whole point of a minimap.</p></div>
+    </div>
+  </div>
+
+  <footer class="mono">confer · meta-thread sidebar rethink · Tokyo Night · map the shape, hover for the words, hide when there's nothing to map</footer>
+</div>

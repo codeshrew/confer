@@ -1,0 +1,250 @@
+<title>confer · composable cards — row · mini · full</title>
+<style>
+  :root{
+    --bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    --open:#7dcfff;--flight:#9ece6a;--stuck:#f7768e;--unowned:#e0af68;--done:#565f89;
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1080px;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --open:#2959aa;--flight:#4f6d2e;--stuck:#d81f57;--unowned:#8a6c2f;--done:#7a80a0;
+    --shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;--open:#7dcfff;--flight:#9ece6a;--stuck:#f7768e;--unowned:#e0af68;--done:#565f89;--shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;--open:#2959aa;--flight:#4f6d2e;--stuck:#d81f57;--unowned:#8a6c2f;--done:#7a80a0;--shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+  .lab{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+
+  .intro{margin-bottom:var(--phi3)}
+  .intro .eyebrow{color:var(--accent)}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.5rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:66ch;margin:0;font-size:.98rem}
+  .intro .tag{display:inline-block;margin-top:var(--phi1);font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.2rem .7rem}
+
+  .sec-h{display:flex;align-items:baseline;gap:.6rem;margin:var(--phi3) 0 var(--phi1)}
+  .sec-h .n{font-family:var(--font-mono);font-size:.7rem;color:var(--accent)}
+  .sec-h h2{font-size:1.15rem;font-weight:640;margin:0;letter-spacing:-.01em}
+  .sec-h .s{color:var(--muted);font-size:.82rem}
+
+  /* ===== the tier ladder: row → mini → full ===== */
+  .ladder{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--phi1);align-items:start}
+  .rung{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1rem;display:flex;flex-direction:column;gap:.7rem}
+  .rung .rl{display:flex;align-items:baseline;gap:.4rem}
+  .rung .rl .t{font-weight:640;font-size:.92rem}
+  .rung .rl .u{font-family:var(--font-mono);font-size:.6rem;color:var(--muted)}
+  .rung .demo{background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:8px;padding:.7rem;display:flex;align-items:center;justify-content:center;min-height:64px}
+  .rung .why{font-size:.78rem;color:var(--fg-dim)}
+  .rung .why b{color:var(--fg)}
+
+  /* — LIST ROW — */
+  .t-row{display:grid;grid-template-columns:7px auto 1fr auto;align-items:center;gap:.55rem;width:100%;font-size:.8rem}
+  .t-row .dot{width:6px;height:6px;border-radius:50%;background:var(--flight)}
+  .t-row .id{font-family:var(--font-mono);font-size:.6rem;color:var(--muted)}
+  .t-row .sum{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t-row .av{width:1rem;height:1rem;border-radius:4px;display:grid;place-items:center;font:700 .48rem var(--font-mono);color:#0b0e17;background:var(--cyan)}
+
+  /* — MINI CARD (the new element) — */
+  .t-mini{width:100%;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:.6rem .7rem;display:flex;flex-direction:column;gap:.45rem;text-align:left;cursor:pointer;transition:border-color .12s}
+  .t-mini:hover{border-color:var(--accent)}
+  .t-mini.sel{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+  .t-mini .top{display:flex;align-items:center;gap:.4rem}
+  .t-mini .kd{font-family:var(--font-mono);font-size:.52rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:0 .28rem;border-radius:3px;border:1px solid color-mix(in srgb,var(--flight) 40%,transparent);color:var(--flight)}
+  .t-mini .id{font-family:var(--font-mono);font-size:.6rem;color:var(--muted)}
+  .t-mini .age{margin-left:auto;font-family:var(--font-mono);font-size:.58rem;color:var(--muted-2)}
+  .t-mini .av{width:1.05rem;height:1.05rem;border-radius:4px;display:grid;place-items:center;font:700 .5rem var(--font-mono);color:#0b0e17}
+  .t-mini .sum{font-size:.8rem;color:var(--fg);line-height:1.3;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  /* mini progress */
+  .mini-prog{display:flex;align-items:center;gap:0;margin-top:.1rem}
+  .mini-prog .k{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--border);background:var(--bg-deep);flex:none}
+  .mini-prog .k.on{background:var(--flight);border-color:var(--flight)}
+  .mini-prog .k.cur{border-color:var(--flight);box-shadow:0 0 0 2px color-mix(in srgb,var(--flight) 25%,transparent)}
+  .mini-prog .seg{height:1.5px;flex:1;background:var(--border)}
+  .mini-prog .seg.on{background:var(--flight)}
+  .mini-prog .st{margin-left:.5rem;font-family:var(--font-mono);font-size:.56rem;color:var(--flight)}
+
+  /* — FULL (compact repr) — */
+  .t-full{width:100%;background:var(--bg-deep);border:1px solid var(--border);border-radius:9px;overflow:hidden;font-size:.72rem}
+  .t-full .fh{display:flex;align-items:center;gap:.35rem;padding:.4rem .55rem;border-bottom:1px solid var(--border);background:var(--surface);font-family:var(--font-mono);font-size:.6rem}
+  .t-full .fh .kd{color:var(--flight)}
+  .t-full .fb{padding:.6rem .55rem}
+  .t-full .ft3{display:grid;grid-template-columns:1fr 1fr 1fr;text-align:center;font-family:var(--font-mono);font-size:.52rem;color:var(--muted);gap:.2rem;margin-top:.3rem}
+  .t-full .bigknob{width:16px;height:16px;border-radius:50%;margin:0 auto .2rem;display:grid;place-items:center;font-size:.5rem;border:1.5px solid var(--border);background:var(--bg-deep);color:var(--muted)}
+  .t-full .bigknob.on{background:var(--flight);border-color:var(--flight);color:#0b0e17}
+  .t-full .bigknob.cur{border-color:var(--flight);color:var(--flight)}
+
+  /* ===== composition: rich message popup with a related mini-card column ===== */
+  .msgcap{text-align:center;color:var(--muted);font-size:.85rem;margin:var(--phi2) 0 .9rem}
+  .msgcap b{color:var(--fg-dim)}
+  .msgpop{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .mp-head{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem;border-bottom:1px solid var(--border);background:var(--surface)}
+  .mp-kind{font-family:var(--font-mono);font-size:.56rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--magenta);background:color-mix(in srgb,var(--magenta) 15%,transparent);border:1px solid color-mix(in srgb,var(--magenta) 40%,transparent);border-radius:4px;padding:.1rem .38rem}
+  .mp-from{font-weight:640;font-size:.85rem}
+  .mp-meta{font-family:var(--font-mono);font-size:.66rem;color:var(--muted)}
+  .mp-close{margin-left:auto;font-family:var(--font-mono);font-size:.66rem;color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:.1rem .4rem;cursor:pointer}
+  .mp-grid{display:grid;grid-template-columns:1fr 274px}
+  .mp-body{padding:1.1rem 1.3rem;border-right:1px solid var(--border)}
+  .mp-body h3{font-size:1.02rem;font-weight:640;margin:0 0 .8rem;line-height:1.35}
+  .mp-body p{font-size:.86rem;color:var(--fg-dim);line-height:1.62;margin:0 0 .9rem}
+  .mp-body code{font-family:var(--font-mono);font-size:.82em;background:var(--surface-2);border-radius:4px;padding:.05rem .3rem}
+  .mp-body .inl{color:var(--cyan);border-bottom:1px dashed color-mix(in srgb,var(--cyan) 45%,transparent);cursor:pointer}
+
+  /* the RELATED column — composable mini cards, keyboard-selectable */
+  .related{padding:.8rem;background:color-mix(in srgb,var(--surface) 45%,var(--bg-deep));display:flex;flex-direction:column;gap:.9rem}
+  .rel-grp{display:flex;flex-direction:column;gap:.4rem}
+  .rel-grp > .lab{display:flex;align-items:center;gap:.35rem}
+  .rel-grp > .lab .c{font-family:var(--font-mono);font-size:.56rem;color:var(--muted-2)}
+  /* mini code-ref card (existing CodeRefCard pattern, small) */
+  .c-mini{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.5rem .6rem;cursor:pointer;transition:border-color .12s}
+  .c-mini:hover,.c-mini.sel{border-color:var(--cyan)}
+  .c-mini.sel{box-shadow:0 0 0 2px color-mix(in srgb,var(--cyan) 28%,transparent)}
+  .c-mini .top{display:flex;align-items:center;gap:.35rem;font-family:var(--font-mono);font-size:.66rem;color:var(--fg)}
+  .c-mini .top .ic{color:var(--cyan)}
+  .c-mini .top .ln{margin-left:auto;color:var(--muted)}
+  .c-mini .sub{font-family:var(--font-mono);font-size:.56rem;color:var(--muted);margin-top:.2rem}
+  /* mini thread pill */
+  .thr-mini{display:flex;align-items:center;gap:.45rem;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.5rem .6rem;cursor:pointer;font-size:.74rem;color:var(--fg-dim)}
+  .thr-mini:hover{border-color:var(--accent)}
+  .thr-mini .g{font-family:var(--font-mono);color:var(--muted)}
+  .thr-mini .go{margin-left:auto;font-family:var(--font-mono);font-size:.58rem;color:var(--muted)}
+  .rel-foot{margin-top:.2rem;font-family:var(--font-mono);font-size:.58rem;color:var(--muted);display:flex;gap:.5rem;flex-wrap:wrap}
+  .rel-foot .kk{color:var(--fg-dim);border:1px solid var(--border);border-radius:4px;padding:0 .3rem}
+
+  /* rationale */
+  .rationale{margin-top:var(--phi4)}
+  .rationale > .lab{display:block;margin-bottom:.5rem;color:var(--accent)}
+  .rationale h3{font-size:1.25rem;font-weight:640;margin:.2rem 0 var(--phi2);letter-spacing:-.01em;text-wrap:balance}
+  .qa{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:var(--phi1)}
+  .q{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .q h4{margin:0 0 .4rem;font-size:.92rem;font-weight:640}
+  .q h4 .g{color:var(--accent);font-family:var(--font-mono);margin-right:.35rem}
+  .q p{margin:0;font-size:.85rem;color:var(--fg-dim)}
+  footer{margin-top:var(--phi3);font-size:.75rem;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:var(--phi2)}
+  @media (max-width:720px){.ladder{grid-template-columns:1fr}.mp-grid{grid-template-columns:1fr}.mp-body{border-right:none;border-bottom:1px solid var(--border)}}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · composable card system</span>
+    <h1>One type, three sizes: row · mini · full.</h1>
+    <p>Every content type — ticket, code-ref, note — lives at three zoom levels. A <b>list row</b> in a
+      stream, a <b>full popover</b> for detail, and a rich <b>mini card</b> that embeds inside other views
+      and portals into the full one. <code>CodeRefCard</code> already does this for code; this makes it the
+      system, so a message popup can show its related tickets, code and thread as mini cards you arrow
+      through and open.</p>
+    <span class="tag mono">mockup · the composable vocabulary</span>
+  </div>
+
+  <!-- the tier ladder -->
+  <div class="sec-h"><span class="n">1</span><h2>The ladder</h2><span class="s">— same ticket, three densities</span></div>
+  <div class="ladder">
+    <div class="rung">
+      <div class="rl"><span class="t">Row</span><span class="u">list mode</span></div>
+      <div class="demo">
+        <div class="t-row"><span class="dot"></span><span class="id">98XCNF</span><span class="sum">0.8.0 review + test — re-verify ba44522</span><span class="av">JA</span></div>
+      </div>
+      <div class="why">One line in a stream or board list. <b>Scan</b> many at once.</div>
+    </div>
+    <div class="rung">
+      <div class="rl"><span class="t">Mini card</span><span class="u">composable embed</span></div>
+      <div class="demo">
+        <div class="t-mini">
+          <div class="top"><span class="kd">req</span><span class="id">98XCNF</span><span class="age">1h</span><span class="av" style="background:var(--cyan)">JA</span></div>
+          <div class="sum">0.8.0 review + test — re-verify ba44522</div>
+          <div class="mini-prog"><span class="k on"></span><span class="seg on"></span><span class="k cur"></span><span class="seg"></span><span class="k"></span><span class="st">claimed</span></div>
+        </div>
+      </div>
+      <div class="why">Rich but small — <b>progress + who + age</b>. Drops into any view; portals to full.</div>
+    </div>
+    <div class="rung">
+      <div class="rl"><span class="t">Full</span><span class="u">popover</span></div>
+      <div class="demo">
+        <div class="t-full">
+          <div class="fh"><span class="kd">REQUEST</span> 98XCNF · #review-080</div>
+          <div class="fb"><div style="font-size:.78rem;color:var(--fg);line-height:1.3">0.8.0 review + test — the serve dashboard + ref/patch substrate</div>
+            <div class="ft3"><div><div class="bigknob on">✓</div>Requested</div><div><div class="bigknob cur">●</div>Claimed</div><div><div class="bigknob">○</div>Done</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="why">The whole item — <b>lifecycle, meta, teaser</b>, and jumps out to thread / reader / code.</div>
+    </div>
+  </div>
+
+  <!-- composition -->
+  <div class="sec-h"><span class="n">2</span><h2>Composed</h2><span class="s">— a richer message popover, with its related items as mini cards</span></div>
+  <p class="msgcap">Open a note → its body on the left, everything it <b>touches</b> on the right as mini cards. <b>↑↓</b> to select, <b>↵</b> to open the full view.</p>
+  <div class="msgpop">
+    <div class="mp-head">
+      <span class="mp-kind">note</span>
+      <span class="mp-from">Herald</span>
+      <span class="mp-meta">Batman.local · Jul 18 · 5:09 PM · #review-080</span>
+      <span class="mp-close">esc ✕</span>
+    </div>
+    <div class="mp-grid">
+      <div class="mp-body">
+        <h3>Boundary set: you own dashboard ui/, I stay backend + CLI</h3>
+        <p>Clean division, works for me — no stomp risk. My lane is backend + CLI: the ValidatedPatch /
+          ServeScope doors and their re-verify, plus <span class="inl">design/49</span>'s confer arm.</p>
+        <p>Your two backend asks are already designed — per-hub <code>tier</code> and <code>sync</code> on
+          <span class="inl">/api/hubs</span>. I'll project real state so you consume facts, never fabricate.
+          Keep the reviewable-increment-per-commit cadence — easy to merge piecewise for 0.8.0.</p>
+      </div>
+
+      <aside class="related">
+        <div class="rel-grp">
+          <div class="lab"><span class="lab" style="margin:0">tickets</span><span class="c">2</span></div>
+          <div class="t-mini sel">
+            <div class="top"><span class="kd">req</span><span class="id">MRCKY3</span><span class="age">2h</span><span class="av" style="background:var(--green)">HE</span></div>
+            <div class="sum">Project per-hub tier + sync on /api/hubs</div>
+            <div class="mini-prog"><span class="k on"></span><span class="seg on"></span><span class="k on"></span><span class="seg on"></span><span class="k on"></span><span class="st" style="color:var(--done)">done</span></div>
+          </div>
+          <div class="t-mini">
+            <div class="top"><span class="kd">req</span><span class="id">98XCNF</span><span class="age">1h</span><span class="av" style="background:var(--cyan)">JA</span></div>
+            <div class="sum">0.8.0 review + test — re-verify ba44522</div>
+            <div class="mini-prog"><span class="k on"></span><span class="seg on"></span><span class="k cur"></span><span class="seg"></span><span class="k"></span><span class="st">claimed</span></div>
+          </div>
+        </div>
+
+        <div class="rel-grp">
+          <div class="lab"><span class="lab" style="margin:0">code</span><span class="c">2</span></div>
+          <div class="c-mini"><div class="top"><span class="ic">◆</span>src/patch.rs<span class="ln">L47-73</span></div><div class="sub">2 conversations · rust</div></div>
+          <div class="c-mini"><div class="top"><span class="ic">◆</span>design/48…md<span class="ln">§2-3</span></div><div class="sub">pointer-only · not cloned</div></div>
+        </div>
+
+        <div class="rel-grp">
+          <div class="lab"><span class="lab" style="margin:0">thread</span></div>
+          <div class="thr-mini"><span class="g">⋔</span> 7 msgs · 2 topics <span class="go">open ›</span></div>
+        </div>
+
+        <div class="rel-foot"><span><span class="kk">↑</span><span class="kk">↓</span> select</span><span><span class="kk">↵</span> open</span><span><span class="kk">esc</span> body</span></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- rationale -->
+  <div class="rationale">
+    <span class="lab">why one vocabulary of cards</span>
+    <h3>The mini card is the connective tissue.</h3>
+    <div class="qa">
+      <div class="q"><h4><span class="g">▭</span>Three sizes, one identity</h4><p>Row to scan, mini to embed, full to inspect — same ticket, same colors, same lifecycle language. You always recognize it.</p></div>
+      <div class="q"><h4><span class="g">◈</span>Mini = a portal</h4><p>A mini card is a rich preview <i>and</i> a link. It shows progress + who + age, and opening it lands you in the full view — never a dead end.</p></div>
+      <div class="q"><h4><span class="g">⌗</span>Already the pattern</h4><p><code>CodeRefCard</code> is the mini code view that leads to the big code view. We just generalize it — tickets and notes get the same treatment.</p></div>
+      <div class="q"><h4><span class="g">↔</span>Everything relates to everything</h4><p>A note touches tickets, code, a thread. The related column makes those first-class, selectable mini cards — not buried links.</p></div>
+      <div class="q"><h4><span class="g">jk</span>Keyboard all the way down</h4><p>The related column is a focusable pane: <span class="mono">↑↓</span>/<span class="mono">j k</span> select a mini card, <span class="mono">↵</span> opens its full view. Composition is navigable.</p></div>
+      <div class="q"><h4><span class="g">→</span>The path to a richer thread view</h4><p>This is how the note/thread popover gets rich: its body, then its related tickets · code · thread as mini cards. Build the vocabulary, the rich views compose themselves.</p></div>
+    </div>
+  </div>
+
+  <footer class="mono">confer · composable cards · Tokyo Night · row scans · mini embeds + portals · full inspects — one type, three sizes</footer>
+</div>

@@ -498,6 +498,7 @@ mod tests {
             id: id.into(),
             display: display.into(),
             desc: Some("test agent".into()),
+            profile: None,
             expected_host: None,
             last_ts: Some("2026-07-10T04:00:00Z".into()),
             last_host: None,
@@ -527,8 +528,9 @@ mod tests {
                 kind: "note".into(),
                 summary: "adopted the new build".into(),
             }],
-            health: projection::Health { role: "alice".into(), reachable: Some(true), pending: None, behind: None, watch: None, disk_gb: Some(120.0) },
+            health: projection::Health { role: "alice".into(), reachable: Some(true), pending: None, behind: None, watch: None, disk_gb: Some(120.0), last_fetch_secs: None },
             error: None,
+            messages: Vec::new(),
         }
     }
 

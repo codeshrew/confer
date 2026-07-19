@@ -352,7 +352,9 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
             let note = AppendArgs {
                 msg_type: "note".into(),
                 text: Some(text),
-                summary: format!("renamed: {me} now displays as '{name}'"),
+                body_file: None,
+                summary: Some(format!("renamed: {me} now displays as '{name}'")),
+                summary_file: None,
                 to: vec!["all".into()],
                 cc: vec![],
                 priority: None,
@@ -367,6 +369,11 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
                 resolution: None,
                 defer: false,
                 allow_secret: false,
+                ref_from: None,
+                allow_dirty: false,
+                patch: None,
+                patch_repo: None,
+                allow_large_patch: false,
             };
             if let Err(e) = cmd_append(note) {
                 warn_safety(format!("renamed, but the peer broadcast failed ({e}) — peers still resolve you via `confer whois`."));

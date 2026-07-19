@@ -136,6 +136,33 @@ pub fn output_stdin(root: &Path, args: &[&str], input: &str) -> Result<Output> {
     }
 }
 
+/// Like `output`, but with extra child-process env vars — for git plumbing that must operate
+/// against an OFF-TO-THE-SIDE index file (`GIT_INDEX_FILE`) instead of the repo's own, so the
+/// patch write-time validation (design/45 §1.4) and `confer apply`'s checks never touch the real
+/// index or working tree via this call. Same timeout/no-stdin discipline as `output`; no
+/// index.lock retry (a temp index is never contended).
+pub fn output_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Output> {
+    let mut cmd = base(root);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let timeout = git_timeout();
+    match rx.recv_timeout(timeout) {
+        Ok(r) => Ok(r?),
+        Err(_) => {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            Err(anyhow!("git {} timed out after {}s (killed)", args.join(" "), timeout.as_secs()))
+        }
+    }
+}
+
 /// Run git, erroring on non-zero exit (for operations that must succeed).
 pub fn check(root: &Path, args: &[&str]) -> Result<()> {
     let o = run(root, args)?;
@@ -185,7 +212,7 @@ fn acquire_lock_until(root: &Path, overall: Option<std::time::Instant>) -> Resul
     }
     // A persistent lock file (never removed) — flock is on the open handle, so a
     // leftover empty file is harmless and reused.
-    let mut file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&p)?;
+    let mut file = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&p)?;
     // Poll for the lock with a budget so a genuinely wedged-but-alive holder can't
     // block us forever. Holds are bounded (the sync retry below is capped), so this
     // rarely waits. flock frees automatically if the holder dies.

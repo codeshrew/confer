@@ -7,7 +7,7 @@
 //! `crate::LifecycleArgs` for the `#[command(flatten)]`.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use crate::{LifecycleArgs, VERSION};
+use crate::{CreateArgs, LifecycleArgs, VERSION};
 
 /// `confer autoheal <action>` — was a freeform `String` (a typo exited as a runtime error, code 3,
 /// with no shell completion); a `ValueEnum` makes clap reject a bad value itself (usage error, code
@@ -43,6 +43,33 @@ pub(crate) enum HubAction {
     Prune,
 }
 
+/// `confer repos <action>` — `map` records THIS machine's clone of a repo (design/40 layer 2:
+/// `~/.confer/repos.json`, local-only, never in the hub) so `--ref <slug>:…` resolves to real
+/// code here. No action = the listing.
+#[derive(Subcommand, Clone)]
+pub(crate) enum ReposAction {
+    /// Point a repo slug at its clone on THIS machine (path defaults to the current dir).
+    Map {
+        /// the repos/<slug> key (matches `--ref <slug>:…`)
+        slug: String,
+        /// clone path (default: the current directory)
+        path: Option<String>,
+    },
+    /// Backfill the clone map: match every repo registered in a hub you follow to a git
+    /// clone already on this machine (by canonical remote or root-commit SHA) and record
+    /// it, without touching any hub card or committing. Idempotent — a slug already
+    /// mapped is left alone. A REPORT (exit 0): prints `mapped <slug> → <path>` for each
+    /// match found and `unmatched <slug> (<url>)` for a registered repo with no local
+    /// clone.
+    Discover {
+        /// dev root to scan (its IMMEDIATE children only); repeatable. Default: ~/git,
+        /// ~/src, ~/code, ~/Projects, ~/dev, ~/repos, $HOME, plus the parent dir of every
+        /// hub clone you already follow.
+        #[arg(long = "root")]
+        root: Vec<String>,
+    },
+}
+
 #[derive(Parser)]
 #[command(
     name = "confer",
@@ -50,7 +77,7 @@ pub(crate) enum HubAction {
     about = "git-native coordination blackboard for AI agents"
 )]
 pub(crate) struct Cli {
-    /// Operate on a specific hub — like `git -C`, before the subcommand: `confer --hub jarvis threads`,
+    /// Operate on a specific hub — like `git -C`, before the subcommand: `confer --hub jarvis topics`,
     /// `confer --hub agent-coord who`. Works with EVERY hub-scoped command. Give a hub NAME (matched
     /// against `confer hubs` — a case-insensitive substring of the hub's name) or a clone PATH. Sets
     /// the effective hub for this one invocation (overrides $CONFER_HUB / the current directory).
@@ -94,17 +121,30 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Append one message (Markdown body via --text or stdin).
+    /// Append one message (Markdown body via --text, --body-file, or stdin).
     Append {
         /// message type: note | request | claim | done | error | supersede
         #[arg(long = "type")]
         msg_type: String,
         /// REQUIRED one-line summary — the triage field peers read before opening the body.
+        /// Exactly one of --summary / --summary-file.
         #[arg(long)]
-        summary: String,
+        summary: Option<String>,
+        /// read the summary verbatim from a file (raw bytes, no shell expansion) — the
+        /// shell-free affordance for a summary containing backticks/$()/$VAR/quotes/etc.
+        /// Mutually exclusive with --summary. A single trailing newline is stripped (a
+        /// summary is one line).
+        #[arg(long = "summary-file")]
+        summary_file: Option<String>,
         /// message body; if omitted, read from stdin (supports multi-line/fenced)
         #[arg(long)]
         text: Option<String>,
+        /// read the message body verbatim from a file (raw bytes, no shell expansion,
+        /// no interpretation) — the shell-free affordance for a body containing
+        /// backticks/$()/$VAR/!/quotes/fenced code/etc. Mutually exclusive with --text
+        /// and bypasses the stdin fallback (never combine with piped stdin).
+        #[arg(long = "body-file")]
+        body_file: Option<String>,
         /// primary addressee target(s) — role id, group, or `all`; repeatable
         /// (--to a --to b). REQUIRED for `request`.
         #[arg(long = "to")]
@@ -155,14 +195,59 @@ pub(crate) enum Cmd {
         /// blocks common token/key shapes — history is permanent + fleet-wide).
         #[arg(long = "allow-secret")]
         allow_secret: bool,
+        /// capture EVERY `--ref`'s identity from this directory's worktree instead of the
+        /// mapped clone (message-wide) — the escape hatch when the agent's cwd isn't the
+        /// tree it means; only applies to refs whose repo identity matches this dir.
+        #[arg(long = "ref-from")]
+        ref_from: Option<String>,
+        /// allow a `--ref` whose content is uncommitted/untracked at capture: embeds the
+        /// working-tree lines into the message body (a `confer-ref` fence) instead of
+        /// refusing to pin. Default is to FAIL — a ref is a promise peers can retrieve
+        /// what's pinned; use this only when that promise can't hold yet.
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
+        /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch`
+        /// (design/45): pinned to a base sha, write-time apply-gated via a temp index, one
+        /// derived `patch: true` ref per touched file with its `result_hash`. Requires --repo.
+        #[arg(long)]
+        patch: Option<String>,
+        /// the `repos/<slug>` --patch is against — resolves its base sha's capture dir the same
+        /// way --ref-from does (--ref-from itself, if given, is reused as that capture dir).
+        #[arg(long = "repo")]
+        patch_repo: Option<String>,
+        /// raise --patch's size gate from refuse-above-400-changed-lines to a hard ~2000-line
+        /// cap. Above THAT, the change is branch-scale: push a branch and --ref the commit.
+        #[arg(long = "allow-large-patch")]
+        allow_large_patch: bool,
+    },
+    /// Open a new tracked request (a ticket). Sugar for `append --type request`.
+    /// note = chat, request = ticket: use this when the thing needs someone to DO
+    /// something and show up on `requests`; use `note` for a plain message.
+    Request {
+        #[command(flatten)]
+        args: CreateArgs,
+        /// promote a prior `note` (or any message) into a tracked request that
+        /// references it — the "escalation" idiom: `note` first, `request
+        /// --reply-to <note-id>` once it needs to be tracked.
+        #[arg(long = "reply-to")]
+        reply_to: Option<String>,
+    },
+    /// Post a plain message (chat, no lifecycle tracking). Sugar for `append --type note`.
+    /// note = chat, request = ticket: use `request` instead when someone needs to DO
+    /// something about it.
+    Note {
+        #[command(flatten)]
+        args: CreateArgs,
     },
     /// Claim a request (you're taking it). Sugar for `append --type claim --of`.
+    /// Takes the request id positionally (`confer claim <id>`) or via `--of`.
     Claim {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Mark a request done. `--as wont-do|duplicate|obsolete` closes it *without*
     /// completion (a conscious drop). Sugar for `append --type done --of`.
+    /// Takes the request id positionally (`confer done <id>`) or via `--of`.
     Done {
         #[command(flatten)]
         args: LifecycleArgs,
@@ -170,21 +255,56 @@ pub(crate) enum Cmd {
         resolution: Option<String>,
     },
     /// Mark a request failed. Sugar for `append --type error --of`.
+    /// Takes the request id positionally (`confer error <id>`) or via `--of`.
     Error {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Mark a request blocked/waiting (off the active board → `requests --blocked`);
     /// re-`claim` when unblocked. Sugar for `append --type blocked --of`.
+    /// Takes the request id positionally (`confer blocked <id>`) or via `--of`.
     Blocked {
         #[command(flatten)]
         args: LifecycleArgs,
     },
     /// Backlog a request (someday) — anyone can, incl. the addressee. Sugar for
     /// `append --type defer --of`.
+    /// Takes the request id positionally (`confer defer <id>`) or via `--of`.
     Defer {
         #[command(flatten)]
         args: LifecycleArgs,
+    },
+    /// Propose a change: sugar for `append --type request --patch …` (design/45 §1.3) — the
+    /// reviewer's/refactorer's concrete output, applicable by the author with one `confer apply`
+    /// command, traceable forever via the request lifecycle (claim/done/wont-do/supersede). An
+    /// alternative with no expectation of action is the Talk-side `note --patch` instead. `--to`
+    /// is required, exactly as for any request. Requires `--patch <file|->` (the `--worktree`
+    /// capture flow is design/45's M-phase, not yet implemented).
+    Suggest {
+        #[command(flatten)]
+        args: CreateArgs,
+    },
+    /// Apply a `confer-patch` from a message to its target repo's WORKING TREE (design/45 §1.5).
+    /// EXPLICIT and never automatic: confer stops at `git apply`/`git apply --3way`, leaving
+    /// review, staging, committing, and attribution to YOU in your own repo — it never commits
+    /// or pushes to a work repo. `--check` is the predicate form (design/37): exit 0 applies
+    /// cleanly, 1 conflicts/drift, 2 already landed (HEAD already has this change), 3
+    /// unresolvable here (no mapped clone, or the base commit isn't present locally).
+    Apply {
+        /// the message id (or id-prefix) carrying the `confer-patch` fence.
+        id: String,
+        /// predicate mode: report the verdict via exit code only (0/1/2/3); never touches the
+        /// working tree.
+        #[arg(long)]
+        check: bool,
+        /// resolve the target repo here instead of the mapped clone (the `--ref-from` analogue —
+        /// design/44 §1.1).
+        #[arg(long = "repo-dir")]
+        repo_dir: Option<String>,
+        /// apply even though a touched path has uncommitted changes (default: refuse — never
+        /// stack a proposal onto unsaved work).
+        #[arg(long)]
+        force: bool,
     },
     /// Print what's new since the cursor, then exit (for /loop and hooks).
     Poll {
@@ -246,21 +366,22 @@ pub(crate) enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// List the hub's topic THREADS (the folders under `threads/`) with activity + open-work state —
-    /// the board at a glance, newest-active first, and a way to find stale open threads to clean up.
+    /// List the hub's TOPICS (the folders under `threads/`) with activity + open-work state —
+    /// the board at a glance, newest-active first, and a way to find stale open topics to clean up.
     /// `thread <id>` (singular) drills into one request's lifecycle; this lists them all. A REPORT
     /// (exits 0). Combine `--stale` with lifecycle `done --as obsolete` to close what's gone dead.
-    Threads {
-        /// only threads with unresolved work (an open/claimed/blocked request)
+    #[command(alias = "threads")]
+    Topics {
+        /// only topics with unresolved work (an open/claimed/blocked request)
         #[arg(long)]
         open: bool,
-        /// only threads with no open work (all requests resolved, or discussion-only)
+        /// only topics with no open work (all requests resolved, or discussion-only)
         #[arg(long)]
         closed: bool,
-        /// only OPEN threads gone quiet longer than N days (default 14) — cleanup candidates
+        /// only OPEN topics gone quiet longer than N days (default 14) — cleanup candidates
         #[arg(long, num_args = 0..=1, default_missing_value = "14")]
         stale: Option<u64>,
-        /// machine output: a JSON array of thread objects — topic, messages, participants,
+        /// machine output: a JSON array of topic objects — topic, messages, participants,
         /// last_activity, age_secs, requests, open_requests, status ("open"|"closed"), stale.
         #[arg(long)]
         json: bool,
@@ -303,8 +424,20 @@ pub(crate) enum Cmd {
         all: bool,
         /// only wake on messages at/above this priority: low (default, all) |
         /// normal | high. Lower-priority items still land — seen via `poll`.
-        #[arg(long = "min-priority", default_value = "low")]
-        min_priority: String,
+        /// Unset uses the saved per-(hub,role) preference if any, else `low`
+        /// (design/51 §6); passing this explicitly saves it for next time.
+        #[arg(long = "min-priority")]
+        min_priority: Option<String>,
+        /// only wake on events at/above this intrinsic wake-rung: alert (act-now
+        /// only) | notice (default — mutes only board mechanics: claim/ack/defer)
+        /// | all (today's behavior — every event addressed to you) | verbose (the
+        /// WHOLE board, every rung — implies --all scope; the overseer firehose).
+        /// Below-threshold events still land — seen via `poll`/`inbox`. A sender's
+        /// `--priority high` always breaks through and wakes regardless of this floor.
+        /// Unset uses the saved per-(hub,role) preference if any, else `notice`
+        /// (design/51 §6); passing this explicitly saves it for next time.
+        #[arg(long = "wake-on")]
+        wake_on: Option<String>,
         /// don't emit the one-shot "a newer confer is on this hub — update" wake (it's on by
         /// default; version drift is otherwise only seen at watch startup / `confer status`).
         #[arg(long = "no-version-notice")]
@@ -314,6 +447,32 @@ pub(crate) enum Cmd {
         /// run — `watch-status` then can't confirm you're actually receiving events.
         #[arg(long)]
         delivery: Option<String>,
+    },
+    /// Arm (or re-arm) your watcher the ONE correct way, then stream wakes: self-locate your
+    /// role's clone, take over any orphan (`--replace`), and stamp `--delivery monitor` so
+    /// `watch-status` can confirm delivery — none of which you can forget. Host it under the
+    /// Monitor tool (the `/confer-arm` skill); it's a long-lived streamer like `watch`. The
+    /// paved path over `watch --replace --delivery monitor` (design/49).
+    Arm {
+        /// arm this role explicitly. Default: resolve from the current clone, or the single
+        /// watch target this session owns (disambiguate a multi-role machine with this).
+        #[arg(long)]
+        role: Option<String>,
+        /// same as `watch --topic` — unset uses the saved per-(hub,role) preference if any, else
+        /// no filter. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long)]
+        topic: Option<String>,
+        /// same as `watch --all` (firehose scope) — saved when passed explicitly (design/51 §6).
+        #[arg(long)]
+        all: bool,
+        /// same as `watch --min-priority` — unset uses the saved per-(hub,role) preference if
+        /// any, else `low`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long = "min-priority")]
+        min_priority: Option<String>,
+        /// same as `watch --wake-on` — unset uses the saved per-(hub,role) preference if any,
+        /// else `notice`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
+        #[arg(long = "wake-on")]
+        wake_on: Option<String>,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether
@@ -351,24 +510,33 @@ pub(crate) enum Cmd {
     },
     /// Read-only web view of the fleet (same data as `dashboard`) — a pure-Rust
     /// server rendering the board/agents/health/activity as HTML, auto-refreshing.
-    /// Binds to LOCALHOST by default (the board is unauthenticated); to open it on
-    /// your phone, deliberately expose it with `--bind 0.0.0.0:<port>`. Current hub by
-    /// default; `--all-hubs` for the whole fleet, or top-level `--hub <name>` to focus one.
-    /// Read-only: never posts, never locks.
+    /// Binds to LOCALHOST (127.0.0.1, this machine only) by default — the board is
+    /// unauthenticated, so nothing else on your network can reach it unless you ask.
+    /// Pass `--lan` to deliberately expose it on your network (e.g. for phone access).
+    /// Current hub by default; `--all-hubs` for the whole fleet, or top-level
+    /// `--hub <name>` to focus one. Read-only: never posts, never locks.
     #[cfg(feature = "serve")]
     Serve {
         /// Serve EVERY hub on this machine (the full fleet view). Without it, serves just the current
         /// hub — narrow to a specific one with the top-level selector: `confer --hub jarvis serve`.
         #[arg(long = "all-hubs")]
         all_hubs: bool,
-        /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`).
-        /// Also settable via the `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with
-        /// RStudio Server and some studio apps).
+        /// Expose the server to your WHOLE NETWORK (binds 0.0.0.0), for phone/LAN access.
+        /// UNAUTHENTICATED: anyone who can reach this machine on the network can then read
+        /// all hub content and code. Ignored if `--bind` is also given (explicit `--bind`
+        /// always wins). Without this flag, serve binds loopback (127.0.0.1) only.
+        #[arg(long)]
+        lan: bool,
+        /// Localhost port to serve on — the easy override (shorthand for `--bind 127.0.0.1:PORT`,
+        /// or `--bind 0.0.0.0:PORT` if combined with `--lan`). Also settable via the
+        /// `CONFER_SERVE_PORT` env var. Default 8422 (8787 collides with RStudio Server and
+        /// some studio apps).
         #[arg(long)]
         port: Option<u16>,
-        /// Full bind address — only needed for NON-localhost exposure; overrides `--port`. LOCALHOST
-        /// is the default; pass e.g. `0.0.0.0:8422` on purpose to expose it on your LAN (anyone who
-        /// can reach that address can read your board — it's served WITHOUT auth).
+        /// Full bind address override — for power users. ALWAYS wins over `--lan`/`--port` when
+        /// given. Loopback (127.0.0.1 / ::1 / localhost) is treated as private; anything else
+        /// (e.g. `0.0.0.0:8422`) is UNAUTHENTICATED network exposure — confer will warn loudly
+        /// at startup, but won't refuse it.
         #[arg(long)]
         bind: Option<String>,
     },
@@ -667,10 +835,47 @@ pub(crate) enum Cmd {
         hub: Option<String>,
     },
     /// List the repos this hub is "about" (role, access, url, docs) — the
-    /// inventory that `--ref` points into. See DESIGN.md.
+    /// inventory that `--ref` points into — plus whether each is cloned on THIS
+    /// machine. `repos map <slug> [path]` records where your clone lives (local-only,
+    /// never in the hub) so `--ref <slug>:…` resolves to real code here. See DESIGN.md.
     Repos {
+        #[command(subcommand)]
+        action: Option<ReposAction>,
         #[arg(long)]
         json: bool,
+    },
+    /// Reverse index — "given this code, what conversations reference it?" Folds every
+    /// `--ref` in the log by (repo, path) and lists the threads that touched it. A
+    /// REPORT (exits 0). `--check` makes it a PREDICATE: exit 1 if nothing references the
+    /// target — a scriptable "is there conversation behind this code?" gate. See design/40.
+    Refs {
+        /// `<repo>` | `<repo>:<path>` | `<repo>:<path>#L44-49` (or `#L46`) — what to look up.
+        target: String,
+        /// predicate mode: exit 1 (not 0) if nothing references the target.
+        #[arg(long)]
+        check: bool,
+        /// fold every hub you follow (~/.confer/hubs.json), not just the current one.
+        #[arg(long = "all-hubs")]
+        all_hubs: bool,
+        /// machine output: NDJSON, one `ref-hit` event per line (versioned, additive).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Plumbing predicate (design/44 Addendum 1): is `<sha>` reachable from `<ref>` —
+    /// `git merge-base --is-ancestor <sha> <ref>`? Exit 0 if yes, 1 if no. A more robust
+    /// liveness check than "is it still HEAD" (HEAD moves constantly; ancestry doesn't
+    /// go stale on every further commit). Runs in `--repo <slug>`'s mapped clone if
+    /// given, else the git working tree at the current directory. No fetch.
+    RefContains {
+        /// the commit to test (full or short hex; anything `git rev-parse` accepts).
+        sha: String,
+        /// the ref to test against (branch, tag, sha…) — default `HEAD`.
+        #[arg(value_name = "ref", default_value = "HEAD")]
+        against: String,
+        /// resolve the repo via the machine-local clone map instead of the cwd's
+        /// working tree (for a script that isn't standing inside the code repo).
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Verify a message's commit signature against the sender role's LOCALLY PINNED
     /// key (TOFU, ~/.confer) — attribution / anti-spoof. A PREDICATE: prints the verdict and

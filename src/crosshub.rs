@@ -144,6 +144,12 @@ pub fn hub_label(dir: &Path) -> String {
 
 /// The root-commit SHA — identical across all clones of a repo, so it names a hub
 /// even with no remote (the F3 namespacing anchor). Best-effort.
+///
+/// **Shallow-clone hazard (design/44 §1.5):** in a shallow clone this returns the
+/// *shallow boundary* commit, not the true root — it would wrongly look like a different
+/// repo's identity. Callers that use this for identity VALIDATION (refusing a mismatch)
+/// must check `is_shallow` first and skip the comparison (accept with an advisory)
+/// rather than hard-refuse; see `repomap::resolve`.
 pub fn root_sha(dir: &Path) -> Option<String> {
     let o = gitcmd::output(dir, &["rev-list", "--max-parents=0", "HEAD"]).ok()?;
     if !o.status.success() {
@@ -151,6 +157,14 @@ pub fn root_sha(dir: &Path) -> Option<String> {
     }
     let s = String::from_utf8_lossy(&o.stdout);
     s.split_whitespace().next().map(String::from)
+}
+
+/// True iff `dir` is a shallow clone (`git rev-parse --is-shallow-repository`). Best-effort
+/// (false on any error — the common non-shallow case never pays for a failed check).
+pub fn is_shallow(dir: &Path) -> bool {
+    gitcmd::output(dir, &["rev-parse", "--is-shallow-repository"])
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
 }
 
 /// An SSH pubkey's `SHA256:…` fingerprint (via ssh-keygen), for display. Falls back

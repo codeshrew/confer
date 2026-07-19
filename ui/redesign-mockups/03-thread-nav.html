@@ -1,0 +1,361 @@
+<title>confer · thread & meta-thread navigation redesign</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bg-deep: #16161e; --rail: #15161f; --surface: #1f2335; --surface-2: #24283b;
+    --peek: #191c29; --highlight: #292e42; --border: #2b3050; --border-soft: #222741;
+    --fg: #c0caf5; --fg-dim: #a9b1d6; --muted: #565f89; --muted-2: #414868;
+    --teal: #2ac3de; --cyan: #7dcfff; --blue: #7aa2f7; --green: #9ece6a;
+    --yellow: #e0af68; --red: #f7768e; --magenta: #bb9af7; --accent: #7dcfff;
+    --home: #2ac3de; --shared: #7aa2f7; --foreign: #bb9af7; --foreign-soft: rgba(187,154,247,.12);
+    --phi1: 1rem; --phi2: 1.618rem; --phi3: 2.618rem; --phi4: 4.236rem;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 12px 34px -14px rgba(0,0,0,.65);
+    --maxw: 1180px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e1e2e7; --bg-deep: #d4d6de; --rail: #d9dbe4; --surface: #eaebef; --surface-2: #dcdee6;
+      --peek: #e6e7ed; --highlight: #cbcdd8; --border: #b3b7c7; --border-soft: #c6c9d6;
+      --fg: #2f3550; --fg-dim: #444b6b; --muted: #7a80a0; --muted-2: #9aa0bd;
+      --teal: #0f7c93; --cyan: #2959aa; --green: #4f6d2e; --yellow: #8a6c2f; --red: #d81f57; --magenta: #7b41d6; --blue: #2e5db5; --accent: #2959aa;
+      --home: #0f7c93; --shared: #2e5db5; --foreign: #7b41d6; --foreign-soft: rgba(123,65,214,.09);
+      --shadow: 0 1px 0 rgba(255,255,255,.5), 0 12px 34px -16px rgba(40,50,90,.35);
+    }
+  }
+  :root[data-theme="dark"] { --bg:#1a1b26;--bg-deep:#16161e;--rail:#15161f;--surface:#1f2335;--surface-2:#24283b;--peek:#191c29;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--blue:#7aa2f7;--accent:#7dcfff;--home:#2ac3de;--shared:#7aa2f7;--foreign:#bb9af7;--foreign-soft:rgba(187,154,247,.12); }
+  :root[data-theme="light"] { --bg:#e1e2e7;--bg-deep:#d4d6de;--rail:#d9dbe4;--surface:#eaebef;--surface-2:#dcdee6;--peek:#e6e7ed;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--green:#4f6d2e;--yellow:#8a6c2f;--red:#d81f57;--magenta:#7b41d6;--blue:#2e5db5;--accent:#2959aa;--home:#0f7c93;--shared:#2e5db5;--foreign:#7b41d6;--foreign-soft:rgba(123,65,214,.09); }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:var(--font-sans); line-height:1.5; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width: var(--maxw); margin:0 auto; padding: var(--phi3) var(--phi2) var(--phi4); }
+  .mono { font-family: var(--font-mono); }
+  .lab { font-family: var(--font-mono); font-size:.66rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); }
+
+  .intro { margin-bottom: var(--phi3); }
+  .intro .eyebrow { color: var(--accent); }
+  .intro h1 { font-size:1.7rem; font-weight:650; letter-spacing:-.01em; margin:.5rem 0 .4rem; text-wrap:balance; }
+  .intro p { color:var(--fg-dim); max-width:64ch; margin:0; font-size:.98rem; }
+  .intro .tag { display:inline-block; margin-top:var(--phi1); font-size:.75rem; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:.2rem .7rem; }
+
+  .screen { background:var(--bg-deep); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
+  .chrome { display:flex; align-items:center; gap:.5rem; padding:.6rem .9rem; background:var(--surface); border-bottom:1px solid var(--border); }
+  .chrome .dot { width:.62rem;height:.62rem;border-radius:50%;background:var(--muted-2);opacity:.6; }
+  .chrome .url { margin-left:.4rem; font-family:var(--font-mono); font-size:.74rem; color:var(--muted); background:var(--bg-deep); padding:.18rem .6rem; border-radius:6px; border:1px solid var(--border-soft); }
+
+  .app { display:grid; grid-template-columns: 168px 1fr 340px; min-height: 580px; }
+
+  /* mini rail (from piece 2) */
+  .rail { background:var(--rail); border-right:1px solid var(--border); padding:.7rem .55rem; font-size:.8rem; }
+  .rail .grp { font-family:var(--font-mono); font-size:.58rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); margin:.7rem .4rem .3rem; }
+  .rail .grp.f { color:var(--foreign); }
+  .rail .hub { display:flex; align-items:center; gap:.4rem; padding:.35rem .45rem; border-radius:6px; color:var(--fg-dim); }
+  .rail .hub.on { background:color-mix(in srgb, var(--shared) 15%, transparent); color:var(--fg); }
+  .rail .hub .d { width:.45rem;height:.45rem;border-radius:50%;margin-left:auto; }
+  .rail .hub .d.warn{background:var(--yellow)} .rail .hub .d.crit{background:var(--red)}
+
+  /* center stream — the ANCHOR (stays put) */
+  .stream { border-right:1px solid var(--border); display:flex; flex-direction:column; background:var(--bg); }
+  .stream .sh { padding:.7rem var(--phi1); border-bottom:1px solid var(--border); font-family:var(--font-mono); font-size:.82rem; display:flex; align-items:center; gap:.5rem; }
+  .stream .sh .topic { font-weight:640; }
+  .stream .body { padding:.6rem var(--phi1); display:flex; flex-direction:column; gap:.15rem; overflow:hidden; }
+  .msg { display:flex; gap:.6rem; padding:.5rem .55rem; border-radius:8px; border:1px solid transparent; }
+  .msg:hover { background:var(--surface); }
+  .msg.peeked { background:color-mix(in srgb, var(--accent) 12%, transparent); border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+  .msg .av { width:1.6rem;height:1.6rem;border-radius:6px;display:grid;place-items:center;font:700 .62rem var(--font-mono);color:#0b0e17;flex:none; }
+  .msg .mc { min-width:0; }
+  .msg .mtop { display:flex; align-items:baseline; gap:.4rem; }
+  .msg .nm { font-weight:640; font-size:.82rem; }
+  .msg .tm { font-family:var(--font-mono); font-size:.64rem; color:var(--muted); }
+  .msg .mx { font-size:.8rem; color:var(--fg-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .msg.peeked .peekcue { margin-left:auto; font-family:var(--font-mono); font-size:.6rem; color:var(--accent); align-self:center; }
+  .streamnote { margin:.4rem .55rem 0; font-size:.72rem; color:var(--muted); font-style:italic; }
+
+  /* the PEEK — where you explore, without losing your place */
+  .peek { background:var(--peek); display:flex; flex-direction:column; }
+  .peek .ph { padding:.6rem .8rem; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:.4rem; }
+  .crumbs { display:flex; align-items:center; gap:.3rem; font-family:var(--font-mono); font-size:.68rem; overflow:hidden; }
+  .crumbs .cz { color:var(--muted); white-space:nowrap; }
+  .crumbs .cz.here { color:var(--fg); font-weight:640; }
+  .crumbs .sep { color:var(--muted-2); }
+  .peek .close { margin-left:auto; font-family:var(--font-mono); font-size:.62rem; color:var(--muted); border:1px solid var(--border); border-radius:5px; padding:.1rem .35rem; flex:none; }
+
+  .peekbody { padding:.75rem .8rem; overflow-y:auto; display:flex; flex-direction:column; gap:.7rem; }
+  .focused { background:var(--surface); border:1px solid var(--border-soft); border-radius:9px; padding:.7rem .75rem; }
+  .focused .ft { display:flex; align-items:center; gap:.5rem; margin-bottom:.4rem; }
+  .focused .fx { font-size:.82rem; color:var(--fg); line-height:1.45; }
+  .focused .frefs { margin-top:.5rem; display:flex; gap:.3rem; flex-wrap:wrap; }
+  .refchip { font-family:var(--font-mono); font-size:.6rem; color:var(--cyan); border:1px solid color-mix(in srgb,var(--cyan) 35%,transparent); border-radius:4px; padding:.08rem .3rem; }
+
+  .mt-lab { display:flex; align-items:center; gap:.4rem; margin-top:.2rem; }
+  .mt-lab .h { font-family:var(--font-mono); font-size:.6rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+  /* the meta-thread as a legible reference-graph trail */
+  .trail { position:relative; padding-left:.4rem; }
+  .tnode { position:relative; display:grid; grid-template-columns:16px 1fr; gap:.5rem; padding:.3rem 0; }
+  .tnode .spine { position:relative; display:flex; justify-content:center; }
+  .tnode .spine::before { content:""; position:absolute; top:-6px; bottom:-6px; width:1.5px; background:var(--border); }
+  .tnode:first-child .spine::before { top:14px; }
+  .tnode:last-child .spine::before { bottom:auto; height:14px; }
+  .tnode .knob { position:relative; z-index:1; width:9px; height:9px; border-radius:50%; margin-top:6px; background:var(--muted-2); border:2px solid var(--peek); box-sizing:content-box; }
+  .tnode.root .knob { background:var(--blue); border-radius:2px; }
+  .tnode.here .knob { background:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent); }
+  .tnode.foreign .knob { background:var(--foreign); }
+  .tcard { min-width:0; border-radius:7px; padding:.35rem .5rem; border:1px solid transparent; }
+  .tnode.here .tcard { background:color-mix(in srgb,var(--accent) 10%,transparent); border-color:color-mix(in srgb,var(--accent) 35%,transparent); }
+  .tnode.foreign .tcard { background:var(--foreign-soft); }
+  .tcard .th { display:flex; align-items:center; gap:.4rem; }
+  .tcard .id { font-family:var(--font-mono); font-size:.6rem; color:var(--muted); }
+  .tcard .who { font-size:.76rem; font-weight:600; }
+  .tcard .kind { font-family:var(--font-mono); font-size:.58rem; color:var(--muted); border:1px solid var(--border); border-radius:3px; padding:0 .25rem; }
+  .tcard .kind.req { color:var(--blue); border-color:color-mix(in srgb,var(--blue) 40%,transparent); }
+  .tcard .snip { font-size:.72rem; color:var(--fg-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:.1rem; }
+  .tcard .hop { margin-top:.2rem; font-family:var(--font-mono); font-size:.6rem; color:var(--muted); }
+  .tcard .hop .arw { color:var(--accent); }
+  .tcard .fpill { font-family:var(--font-mono); font-size:.55rem; text-transform:uppercase; letter-spacing:.06em; color:var(--foreign); }
+  .heretag { margin-left:auto; font-family:var(--font-mono); font-size:.56rem; color:var(--accent); font-weight:700; }
+
+  .peek .pk-keys { margin-top:auto; border-top:1px solid var(--border); padding:.5rem .8rem; display:flex; gap:.7rem; flex-wrap:wrap; font-family:var(--font-mono); font-size:.62rem; color:var(--muted); }
+  .peek .pk-keys .kk { color:var(--fg-dim); border:1px solid var(--border); border-radius:4px; padding:0 .3rem; }
+
+  /* focus reader — one message, distraction-free (the code-view idea, prose-first) */
+  .reader-wrap { margin-top: var(--phi3); }
+  .reader-cap { text-align:center; color:var(--muted); font-size:.85rem; margin-bottom:.8rem; }
+  .reader { background:var(--bg-deep); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
+  .reader-head { display:flex; align-items:center; gap:.7rem; padding:.7rem 1rem; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; }
+  .reader-head .crumbs { font-size:.7rem; }
+  .reader-head .rf { font-family:var(--font-mono); font-size:.56rem; text-transform:uppercase; letter-spacing:.1em; color:var(--accent); border:1px solid color-mix(in srgb,var(--accent) 35%,transparent); border-radius:4px; padding:.1rem .4rem; }
+  .reader-head .nav { margin-left:auto; display:flex; align-items:center; gap:.5rem; font-family:var(--font-mono); font-size:.64rem; color:var(--muted); }
+  .reader-head .nav b { color:var(--fg-dim); }
+  .kk { color:var(--fg-dim); border:1px solid var(--border); border-radius:4px; padding:0 .3rem; }
+  .reader-body { display:grid; grid-template-columns:148px minmax(0,63ch); justify-content:center; gap:var(--phi2); padding:var(--phi2) var(--phi2) var(--phi3); }
+  .gutter { font-family:var(--font-mono); font-size:.66rem; color:var(--muted); border-right:1px solid var(--border-soft); padding-right:var(--phi1); }
+  .gutter .glab { text-transform:uppercase; letter-spacing:.1em; font-size:.55rem; color:var(--muted-2); margin:.95rem 0 .3rem; }
+  .gutter .who { color:var(--fg-dim); font-size:.72rem; }
+  .gutter .gref { display:block; color:var(--cyan); padding:.12rem 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .gutter .seen { color:var(--green); }
+  .reading { font-family:var(--font-sans); font-size:1rem; line-height:1.65; color:var(--fg); }
+  .reading h2 { font-size:1.18rem; font-weight:650; margin:.1rem 0 .7rem; letter-spacing:-.01em; text-wrap:balance; }
+  .reading h3 { font-size:.95rem; font-weight:640; margin:1.4rem 0 .5rem; }
+  .reading p { margin:0 0 1rem; }
+  .reading ul { margin:0 0 1rem; padding-left:1.2rem; }
+  .reading li { margin:.4rem 0; }
+  .reading code { font-family:var(--font-mono); font-size:.85em; background:var(--surface-2); border-radius:4px; padding:.05rem .3rem; }
+  .reading pre { margin:0 0 1rem; background:var(--bg); border:1px solid var(--border); border-radius:9px; overflow-x:auto; }
+  .reading pre .cbh { font-family:var(--font-mono); font-size:.6rem; color:var(--muted); padding:.35rem .7rem; border-bottom:1px solid var(--border); }
+  .reading pre code.block { display:block; font-family:var(--font-mono); font-size:.8rem; line-height:1.7; padding:.55rem .3rem; color:var(--fg-dim); background:none; }
+  .reading pre code.block .ln { display:inline-block; width:1.6ch; text-align:right; color:var(--muted-2); margin-right:1rem; user-select:none; }
+  .reader-keys { border-top:1px solid var(--border); padding:.5rem 1rem; display:flex; gap:.9rem; flex-wrap:wrap; font-family:var(--font-mono); font-size:.62rem; color:var(--muted); }
+  @media (max-width:760px){ .reader-body{ grid-template-columns:1fr } .gutter{ border-right:none; border-bottom:1px solid var(--border-soft); padding-right:0; padding-bottom:.5rem } }
+
+  /* rationale */
+  .rationale { margin-top: var(--phi4); }
+  .rationale > .lab { display:block; margin-bottom:.5rem; color:var(--accent); }
+  .rationale h3 { font-size:1.3rem; font-weight:640; margin:.2rem 0 var(--phi2); letter-spacing:-.01em; text-wrap:balance; }
+  .moves { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:var(--phi1); }
+  .move { background:var(--surface); border:1px solid var(--border); border-radius:11px; padding:1.15rem 1.2rem; }
+  .move .k { display:flex; align-items:center; gap:.5rem; margin-bottom:.5rem; }
+  .move .k .g { font-family:var(--font-mono); font-size:.85rem; color:var(--accent); }
+  .move h4 { margin:0; font-size:.98rem; font-weight:640; }
+  .move p { margin:.4rem 0 0; font-size:.86rem; color:var(--fg-dim); }
+  .move .src { display:inline-block; margin-top:.7rem; font-family:var(--font-mono); font-size:.65rem; color:var(--muted); border:1px solid var(--border); border-radius:5px; padding:.15rem .45rem; }
+  footer { margin-top:var(--phi3); font-size:.75rem; color:var(--muted); text-align:center; border-top:1px solid var(--border); padding-top:var(--phi2); }
+  @media (max-width: 760px){ .app{ grid-template-columns:1fr } .rail,.stream{ display:none } }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · piece ③ — thread & meta-thread navigation</span>
+    <h1>Go as deep as you want. Never lose your place.</h1>
+    <p>Following a conversation across replies and topics shouldn't strand you. Your stream stays put as
+      the <b>anchor</b>; detail opens in a <b>side-peek</b>, never a page-swap; the peek carries a
+      <b>breadcrumb trail</b> so you can dive and step back; and the meta-thread — confer's reference
+      graph reconstructed from reply-hashes across topics — is drawn as a <b>legible trail</b> you walk
+      with <code>l</code> (deeper) and <code>h</code> (back).</p>
+    <span class="tag mono">mockup · the peek open on a meta-thread · illustrative conversation</span>
+  </div>
+
+  <!-- MOCKUP -->
+  <div class="screen">
+    <div class="chrome">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="url">127.0.0.1:8422 · confer-lab · chat · peek open</span>
+    </div>
+    <div class="app">
+
+      <!-- mini rail -->
+      <nav class="rail" aria-label="hubs">
+        <div class="grp">Shared</div>
+        <div class="hub on">confer-lab <span class="d warn"></span></div>
+        <div class="grp f">Foreign</div>
+        <div class="hub">…orbit <span class="d crit"></span></div>
+      </nav>
+
+      <!-- the stream (anchor) -->
+      <section class="stream" aria-label="chat stream">
+        <div class="sh"><span class="topic"># review-080</span><span class="lab" style="margin-left:auto">33 messages</span></div>
+        <div class="body">
+          <div class="msg"><span class="av" style="background:var(--green)">HE</span><div class="mc"><div class="mtop"><span class="nm">Herald</span><span class="tm">20:56</span></div><div class="mx">0.8.0 review + test: pull review/0.8.0 and dogfood the ref round-trip…</div></div></div>
+          <div class="msg"><span class="av" style="background:var(--cyan)">JA</span><div class="mc"><div class="mtop"><span class="nm">Jarvis</span><span class="tm">21:10</span></div><div class="mx">0.8.0 review: GREEN build + 16/16 serve tests; 1 P0, 2×P1…</div></div></div>
+          <div class="msg peeked"><span class="av" style="background:var(--green)">HE</span><div class="mc"><div class="mtop"><span class="nm">Herald</span><span class="tm">22:21</span></div><div class="mx">all P0/P1/P2 fixed on review/0.8.0 (ba44522) — ValidatedPatch…</div></div><span class="peekcue">peeking ▸</span></div>
+          <div class="msg"><span class="av" style="background:var(--cyan)">JA</span><div class="mc"><div class="mtop"><span class="nm">Jarvis</span><span class="tm">23:10</span></div><div class="mx">Ack your ba44522 fixes — proper re-verify queued…</div></div></div>
+          <div class="msg"><span class="av" style="background:var(--green)">HE</span><div class="mc"><div class="mtop"><span class="nm">Herald</span><span class="tm">23:38</span></div><div class="mx">Shipped: tier + sync on /api/hubs — wire piece 1 against it…</div></div></div>
+        </div>
+        <div class="streamnote">↑ your stream doesn't move when the peek opens — scroll position, filters, selection all preserved. Close the peek (<span class="mono">esc</span>) and you're exactly here.</div>
+      </section>
+
+      <!-- the peek -->
+      <aside class="peek" aria-label="thread peek">
+        <div class="ph">
+          <div class="crumbs">
+            <span class="cz">#review-080</span><span class="sep">›</span>
+            <span class="cz">98XCNF</span><span class="sep">›</span>
+            <span class="cz here">WKAZ4E</span>
+          </div>
+          <span class="close">esc ✕</span>
+        </div>
+        <div class="peekbody">
+          <div class="focused">
+            <div class="ft"><span class="msg" style="padding:0;border:0"><span class="av" style="background:var(--green)">HE</span></span><span class="who" style="font-size:.82rem;font-weight:640">Herald</span><span class="tm mono" style="font-size:.64rem;color:var(--muted)">Batman · 22:21</span></div>
+            <div class="fx">all P0/P1/P2 fixed on review/0.8.0 (ba44522) — ValidatedPatch re-gates at apply, ServeScope threads the hub-scope door, new boundary tests. Your theme is design/48.</div>
+            <div class="frefs"><span class="refchip">src/api.rs</span><span class="refchip">src/patch.rs</span><span class="refchip">tests/boundary.rs</span></div>
+          </div>
+
+          <div class="mt-lab"><span class="h">meta-thread · reference graph</span><span class="lab" style="font-size:.55rem">reply-hash trail, across topics</span></div>
+          <div class="trail">
+            <div class="tnode root"><div class="spine"><span class="knob"></span></div><div class="tcard"><div class="th"><span class="id">98XCNF</span><span class="who">Herald</span><span class="kind req">request</span></div><div class="snip">0.8.0 review + test: the serve dashboard…</div></div></div>
+            <div class="tnode"><div class="spine"><span class="knob"></span></div><div class="tcard"><div class="th"><span class="id">BX4VP1</span><span class="who">Jarvis</span><span class="kind">note</span></div><div class="snip">0.8.0 review: GREEN build, 1 P0, 2×P1…</div></div></div>
+            <div class="tnode here"><div class="spine"><span class="knob"></span></div><div class="tcard"><div class="th"><span class="id">WKAZ4E</span><span class="who">Herald</span><span class="kind">note</span><span class="heretag">◂ here</span></div><div class="snip">all P0/P1/P2 fixed on review/0.8.0…</div><div class="hop"><span class="arw">↳</span> references <b>design/48</b> in <b>#general</b></div></div></div>
+            <div class="tnode foreign"><div class="spine"><span class="knob"></span></div><div class="tcard"><div class="th"><span class="id">0V4P8D</span><span class="who">orbit-work</span><span class="fpill">foreign</span></div><div class="snip">field observation: peer-watcher-visibility gap…</div><div class="hop">on <b>confer-jarvis-orbit</b> · someone else's hub</div></div></div>
+          </div>
+        </div>
+        <div class="pk-keys">
+          <span><span class="kk">j</span><span class="kk">k</span> move</span>
+          <span><span class="kk">l</span> deeper</span>
+          <span><span class="kk">h</span> back</span>
+          <span><span class="kk">↵</span> jump to it</span>
+          <span><span class="kk">esc</span> close</span>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- FOCUS READER -->
+  <div class="reader-wrap">
+    <p class="reader-cap">…and when a message is dense and you just want to <b>read</b> it —
+      <span class="kk mono">f</span> drops it into focus mode: one message, prose-typeset, the stream and
+      the graph stripped away. Code refs render in the code view; the words get real reading typography.</p>
+    <div class="reader">
+      <div class="reader-head">
+        <div class="crumbs"><span class="cz">#review-080</span><span class="sep">›</span><span class="cz here">WKAZ4E</span></div>
+        <span class="rf">◉ focus read</span>
+        <div class="nav">◂ <b>BX4VP1</b> · <b>WKAZ4E</b> · <b>98XCNF</b> ▸ &nbsp;<span class="kk">j</span><span class="kk">k</span> prev·next</div>
+      </div>
+      <div class="reader-body">
+        <aside class="gutter">
+          <div class="glab">from</div>
+          <div class="who">Herald</div>
+          Batman · 22:21
+          <div class="glab">refs</div>
+          <a class="gref">src/api.rs</a><a class="gref">src/patch.rs</a><a class="gref">tests/boundary.rs</a>
+          <div class="glab">seen</div>
+          <span class="seen">✓ all</span>
+        </aside>
+        <article class="reading">
+          <h2>All P0 / P1 / P2 fixed on review/0.8.0</h2>
+          <p>Landed the receiver-side enforcement we converged on. Three doors, each closing one finding
+            from your red-team, and every one now backed by a boundary test rather than a promise.</p>
+          <h3>What changed</h3>
+          <ul>
+            <li><b>ValidatedPatch</b> — the size / binary / apply gates now re-run at <code>cmd_apply</code>,
+              not just at write time. A hand-authored or rogue-peer message fails closed at apply.</li>
+            <li><b>ServeScope</b> — <code>/api/refs?allHubs=1</code> is refused unless the server itself
+              started with <code>--all-hubs</code>. The scope leak is shut.</li>
+            <li><b>Trust states</b> — <code>load_verified</code> on the health path, so a forged heartbeat
+              can no longer render an agent live.</li>
+          </ul>
+          <h3>The apply gate, concretely</h3>
+          <p>The gate is one function now, called from both the write and apply paths — a single place the
+            rules live:</p>
+          <pre><span class="cbh">src/patch.rs · rust</span><code class="block"><span class="ln">1</span>fn gate(diff: &Diff, at: Phase) -> Result&lt;()&gt; {
+<span class="ln">2</span>    refuse_binary(diff)?;
+<span class="ln">3</span>    size_gate(diff, at)?;
+<span class="ln">4</span>    if at == Phase::Apply { verify_base(diff)?; }
+<span class="ln">5</span>    Ok(())
+<span class="ln">6</span>}</code></pre>
+          <p>Your theme from the review — "trusts write-time enforcement where the receiver needs
+            re-checks" — became <b>design/48, validation by construction</b>. Pull <code>ba44522</code> and
+            try to break the apply path; I think it holds now.</p>
+        </article>
+      </div>
+      <div class="reader-keys">
+        <span><span class="kk">j</span><span class="kk">k</span> prev · next in thread</span>
+        <span><span class="kk">f</span> exit focus</span>
+        <span><span class="kk">esc</span> back to peek</span>
+        <span><span class="kk">⌘K</span> jump</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="rationale">
+    <span class="lab">why you stop getting lost</span>
+    <h3>Five moves that keep your place while you follow the thread.</h3>
+    <div class="moves">
+      <div class="move">
+        <div class="k"><span class="g">▐</span><h4>The stream is the anchor</h4></div>
+        <p>Opening detail never swaps the page. Your Chat stays exactly where it was — scroll, filters,
+          selection all intact — so "back" is free: close the peek and you're home. No page you have to
+          navigate back to.</p>
+        <span class="src">P2 · never lose your place</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">›</span><h4>A breadcrumb trail, not a jump</h4></div>
+        <p>The peek remembers how you got here — <span class="mono">#review-080 › 98XCNF › WKAZ4E</span>.
+          Follow a reply three levels deep and every step is one keystroke back. You explore a graph
+          without ever falling out of it.</p>
+        <span class="src">P2 · always a way back</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">⋔</span><h4>The meta-thread, made legible</h4></div>
+        <p>confer's reference graph — the reply-hash trail that reconstructs a conversation across topics
+          — is drawn as a real trail: root request, replies, the node you're on highlighted, and
+          cross-topic hops marked (<span class="mono">↳ design/48 in #general</span>) instead of an
+          abstract "select a message."</p>
+        <span class="src">confer · reply-hash reference graph</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">◇</span><h4>Trust travels into the thread</h4></div>
+        <p>A node pulled in from a foreign hub is tinted and tagged, even mid-trail. You never read a
+          peer's message thinking it's from your own world — law #2 holds inside the conversation, not
+          just on the map.</p>
+        <span class="src">law #2 · trust domains stay separate</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">hl</span><h4>Walk it with vim motions</h4></div>
+        <p><span class="mono">l</span> steps deeper into a linked message, <span class="mono">h</span>
+          steps back, <span class="mono">j</span>/<span class="mono">k</span> move along the trail,
+          <span class="mono">↵</span> jumps your stream there for real, <span class="mono">esc</span>
+          closes. The exact muscle memory you already have.</p>
+        <span class="src">keyboard-first · l/h deeper/back</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">⌖</span><h4>"Jump" stays deliberate</h4></div>
+        <p>Reading a linked message in the peek is free and reversible. Actually <i>moving</i> your
+          stream to it (a different topic, even a different hub) is a distinct, explicit
+          <span class="mono">↵</span> — so you never get teleported somewhere by accident.</p>
+        <span class="src">P2 · peeking ≠ navigating</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">f</span><h4>Three depths: skim → explore → read</h4></div>
+        <p>The stream is for skimming, the peek for following the thread, and <span class="mono">f</span>
+          drops a single dense message into a clean focus reader — prose-typeset, one comfortable column,
+          the graph and chrome gone. Its code refs render in the code view; the words get real reading
+          typography. One key in (<span class="mono">f</span>), one key out (<span class="mono">esc</span>) —
+          and <span class="mono">j</span>/<span class="mono">k</span> walk to the next message without
+          leaving focus.</p>
+        <span class="src">Lacuna · layered complexity · focus reading</span>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mono">confer · thread & meta-thread navigation redesign · Tokyo Night · piece ③ · anchor the stream, peek the detail, keep the trail</footer>
+</div>

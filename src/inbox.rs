@@ -313,6 +313,14 @@ pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
                 let who = roster::display(&roster, &m.front.from);
                 let body = schema::sanitize_term(&m.to_markdown()?, true);
                 println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub_key)));
+                // Resolve each --ref against its local clone (design/40 #5, #6):
+                // staleness + a bounded snippet when cloned here, pointer-only otherwise.
+                if !m.front.refs.is_empty() {
+                    let repo_inv = crate::repos::load(&root);
+                    for r in &m.front.refs {
+                        println!("{}", crate::refcode::render_resolved(&repo_inv, r, 40));
+                    }
+                }
                 // Supersession chain (the append-based "edit" model).
                 if let Some(newer) = msgs.iter().find(|x| {
                     x.front
@@ -492,6 +500,7 @@ pub(crate) fn cmd_requests(
         _ => {}
     }
     let roster = roster::load(&root);
+    let groups = groups::load(&root);
     let msgs = store::all_messages(&root)?;
     // Fold the whole board once (shared with the dashboard TUI); then apply the
     // view filter and render. See projection::Board.
@@ -512,13 +521,17 @@ pub(crate) fn cmd_requests(
         } else if open_only && !row.is_active() {
             continue;
         }
-        if mine && row.from != me && !row.to.iter().any(|t| t == me.as_str()) {
+        let m = by_id[row.id.as_str()];
+        if mine
+            && row.from != me
+            && !groups::directly_addressed(m, &me, &groups)
+            && !row.claimants.iter().any(|c| c == me.as_str())
+        {
             continue;
         }
         if json {
             // Re-serialize the full frontmatter (from the original message) + the
             // folded status/claimants/age/resolution — the stable JSON contract.
-            let m = by_id[row.id.as_str()];
             let mut v = serde_json::to_value(&m.front)?;
             if let serde_json::Value::Object(map) = &mut v {
                 map.insert(
@@ -757,6 +770,10 @@ pub(crate) fn cmd_threads(
         requests: usize,
         open: usize,
         status: &'static str,
+        /// Never held a request — a pure discussion channel, not a dead request board.
+        /// The text renderer shows this as its own state; JSON keeps `status` as-is
+        /// (back-compat) and carries this as an additive field.
+        discussion: bool,
         stale: bool,
     }
     let mut rows: Vec<Row> = by_topic
@@ -776,6 +793,7 @@ pub(crate) fn cmd_threads(
                 requests: a.requests,
                 open: a.open,
                 status,
+                discussion: a.requests == 0,
                 stale,
             }
         })
@@ -803,6 +821,7 @@ pub(crate) fn cmd_threads(
                     "requests": r.requests,
                     "open_requests": r.open,
                     "status": r.status,
+                    "discussion": r.discussion,
                     "stale": r.stale,
                 })
             })
@@ -823,6 +842,10 @@ pub(crate) fn cmd_threads(
         "TOPIC", "MSGS", "AGENTS", "LAST", "REQ o/t", "STATUS"
     );
     for r in &rows {
+        // Zero requests ever = a pure discussion channel, not a dead request board —
+        // don't let a healthy notes-only topic read as "closed" (r.status is unaffected;
+        // this is display-only, and JSON keeps status as-is + adds "discussion").
+        let status_disp = if r.discussion { "discussion" } else { r.status };
         println!(
             "{:<24} {:>5} {:>6} {:>9} {:>7}  {}{}",
             truncate(&r.topic, 24),
@@ -830,7 +853,7 @@ pub(crate) fn cmd_threads(
             r.participants.len(),
             fmt_age(r.age_secs),
             format!("{}/{}", r.open, r.requests),
-            r.status,
+            status_disp,
             if r.stale { "  ⚠ stale" } else { "" }
         );
     }

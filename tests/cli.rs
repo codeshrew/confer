@@ -141,6 +141,24 @@ impl Clone {
         a.extend_from_slice(extra);
         self.confer(&a)
     }
+    /// Like `confer`, but run with the process cwd set to `cwd` — for exercising
+    /// design/44 §1.1's "capture from the agent's cwd" rule (e.g. a worktree the
+    /// machine-local clone map doesn't itself know about).
+    fn confer_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        Command::new(BIN)
+            .env("HOME", &self.home)
+            .env("CONFER_HUB", &self.dir)
+            .env("CONFER_ROLE", &self.role)
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("run confer")
+    }
+    fn append_in(&self, cwd: &Path, extra: &[&str]) -> Output {
+        let mut a: Vec<&str> = vec!["append", "--from", &self.role];
+        a.extend_from_slice(extra);
+        self.confer_in(cwd, &a)
+    }
     fn append_stdin(&self, extra: &[&str], stdin: &str) -> Output {
         use std::io::Write;
         let mut a: Vec<&str> = vec!["append", "--from", &self.role];
@@ -275,6 +293,7 @@ fn append_under_held_lock_fails_loudly_never_phantom_sends() {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(a.dir.join(".confer/gitlock"))
         .unwrap();
     held.lock_exclusive().unwrap(); // a concurrent op holds the clone lock
@@ -348,6 +367,7 @@ fn append_op_is_bounded_by_the_overall_deadline_not_the_stacked_phase_budgets() 
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(a.dir.join(".confer/gitlock"))
         .unwrap();
     held.lock_exclusive().unwrap(); // a concurrent op holds the clone lock for the whole test
@@ -3171,12 +3191,19 @@ fn e2e_filtered_poll_does_not_advance_read_frontier() {
 /// Spawn a role's watch, let it run briefly, then kill it and return its stdout.
 /// The watch EMITS (delivery) but must never advance the READ frontier.
 fn watch_briefly(c: &Clone, secs: u64) -> String {
+    watch_briefly_args(c, secs, &[])
+}
+
+/// Like `watch_briefly`, but with extra CLI args (e.g. `--wake-on alert`).
+fn watch_briefly_args(c: &Clone, secs: u64, extra: &[&str]) -> String {
     use std::io::Read;
+    let mut args = vec!["watch", "--role", &c.role, "--poll", "1", "--no-advance"];
+    args.extend_from_slice(extra);
     let mut child = Command::new(BIN)
         .env("HOME", &c.home)
         .env("CONFER_HUB", &c.dir)
         .env("CONFER_ROLE", &c.role)
-        .args(["watch", "--role", &c.role, "--poll", "1", "--no-advance"])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -3218,6 +3245,106 @@ fn e2e_watch_emit_does_not_mark_read() {
         b.unread_count(),
         1,
         "a watch emit must NOT advance the read frontier"
+    );
+}
+
+/// design/51 — the wake-class severity gate. Default `--wake-on notice` mutes ONLY the
+/// transactional trio (claim/ack/defer): a `claim` addressed to me doesn't wake, but a `note` to
+/// me and a `done` on MY OWN request do. Muted events still land unread (poll/inbox), same
+/// delivery-vs-wake split `--min-priority` already uses — never advances the read frontier.
+#[test]
+fn e2e_wake_on_default_notice_mutes_transactional() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // alpha opens a request that beta will claim — the claim auto-addresses back to alpha
+    // (the requester), so it lands directly in alpha's inbox. beta's clone predates the
+    // request (cloned before alpha sent it), so pull first — its own auto-addressing reads
+    // the LOCAL tree, and a stale one would resolve `of` without finding the request's author.
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "please claim me", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claim");
+    // beta also sends alpha a plain note (should wake at the default) and resolves the request
+    // with `done` (a resolution on ALPHA's OWN request — also should wake at the default).
+    b.send(&["--type", "note", "--to", "alpha", "--summary", "a substantive note", "--text", "n"]);
+    assert!(ok(&b.confer(&["done", "--of", &r])), "beta done");
+
+    let w = watch_briefly(&a, 3); // default --wake-on notice
+    assert!(!w.contains("claiming"), "the claim (transactional) must NOT wake at the default: {w}");
+    assert!(w.contains("substantive note"), "a note to me must wake at the default: {w}");
+    assert!(
+        w.contains("done") || w.contains("watch me") || w.contains("please claim me"),
+        "a done on MY OWN request must wake at the default: {w}"
+    );
+
+    // Muted (and woken) events alike are DELIVERY, never consumption — none of them advanced
+    // alpha's read frontier. alpha has 3 direct messages: the claim, the note, and the done.
+    assert_eq!(
+        a.unread_count(),
+        3,
+        "watch — muted or not — must never advance the read frontier"
+    );
+}
+
+/// `--wake-on alert` mutes `notice` too: a `done` on MY OWN request no longer wakes, but a
+/// `request` addressed to me and an `error` on MY OWN request still do (they're `alert`).
+#[test]
+fn e2e_wake_on_alert_mutes_notice_but_not_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // A request alpha authors, resolved by beta with `done` — notice, muted at --wake-on alert.
+    // beta's clone predates the request, so pull first (see the notice-floor test above).
+    let r1 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "resolve me quietly", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r1])), "beta claim r1");
+    assert!(ok(&b.confer(&["done", "--of", &r1])), "beta done r1");
+
+    // A second request alpha authors, that beta errors out on — alert, must still wake.
+    let r2 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "this one breaks", "--text", "b",
+    ]);
+    assert!(ok(&b.confer(&["claim", "--of", &r2])), "beta claim r2");
+    assert!(ok(&b.confer(&["error", "--of", &r2])), "beta error r2");
+
+    // A brand-new request FROM beta TO alpha — alert (request addressed to me).
+    b.send(&[
+        "--type", "request", "--to", "alpha", "--summary", "please handle this", "--text", "b",
+    ]);
+
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        !w.contains("DONE "),
+        "done on MY request must NOT wake at --wake-on alert: {w}"
+    );
+    assert!(w.contains("please handle this"), "a request addressed to me must wake at --wake-on alert: {w}");
+    assert!(w.contains("failed"), "an error on MY request must wake at --wake-on alert: {w}");
+}
+
+/// `--priority high` breaks through even the strictest floor: a `claim` (normally
+/// transactional) sent at high priority wakes even under `--wake-on alert`.
+#[test]
+fn e2e_priority_high_breaks_through_wake_on_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "urgent claim test", "--text", "b",
+    ]);
+    b.pull(); // beta's clone predates the request (see the notice-floor test above)
+    b.send(&[
+        "--type", "claim", "--of", &r, "--priority", "high", "--summary", "claiming",
+    ]);
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        w.contains("claiming") || w.contains("urgent claim test"),
+        "a high-priority claim must break through --wake-on alert: {w}"
     );
 }
 
@@ -3356,6 +3483,151 @@ fn e2e_lifecycle_verbs_accept_append_addressing() {
     assert!(
         !a.inbox_peek().contains("routed to gamma"),
         "explicit --to overrides the opener auto-address"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-claim on resolve: `done`/`error`/`blocked` must leave the board's
+// ownership state truthful — if the RESOLVING role has no claim of its own on
+// the request, a real `claim` (self) is auto-emitted BEFORE the resolve lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Read a thread's messages as (type, from) pairs, oldest-first (mirrors the file's
+/// existing `thread --json` usage — NDJSON of `to_json` objects).
+fn thread_events(c: &Clone, id: &str) -> Vec<(String, String)> {
+    let o = c.confer(&["thread", id, "--json"]);
+    assert!(ok(&o), "thread --json: {}", err(&o));
+    out(&o)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("thread --json line must parse ({e}): {l}"));
+            (
+                v["type"].as_str().unwrap().to_string(),
+                v["from"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn done_on_unclaimed_request_auto_claims_then_closes() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed") && err(&d).contains("was unclaimed"),
+        "a transparent auto-claim notice must be printed: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    assert_eq!(
+        events,
+        vec![
+            ("request".to_string(), "alpha".to_string()),
+            ("claim".to_string(), "beta".to_string()),
+            ("done".to_string(), "beta".to_string()),
+        ],
+        "the auto-claim (beta) must land BEFORE the done, in order: {events:?}"
+    );
+}
+
+#[test]
+fn done_after_a_manual_claim_never_double_claims() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    a.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        !err(&d).contains("auto-claimed"),
+        "must NOT auto-claim when the resolver already holds a claim: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<_> = events.iter().filter(|(t, _)| t == "claim").collect();
+    assert_eq!(
+        claims,
+        vec![&("claim".to_string(), "beta".to_string())],
+        "exactly one claim message, never a duplicate: {events:?}"
+    );
+}
+
+#[test]
+fn auto_claim_is_attributed_to_the_resolver_never_another_role() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma"); // present in the hub, uninvolved — must never appear as the claimant
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["done", "--of", &r, "--summary", "did it"])));
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(claims, vec!["beta"], "the auto-claim's author must be exactly the resolver (beta): {events:?}");
+    assert!(!claims.contains(&"alpha"), "must never fabricate a claim on the requester's behalf");
+    assert!(!claims.contains(&"gamma"), "must never fabricate a claim on an uninvolved role's behalf");
+    let _ = g; // only needed to exist in the hub, never acted on
+}
+
+/// Contested/handoff case: gamma resolves a request beta already claimed. gamma
+/// has no claim of its own, so it auto-claims too — `claimants()` is a list
+/// (head = owner, tail = contested), so gamma joining as a second claimant
+/// doesn't steal or overwrite beta's (first/owner) attribution; it just
+/// truthfully records that gamma also touched the request while closing it.
+#[test]
+fn done_by_a_different_role_adds_its_own_claim_without_overwriting_the_existing_one() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    g.pull();
+    let d = g.confer(&["done", "--of", &r, "--summary", "cleaning up for beta"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed"),
+        "gamma has no claim of its own on this request, so it must auto-claim too: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(
+        claims,
+        vec!["beta", "gamma"],
+        "beta's original claim stays first/owner; gamma is appended as a second, \
+         contested claimant rather than overwriting beta's attribution: {events:?}"
     );
 }
 
@@ -4052,9 +4324,16 @@ fn install_skill_is_generic_no_coresident_clobber() {
         "no baked role"
     );
     assert!(
-        first.contains("watch --replace"),
-        "arms via the role-auto-resolving `watch --replace`"
+        first.contains("/confer-arm"),
+        "delegates arming to the role-generic /confer-arm skill (design/49)"
     );
+    // The deterministic arm operation ships as its own Monitor-only skill (design/49): it exists
+    // and cannot background the watch, because Bash isn't in its tool scope.
+    let arm = std::fs::read_to_string(sk.join("confer-arm").join("SKILL.md"))
+        .expect("confer-arm skill is installed");
+    assert!(arm.contains("allowed-tools: Monitor"), "arm skill is Monitor-scoped");
+    assert!(!arm.contains("allowed-tools: Monitor, Bash"), "arm skill must NOT grant Bash");
+    assert!(arm.contains("arm"), "arm skill hosts `confer arm`");
     let _ = std::fs::remove_dir_all(&sk);
 }
 
@@ -4871,5 +5150,1889 @@ fn top_level_hub_selector_overrides_the_env_hub() {
     assert!(
         out.contains("alpha"),
         "`confer --hub <A> threads` targets hub A even though CONFER_HUB points at B: {out}"
+    );
+}
+
+// ── bugfix regression: `requests --mine` must include what I've claimed ─────
+#[test]
+fn requests_mine_includes_a_broadcast_i_claimed() {
+    // A broadcasts to `all`; beta claims it. Before the fix, `--mine` only looked at
+    // `from`/`to`, so beta's own claimed (in-progress) work never showed under
+    // `requests --mine` even though beta is the one working it.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "all", "--summary", "broadcast work", "--text", "body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claims the broadcast");
+    let mine = out(&b.confer(&["requests", "--mine"]));
+    assert!(
+        mine.contains("broadcast work"),
+        "a claimed broadcast request must show under the claimant's `requests --mine`: {mine}"
+    );
+}
+
+// ── bugfix regression: notes-only topics are "discussion", not "closed" ─────
+#[test]
+fn threads_notes_only_topic_is_discussion_not_closed() {
+    let hub = new_hub();
+    let c = hub.clone("a");
+    // A pure-notes topic: never held a request.
+    assert!(ok(&c.append(&[
+        "--type", "note", "--to", "b", "--topic", "watercooler", "--summary", "hi", "--text", "y"
+    ])));
+    // A topic with an open request, for contrast — must still show "open"/status:"open".
+    assert!(ok(&c.append(&[
+        "--type", "request", "--to", "b", "--topic", "work", "--summary", "do it", "--text", "y"
+    ])));
+
+    let text = out(&c.confer(&["threads"]));
+    assert!(
+        text.lines().any(|l| l.starts_with("watercooler") && l.contains("discussion")),
+        "a notes-only topic must render as `discussion`, not `closed`: {text}"
+    );
+    assert!(
+        text.lines().any(|l| l.starts_with("work") && l.contains("open") && !l.contains("discussion")),
+        "a topic with an open request stays `open`, not `discussion`: {text}"
+    );
+
+    let js = out(&c.confer(&["threads", "--json"]));
+    let watercooler = js
+        .split("},")
+        .find(|o| o.contains("\"topic\":\"watercooler\""))
+        .expect("watercooler row present in --json");
+    assert!(
+        watercooler.contains("\"discussion\":true"),
+        "notes-only topic must carry \"discussion\":true in JSON: {watercooler}"
+    );
+    let work = js
+        .split("},")
+        .find(|o| o.contains("\"topic\":\"work\""))
+        .expect("work row present in --json");
+    assert!(
+        work.contains("\"discussion\":false"),
+        "a topic with a request must carry \"discussion\":false in JSON: {work}"
+    );
+    // Back-compat: JSON `status` values are unchanged by this fix.
+    assert!(
+        watercooler.contains("\"status\":\"closed\""),
+        "JSON status for a zero-request topic stays \"closed\" (back-compat), only text + the additive \"discussion\" field change: {watercooler}"
+    );
+}
+
+// ── `threads` → `topics` rename (hidden alias) ──────────────────────────────
+#[test]
+fn topics_lists_a_topic_and_threads_still_works_as_a_hidden_alias() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.append(&["--type", "note", "--to", "b", "--topic", "chat", "--summary", "hi", "--text", "y"])),
+        "append"
+    );
+    let js = out(&c.confer(&["topics", "--json"]));
+    assert!(js.trim_start().starts_with('['), "topics --json is an array: {js}");
+    assert!(js.contains("\"topic\":\"chat\""), "topics lists the chat topic: {js}");
+    assert!(code(&c.confer(&["topics"])) == 0, "topics is a report → exit 0");
+    // The old name keeps working (hidden alias) for scripts/skills that still call it.
+    assert!(
+        out(&c.confer(&["threads"])).contains("chat"),
+        "`threads` must still work as a hidden alias of `topics`"
+    );
+}
+
+// ── creation sugar verbs: `confer request` / `confer note` ─────────────────
+#[test]
+fn note_creates_a_plain_message_with_no_lifecycle() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.confer(&["note", "--from", "a", "--to", "b", "--text", "just chatting", "--summary", "hi"])),
+        "confer note should succeed"
+    );
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains("\"type\":\"note\""), "note creates a type:note message: {shown}");
+    // A note carries no lifecycle status — it must not show up on the requests board.
+    let reqs = out(&c.confer(&["requests"]));
+    assert!(!reqs.contains("just chatting"), "a note must not appear on `requests`: {reqs}");
+}
+
+#[test]
+fn request_creates_an_open_tracked_request() {
+    let h = new_hub();
+    let c = h.clone("a");
+    assert!(
+        ok(&c.confer(&["request", "--from", "a", "--to", "b", "--summary", "fix the thing", "--text", "body"])),
+        "confer request should succeed"
+    );
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains("\"type\":\"request\""), "request creates a type:request message: {shown}");
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("fix the thing"), "a `request` must show up OPEN on `requests --open`: {reqs}");
+}
+
+#[test]
+fn request_reply_to_promotes_a_note_into_a_tracked_request() {
+    let h = new_hub();
+    let c = h.clone("a");
+    // A plain note first (the "chat" half of the idiom).
+    assert!(
+        ok(&c.confer(&["note", "--from", "a", "--to", "b", "--summary", "saw something odd", "--text", "logs look off"])),
+        "confer note should succeed"
+    );
+    let note_id = newest_id(&c);
+    // Escalate it into a tracked request that references the original note.
+    assert!(
+        ok(&c.confer(&[
+            "request", "--from", "a", "--to", "b", "--reply-to", &note_id,
+            "--summary", "please investigate", "--text", "escalating the earlier note"
+        ])),
+        "confer request --reply-to should succeed"
+    );
+    let req_id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &req_id, "--json"]));
+    assert!(shown.contains("\"type\":\"request\""), "still a tracked request: {shown}");
+    assert!(
+        shown.contains(&note_id),
+        "the request references the original note via reply_to: {shown}"
+    );
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("please investigate"), "the escalated request is OPEN: {reqs}");
+}
+
+#[test]
+fn repos_map_records_clone_lists_it_and_rejects_non_git() {
+    let c = new_hub().clone("alpha");
+    // a hub card so the repo is layer-1 registered (local read; no commit needed)
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("myrepo.md"),
+        "---\nrole: code\nurl: https://example.com/myrepo\n---\n",
+    )
+    .unwrap();
+    // a separate "code" repo with one commit, to map
+    let code = tmp("coderepo");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "fn main() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+
+    // map it → success, echoes the mapping + a root-sha anchor
+    let m = c.confer(&["repos", "map", "myrepo", code.to_str().unwrap()]);
+    assert!(ok(&m), "repos map failed: {}", err(&m));
+    assert!(out(&m).contains("mapped myrepo"), "map stdout: {}", out(&m));
+    assert!(out(&m).contains("root-sha"), "map should show the identity anchor: {}", out(&m));
+
+    // listing now shows it cloned locally
+    let l = c.confer(&["repos"]);
+    assert!(ok(&l));
+    assert!(out(&l).contains("myrepo"), "listing: {}", out(&l));
+    assert!(out(&l).contains("cloned"), "listing should mark it cloned: {}", out(&l));
+
+    // mapping an UNREGISTERED slug (no hub card) still succeeds but warns on stderr
+    let un = c.confer(&["repos", "map", "unreg", code.to_str().unwrap()]);
+    assert!(ok(&un), "mapping an unregistered slug should still succeed");
+    assert!(err(&un).contains("isn't in this hub"), "expected unregistered note: {}", err(&un));
+
+    // mapping a non-git directory is a hard error
+    let plain = tmp("plaindir");
+    let bad = c.confer(&["repos", "map", "nope", plain.to_str().unwrap()]);
+    assert!(!ok(&bad), "mapping a non-git dir must fail");
+    assert!(err(&bad).contains("not a git repository"), "err: {}", err(&bad));
+}
+
+#[test]
+fn repos_discover_maps_matching_clone_and_reports_unmatched() {
+    let c = new_hub().clone("alpha");
+    // two registered repos: "foo" has a local clone to be found by canonicalized url
+    // (a DIFFERENT scheme than the card's), "bar" has none anywhere.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("foo.md"),
+        "---\nrole: code\nurl: git@github.com:o/foo.git\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("bar.md"),
+        "---\nrole: code\nurl: git@github.com:o/bar.git\n---\n",
+    )
+    .unwrap();
+
+    // a scan root with one child clone whose origin is the https form of the SAME repo.
+    let scan_root = tmp("discover-root");
+    let foo_clone = scan_root.join("foo-local");
+    std::fs::create_dir_all(&foo_clone).unwrap();
+    assert!(git(&foo_clone, &["init", "-q"]).status.success());
+    std::fs::write(foo_clone.join("f.rs"), "fn main() {}\n").unwrap();
+    git(&foo_clone, &["add", "-A"]);
+    git(&foo_clone, &["commit", "-q", "-m", "c0"]);
+    git(&foo_clone, &["remote", "add", "origin", "https://github.com/o/foo.git"]);
+
+    let d = c.confer(&["repos", "discover", "--root", scan_root.to_str().unwrap()]);
+    assert!(ok(&d), "discover failed: {}", err(&d));
+    let stdout = out(&d);
+    let canon = foo_clone.canonicalize().unwrap();
+    assert!(
+        stdout.contains(&format!("mapped foo → {}", canon.display())),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("unmatched bar"), "stdout: {stdout}");
+    assert!(!stdout.contains("mapped bar"), "bar has no local clone: {stdout}");
+
+    // reflected in the listing (local-only clone-map fact).
+    let l = c.confer(&["repos"]);
+    let listing = out(&l);
+    assert!(listing.contains("foo") && listing.contains("cloned"), "listing: {listing}");
+
+    // idempotent: a second run must not re-report the already-mapped slug.
+    let d2 = c.confer(&["repos", "discover", "--root", scan_root.to_str().unwrap()]);
+    assert!(ok(&d2));
+    assert!(
+        !out(&d2).contains("mapped foo"),
+        "already-mapped slug must be skipped on rerun: {}",
+        out(&d2)
+    );
+}
+
+#[test]
+fn root_sha_mismatch_makes_a_mapped_clone_invisible() {
+    // design/40's F3 identity anchor: a hub card carrying `root_sha` must match the
+    // MAPPED clone's actual root commit, or the clone is treated as absent — refusing
+    // to render code from a directory that just HAPPENS to be recorded under the same
+    // slug (a swapped/wrong clone, or a slug collision across forks).
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-rootsha");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "a\nb\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // A hub card asserting a root_sha that does NOT match this clone's actual root.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(
+        c.dir.join("repos").join("mylib.md"),
+        format!("---\nrole: code\nroot_sha: {}\n---\n", "0".repeat(40)),
+    )
+    .unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])), "map should still succeed");
+
+    // A full-hex pin needs no clone to be ACCEPTED at write time...
+    let a = c.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", &format!("mylib:f.rs@{head}")]);
+    assert!(ok(&a), "append with full-hex ref failed: {}", err(&a));
+    let id = newest_id(&c);
+
+    // ...but `show` must NOT render the snippet from the mismatched clone — it's
+    // treated exactly like "not cloned here", never silently trusted.
+    let s = out(&c.confer(&["show", &id]));
+    assert!(s.contains("not cloned here"), "root_sha mismatch must hide the mapped clone: {s}");
+    assert!(!s.contains("│"), "must never render a code snippet gutter from the mismatched clone: {s}");
+
+    // `refs` staleness for the same ref must degrade to unknown (can't vouch for it),
+    // not "current"/"changed" (which would imply we read the right repo).
+    let r = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(r.contains("unknown") || !r.contains("current"), "refs staleness: {r}");
+}
+
+#[test]
+fn ref_pins_sha_and_records_content_hash_at_write() {
+    let c = new_hub().clone("alpha");
+    // a code repo with a committed file
+    let code = tmp("coderepo2");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("lib.rs"), "pub fn f() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    // register (layer 1) + map the clone (layer 2)
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // a symbolic (no-sha) ref must be pinned to HEAD's full sha at write time
+    let a = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:lib.rs",
+    ]);
+    assert!(ok(&a), "append with --ref failed: {}", err(&a));
+
+    let dir = c.dir.join("threads").join("general");
+    let md = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .expect("a message file was written");
+    let body = std::fs::read_to_string(&md).unwrap();
+    assert!(body.contains(&format!("sha: {head}")), "ref must pin the full sha {head}:\n{body}");
+    assert!(!body.contains("sha: HEAD"), "must never persist a moving HEAD:\n{body}");
+    assert!(body.contains("content_hash:"), "the blob OID should be recorded:\n{body}");
+
+    // a symbolic ref to an UNMAPPED repo can't be pinned → hard error
+    let bad = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "nomap:x.rs",
+    ]);
+    assert!(!ok(&bad), "symbolic ref to an unmapped repo must fail");
+    assert!(err(&bad).contains("no local clone"), "err: {}", err(&bad));
+}
+
+#[test]
+fn refs_reverse_lookup_finds_conversations_about_code() {
+    let c = new_hub().clone("alpha");
+    // code repo + register (layer 1) + map (layer 2)
+    let code = tmp("coderepo3");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    // 20 lines — long enough for the #L10-20 ref below to be a real, committed range
+    // (design/44's write-time integrity gate now refuses a range past the pinned EOF).
+    let content: String = (1..=20).map(|n| format!("line{n}\n")).collect();
+    std::fs::write(code.join("lib.rs"), content).unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // a request that references lib.rs lines 10-20
+    let a = c.append(&[
+        "--type", "request", "--to", "beta", "--summary", "wire search",
+        "--text", "b", "--ref", "mylib:lib.rs#L10-20",
+    ]);
+    assert!(ok(&a), "append failed: {}", err(&a));
+
+    // reverse lookup by file → finds the thread
+    let r = c.confer(&["refs", "mylib:lib.rs"]);
+    assert!(ok(&r), "refs failed: {}", err(&r));
+    assert!(out(&r).contains("wire search"), "refs out: {}", out(&r));
+    assert!(out(&r).contains("mylib:lib.rs"), "refs out: {}", out(&r));
+    assert!(out(&r).contains("[OPEN]"), "should carry the request status: {}", out(&r));
+
+    // predicate: referenced → exit 0; not referenced → exit 1
+    assert!(ok(&c.confer(&["refs", "mylib:lib.rs", "--check"])), "check should pass");
+    assert!(!ok(&c.confer(&["refs", "mylib:other.rs", "--check"])), "check on unreferenced file must exit 1");
+
+    // range overlap: L15 ∈ [10,20] hits; L30 misses
+    assert!(out(&c.confer(&["refs", "mylib:lib.rs#L15"])).contains("wire search"));
+    assert!(out(&c.confer(&["refs", "mylib:lib.rs#L30"])).contains("no conversations"));
+
+    // NDJSON event
+    let j = c.confer(&["refs", "mylib:lib.rs", "--json"]);
+    assert!(out(&j).contains("\"event\":\"ref-hit\""), "json: {}", out(&j));
+    assert!(out(&j).contains("\"repo\":\"mylib\""), "json: {}", out(&j));
+}
+
+#[test]
+fn ref_contains_predicate_via_repo_flag_and_cwd() {
+    // design/44 Addendum 1: `confer ref-contains <sha> [<ref>] [--repo <slug>]` — a
+    // plumbing predicate wrapping `git merge-base --is-ancestor`.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-refcontains");
+    assert!(git(&code, &["init", "-q", "-b", "main"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let base = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c1"]).status.success());
+    let tip = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // via --repo (the machine-local clone map) — no need to stand inside the repo.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    assert!(
+        ok(&c.confer(&["ref-contains", &base, "HEAD", "--repo", "mylib"])),
+        "base commit must be an ancestor of HEAD"
+    );
+    assert!(
+        !ok(&c.confer(&["ref-contains", &tip, &base, "--repo", "mylib"])),
+        "the tip is NOT an ancestor of its own parent"
+    );
+
+    // an unmapped repo is a real error (exit 3), not a predicate-false (exit 1).
+    let bad = c.confer(&["ref-contains", &base, "HEAD", "--repo", "nomap"]);
+    assert_eq!(bad.status.code(), Some(3), "unmapped repo must be a hard error: {}", err(&bad));
+
+    // via cwd (no --repo): running from inside the code repo's working tree.
+    assert!(
+        ok(&c.confer_in(&code, &["ref-contains", &base])),
+        "cwd-resolved capture dir must find the ancestor (default ref = HEAD)"
+    );
+    assert!(!ok(&c.confer_in(&code, &["ref-contains", &tip, &base])));
+
+    // cwd outside any git repo → a real error, not a predicate-false.
+    let outside = tmp("not-a-repo");
+    let o = c.confer_in(&outside, &["ref-contains", &base]);
+    assert_eq!(o.status.code(), Some(3), "must error, not silently predicate-false: {}", err(&o));
+}
+
+#[test]
+fn ref_show_renders_snippet_and_flags_drift() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo4");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("lib.rs"), "one\ntwo\nthree\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // reference lines 1-2
+    let a = c.append(&[
+        "--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:lib.rs#L1-2",
+    ]);
+    assert!(ok(&a), "append failed: {}", err(&a));
+
+    // recover the message id from the written file
+    let dir = c.dir.join("threads").join("general");
+    let md = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .expect("message file");
+    let body = std::fs::read_to_string(&md).unwrap();
+    let id = body
+        .lines()
+        .find_map(|l| l.strip_prefix("id:"))
+        .expect("id in frontmatter")
+        .trim()
+        .to_string();
+
+    // show renders the resolved snippet (pinned lines) + a [current] badge
+    let s = c.confer(&["show", &id]);
+    assert!(ok(&s), "show failed: {}", err(&s));
+    assert!(out(&s).contains("one") && out(&s).contains("two"), "snippet missing: {}", out(&s));
+    assert!(out(&s).contains("current"), "expected [current] badge: {}", out(&s));
+
+    // change the file at HEAD → the pinned ref is now stale. The pinned commit is
+    // still an ancestor of HEAD (a plain forward commit on the same branch), so
+    // design/44 Addendum 1's ancestry-augmented verdict reports "reachable" (the
+    // more informative refinement of "changed" once ancestry is computable), not
+    // the bare "changed" `staleness()` alone would give.
+    std::fs::write(code.join("lib.rs"), "ONE\ntwo\nthree\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c1"]).status.success());
+
+    let s2 = c.confer(&["show", &id]);
+    assert!(out(&s2).contains("reachable"), "show should flag drift: {}", out(&s2));
+    let r = c.confer(&["refs", "mylib:lib.rs"]);
+    assert!(out(&r).contains("reachable"), "refs should flag drift: {}", out(&r));
+    // the snippet still shows the code AS PINNED (old bytes), not HEAD's
+    assert!(out(&s2).contains("one"), "snippet must read at the pinned sha: {}", out(&s2));
+}
+
+// ── design/44 Phase 1: write-time capture + integrity gate ──────────────────────────
+
+#[test]
+fn ref_pins_without_a_hub_card_registration_independent() {
+    // design/44 §1.3 (absorbs task-#49): pinning must not depend on hub-card
+    // registration — a repo that's ONLY in the machine-local clone map (no
+    // repos/<slug>.md card at all) still pins a symbolic rev to a full hex sha.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-noreg");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "fn f() {}\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let head = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    // NO repos/mylib.md card — only the machine-local map.
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "b", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "append with --ref (no hub card) failed: {}", err(&a));
+    let id = newest_id(&c);
+    let shown = out(&c.confer(&["show", &id, "--json"]));
+    assert!(shown.contains(&format!("\"sha\":\"{head}\"")), "must pin to the full sha: {shown}");
+}
+
+#[test]
+fn ref_identity_captures_branch_tag_detached_and_explicit_hex() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-identity");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let sha0 = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), "---\nrole: code\n---\n").unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Implicit HEAD on a branch → branch + name + date + full sha.
+    let a1 = c.append(&["--type", "note", "--to", "b", "--summary", "s1", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a1), "err: {}", err(&a1));
+    let id1 = newest_id(&c);
+    let j1 = out(&c.confer(&["show", &id1, "--json"]));
+    assert!(j1.contains("\"ref_type\":\"branch\""), "j1: {j1}");
+    assert!(j1.contains("\"ref_name\":\"main\""), "j1: {j1}");
+    assert!(j1.contains("\"commit_date\":\""), "j1: {j1}");
+    assert!(j1.contains(&format!("\"sha\":\"{sha0}\"")), "j1: {j1}");
+
+    // Detached HEAD (checked out by raw sha) → detached, no name.
+    assert!(git(&code, &["checkout", "-q", &sha0]).status.success());
+    let a2 = c.append(&["--type", "note", "--to", "b", "--summary", "s2", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a2), "err: {}", err(&a2));
+    let id2 = newest_id(&c);
+    let j2 = out(&c.confer(&["show", &id2, "--json"]));
+    assert!(j2.contains("\"ref_type\":\"detached\""), "j2: {j2}");
+    assert!(!j2.contains("\"ref_name\""), "detached must carry no name: {j2}");
+
+    // A tag checkout (detached-at-a-tag) → tag + name.
+    assert!(git(&code, &["tag", "-a", "v1", "-m", "v1"]).status.success());
+    assert!(git(&code, &["checkout", "-q", "v1"]).status.success());
+    let a3 = c.append(&["--type", "note", "--to", "b", "--summary", "s3", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a3), "err: {}", err(&a3));
+    let id3 = newest_id(&c);
+    let j3 = out(&c.confer(&["show", &id3, "--json"]));
+    assert!(j3.contains("\"ref_type\":\"tag\""), "j3: {j3}");
+    assert!(j3.contains("\"ref_name\":\"v1\""), "j3: {j3}");
+
+    // Explicit short-hex → detached, resolved to the full sha.
+    assert!(git(&code, &["checkout", "-q", "main"]).status.success());
+    let shorthex = &sha0[..7];
+    let a4 = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s4", "--text", "t",
+        "--ref", &format!("mylib:f.rs@{shorthex}"),
+    ]);
+    assert!(ok(&a4), "err: {}", err(&a4));
+    let id4 = newest_id(&c);
+    let j4 = out(&c.confer(&["show", &id4, "--json"]));
+    assert!(j4.contains("\"ref_type\":\"detached\""), "j4: {j4}");
+    assert!(j4.contains(&format!("\"sha\":\"{sha0}\"")), "j4: {j4}");
+}
+
+#[test]
+fn ref_captures_from_worktree_not_the_mapped_clone() {
+    // design/44 §1.1: the mapped clone map records ONE path, but the agent may be
+    // working in a linked worktree on a DIFFERENT branch/commit — capture must come
+    // from the worktree (the tree the agent is actually in), never the mapped path.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-worktree");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "main-content\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "main-c0"]).status.success());
+    let main_sha = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    let wt = tmp("worktree-feature");
+    let _ = std::fs::remove_dir_all(&wt); // `git worktree add` requires the target not exist
+    assert!(git(&code, &["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()]).status.success());
+    std::fs::write(wt.join("f.rs"), "feature-content\n").unwrap();
+    assert!(git(&wt, &["add", "-A"]).status.success());
+    assert!(git(&wt, &["commit", "-q", "-m", "feature-c0"]).status.success());
+    let feature_sha = String::from_utf8_lossy(&git(&wt, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    assert_ne!(feature_sha, main_sha);
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Capture FROM the worktree (cwd) — must record the WORKTREE's sha/branch, not
+    // the mapped clone's.
+    let a = c.append_in(&wt, &["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains(&format!("\"sha\":\"{feature_sha}\"")), "must pin the WORKTREE's sha: {j}");
+    assert!(j.contains("\"ref_name\":\"feature\""), "must record the worktree's branch: {j}");
+    // The capture provenance (stderr-only, never persisted) names the cwd source.
+    assert!(err(&a).contains("[cwd]"), "stderr should show cwd provenance: {}", err(&a));
+}
+
+#[test]
+fn ref_captures_fork_point_and_base_ref_for_a_branch_off_main() {
+    // design/44 Addendum 2: a ref made on a branch cut from `main` captures `base_ref`
+    // ("main") and `fork_point` (the merge-base — here exactly main's tip, since the
+    // branch forked right off it and main hasn't moved since).
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let main_sha = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+    assert!(git(&code, &["checkout", "-q", "-b", "feature"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "feature-c1"]).status.success());
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"branch\""), "j: {j}");
+    assert!(j.contains("\"ref_name\":\"feature\""), "j: {j}");
+    assert!(j.contains("\"base_ref\":\"main\""), "base_ref should be main: {j}");
+    assert!(j.contains(&format!("\"fork_point\":\"{main_sha}\"")), "fork_point should be main's tip: {j}");
+    // The send receipt (stderr) surfaces it too.
+    assert!(err(&a).contains("forked from main@"), "stderr should show the fork point: {}", err(&a));
+}
+
+#[test]
+fn ref_omits_base_ref_and_fork_point_on_the_default_branch_itself() {
+    // A ref made directly on `main` has nothing to report — main didn't fork from
+    // itself. base_ref/fork_point must be absent, not present-and-equal-to-main.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-onmain");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"branch\""), "j: {j}");
+    assert!(j.contains("\"ref_name\":\"main\""), "j: {j}");
+    assert!(!j.contains("\"base_ref\""), "on the default branch itself, base_ref must be omitted: {j}");
+    assert!(!j.contains("\"fork_point\""), "on the default branch itself, fork_point must be omitted: {j}");
+}
+
+#[test]
+fn ref_omits_base_ref_and_fork_point_on_detached_head() {
+    // Detached HEAD has no branch at all — nothing to compute a fork point FROM.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-detached");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    let sha0 = String::from_utf8_lossy(&git(&code, &["rev-parse", "HEAD"]).stdout).trim().to_string();
+    assert!(git(&code, &["checkout", "-q", &sha0]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"ref_type\":\"detached\""), "j: {j}");
+    assert!(!j.contains("\"base_ref\""), "detached HEAD has no base_ref: {j}");
+    assert!(!j.contains("\"fork_point\""), "detached HEAD has no fork_point: {j}");
+}
+
+#[test]
+fn ref_fork_point_anchor_survives_a_squash_that_gcs_the_branch_commits() {
+    // design/44 Addendum 2: the fork_point lives ON the base branch, so it survives a
+    // squash-merge that collapses (and eventually GCs) the feature branch's own
+    // mid-feature commits — the stable anchor even after the branch itself is gone.
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-forkpoint-squash");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+
+    assert!(git(&code, &["checkout", "-q", "-b", "feature"]).status.success());
+    std::fs::write(code.join("f.rs"), "one\ntwo\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "feature-c1"]).status.success());
+
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    let fork_point = j
+        .split("\"fork_point\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("fork_point present")
+        .to_string();
+
+    // Squash-merge feature into main (one new commit; feature's own commit is now
+    // reachable only via the deleted branch ref) then delete + prune the branch.
+    assert!(git(&code, &["checkout", "-q", "main"]).status.success());
+    assert!(git(&code, &["merge", "--squash", "feature"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "squashed feature"]).status.success());
+    assert!(git(&code, &["branch", "-D", "feature"]).status.success());
+    assert!(git(&code, &["reflog", "expire", "--all", "--expire=now"]).status.success());
+    let _ = git(&code, &["gc", "--prune=now", "-q"]);
+
+    // The anchor (fork_point == main's pre-squash tip) is still an ancestor of main —
+    // unaffected by the branch's own commits being gone.
+    let is_anc = git(&code, &["merge-base", "--is-ancestor", &fork_point, "main"]);
+    assert!(is_anc.status.success(), "fork_point must remain an ancestor of main after the squash+prune");
+}
+
+#[test]
+fn ref_integrity_gate_clean_commit_pins_normally() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-clean");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L2-3"]);
+    assert!(ok(&a), "clean+committed ref should pin normally: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(!j.contains("\"dirty\":true"), "j: {j}");
+    assert!(!j.contains("\"untracked\":true"), "j: {j}");
+}
+
+#[test]
+fn ref_integrity_gate_dirty_in_range_fails_then_embeds_with_allow_dirty() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-dirty");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Uncommitted edit INSIDE the referenced range → default FAIL.
+    std::fs::write(code.join("f.rs"), "l1\nCHANGED\nl3\nl4\nl5\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L2-3"]);
+    assert!(!ok(&bad), "an in-range uncommitted edit must fail by default");
+    assert!(err(&bad).contains("uncommitted"), "err: {}", err(&bad));
+    assert!(err(&bad).contains("--allow-dirty"), "remedy must be named: {}", err(&bad));
+
+    // --allow-dirty embeds the working-tree lines instead of refusing.
+    let ok_a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s", "--text", "t",
+        "--ref", "mylib:f.rs#L2-3", "--allow-dirty",
+    ]);
+    assert!(ok(&ok_a), "err: {}", err(&ok_a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"dirty\":true"), "j: {j}");
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("confer-ref") && body.contains("CHANGED"), "body should embed the dirty lines: {body}");
+}
+
+#[test]
+fn ref_integrity_gate_remaps_range_for_edits_above_it() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-remap");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "a\nb\nc\nd\ne\nf\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // The agent's editor now shows 2 NEW uncommitted lines inserted ABOVE the range
+    // it's about to reference — d/e are now at working-tree lines 6/7.
+    std::fs::write(code.join("f.rs"), "a\nNEW1\nNEW2\nb\nc\nd\ne\nf\n").unwrap();
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L6-7"]);
+    // An above-range shift is a remap, NOT a failure — no --allow-dirty needed.
+    assert!(ok(&a), "an above-range edit must remap, not fail: {}", err(&a));
+    assert!(err(&a).contains("remapped"), "stderr should explain the remap: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    // Remapped into the pinned blob's (committed) coordinates: d=L4, e=L5.
+    assert!(j.contains("\"range\":[4,5]"), "j: {j}");
+    assert!(!j.contains("\"dirty\":true"), "a remap is not a dirty embed: {j}");
+}
+
+#[test]
+fn ref_integrity_gate_untracked_fails_then_embeds_as_unresolved() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-untracked");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // A file that was never committed at all.
+    std::fs::write(code.join("new.rs"), "brand new content\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:new.rs"]);
+    assert!(!ok(&bad), "an untracked path must fail by default");
+    assert!(err(&bad).contains("untracked"), "err: {}", err(&bad));
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s", "--text", "t",
+        "--ref", "mylib:new.rs", "--allow-dirty",
+    ]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"sha\":\"unresolved\""), "j: {j}");
+    assert!(j.contains("\"untracked\":true"), "j: {j}");
+    assert!(!j.contains("\"rev\""), "rev must be omitted for the untracked case: {j}");
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("brand new content"), "body should embed the untracked content: {body}");
+}
+
+#[test]
+fn ref_integrity_gate_range_past_eof_fails() {
+    let c = new_hub().clone("alpha");
+    let code = tmp("coderepo-gate-eof");
+    assert!(git(&code, &["init", "-q"]).status.success());
+    std::fs::write(code.join("f.rs"), "l1\nl2\n").unwrap();
+    assert!(git(&code, &["add", "-A"]).status.success());
+    assert!(git(&code, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", code.to_str().unwrap()])));
+
+    // Working tree adds lines 3-4 (not yet committed) — the ref claims them anyway.
+    std::fs::write(code.join("f.rs"), "l1\nl2\nl3\nl4\n").unwrap();
+    let bad = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs#L3-4"]);
+    assert!(!ok(&bad), "referencing lines past the pinned blob's EOF must fail");
+    assert!(err(&bad).contains("committed"), "err: {}", err(&bad));
+}
+
+#[test]
+fn ref_pins_from_a_shallow_clone_not_refused_by_identity() {
+    // design/44 §1.5: a shallow clone's root-sha is the shallow boundary, not the true
+    // root — a hub card's root_sha (from the full origin) would never match it. The
+    // fix skips that comparison for a shallow mapped clone (advisory, never refuse).
+    let c = new_hub().clone("alpha");
+    let origin = tmp("shallow-origin");
+    assert!(git(&origin, &["init", "-q"]).status.success());
+    std::fs::write(origin.join("f.rs"), "l1\n").unwrap();
+    assert!(git(&origin, &["add", "-A"]).status.success());
+    assert!(git(&origin, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(git(&origin, &["commit", "--allow-empty", "-q", "-m", "c1"]).status.success());
+    let true_root =
+        String::from_utf8_lossy(&git(&origin, &["rev-list", "--max-parents=0", "HEAD"]).stdout).trim().to_string();
+
+    let shallow = tmp("shallow-clone");
+    let _ = std::fs::remove_dir_all(&shallow);
+    // `--depth` is a no-op on a plain local-path clone (git hardlinks and ignores
+    // shallowing) — force the real shallow codepath via `file://`.
+    let cl = Command::new("git")
+        .args([
+            "clone", "-q", "--depth", "1",
+            &format!("file://{}", origin.display()), shallow.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(cl.status.success(), "shallow clone failed: {}", String::from_utf8_lossy(&cl.stderr));
+
+    // The hub card asserts the ORIGIN's true root_sha, which the shallow clone's own
+    // root-sha (the shallow boundary commit, c1) will NOT reproduce.
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), format!("---\nrole: code\nroot_sha: {true_root}\n---\n"))
+        .unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", shallow.to_str().unwrap()])));
+
+    let a = c.append(&["--type", "note", "--to", "b", "--summary", "s", "--text", "t", "--ref", "mylib:f.rs"]);
+    assert!(ok(&a), "a shallow clone must be ACCEPTED (advisory), not refused: {}", err(&a));
+    assert!(err(&a).contains("shallow"), "stderr should carry the shallow advisory: {}", err(&a));
+    let id = newest_id(&c);
+    let s = out(&c.confer(&["show", &id]));
+    assert!(!s.contains("not cloned here"), "the shallow clone must render, not degrade to pointer-only: {s}");
+}
+
+// ── design/45 S-phase: the patch primitive (`--patch`, `confer suggest`, `confer apply`) ───
+
+/// Generate a `--full-index` unified diff for a MODIFICATION to an already-committed `path` in
+/// `codedir` (from its current committed content to `new_content`), leaving the working tree clean
+/// again afterward (`git checkout --`) — so the SAME clone can be reused as a clean apply target.
+fn diff_for_change(codedir: &Path, path: &str, new_content: &str) -> String {
+    std::fs::write(codedir.join(path), new_content).unwrap();
+    let o = git(codedir, &["diff", "--full-index", "-U3", "--", path]);
+    assert!(o.status.success(), "git diff failed");
+    let diff = out(&o);
+    assert!(git(codedir, &["checkout", "--", path]).status.success());
+    diff
+}
+
+/// Post a `--patch` against `repo_slug`/`path` (an ordinary `note`, addressed so it's a real
+/// message) and return its id. Deliberately passes NEITHER `--text` NOR `--allow-empty-body` —
+/// the `confer-patch` fence folded into the body is what satisfies the non-empty-body gate.
+fn post_patch(c: &Clone, codedir: &Path, repo_slug: &str, path: &str, new_content: &str) -> String {
+    let diff = diff_for_change(codedir, path, new_content);
+    let patch_file = codedir.join(format!("__confer_test_patch_{}.diff", ulid_like()));
+    std::fs::write(&patch_file, &diff).unwrap();
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "proposed change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", repo_slug,
+    ]);
+    assert!(ok(&a), "post_patch failed: {}", err(&a));
+    let _ = std::fs::remove_file(&patch_file);
+    newest_id(c)
+}
+
+/// A cheap unique-enough suffix for scratch filenames (no ulid dev-dep in the test crate).
+fn ulid_like() -> String {
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    format!("{}-{n}", std::process::id())
+}
+
+/// A codedir repo with one commit of `f.rs` (3 lines), mapped as `mylib` in `c`'s hub.
+fn code_repo_mapped(c: &Clone, tag: &str) -> PathBuf {
+    let codedir = tmp(tag);
+    assert!(git(&codedir, &["init", "-q"]).status.success());
+    std::fs::write(codedir.join("f.rs"), "line1\nline2\nline3\n").unwrap();
+    assert!(git(&codedir, &["add", "-A"]).status.success());
+    assert!(git(&codedir, &["commit", "-q", "-m", "c0"]).status.success());
+    assert!(ok(&c.confer(&["repos", "map", "mylib", codedir.to_str().unwrap()])));
+    codedir
+}
+
+#[test]
+fn patch_attach_derives_refs_and_result_hash() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-happy");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"patch\":true"), "j: {j}");
+    assert!(j.contains("\"result_hash\":"), "j: {j}");
+    assert!(j.contains("\"path\":\"f.rs\""), "j: {j}");
+    assert!(j.contains("\"repo\":\"mylib\""), "j: {j}");
+
+    // the result_hash is the REAL blob OID f.rs would have after applying — verify it against
+    // a plain `git hash-object` of the intended new content (independent of confer's own logic).
+    let expected_blob = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut ch| {
+                use std::io::Write;
+                ch.stdin.take().unwrap().write_all(b"line1\nCHANGED\nline3\n").unwrap();
+                ch.wait_with_output()
+            })
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert!(j.contains(&format!("\"result_hash\":\"{expected_blob}\"")), "j: {j}, expected {expected_blob}");
+
+    // the confer-patch fence rides the body, carrying the raw unified diff.
+    let body = out(&c.confer(&["show", &id]));
+    assert!(body.contains("```confer-patch"), "body: {body}");
+    assert!(body.contains("CHANGED"), "body: {body}");
+}
+
+#[test]
+fn patch_write_gate_refuses_a_diff_that_does_not_apply() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-badapply");
+
+    // A diff whose context lines don't match ANYTHING in the base commit.
+    let bogus = "diff --git a/f.rs b/f.rs\nindex 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n nomatch1\n-nomatch2\n+replacement\n nomatch3\n";
+    let patch_file = codedir.join("bad.diff");
+    std::fs::write(&patch_file, bogus).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "bad patch",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "a patch that doesn't apply at its base must be refused");
+    assert!(err(&a).contains("does not apply"), "err: {}", err(&a));
+}
+
+#[test]
+fn patch_requires_repo_and_a_registered_slug() {
+    let c = new_hub().clone("alpha");
+    let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let patch_file = tmp("patch-norepo").join("p.diff");
+    std::fs::write(&patch_file, diff).unwrap();
+
+    let missing_repo = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(),
+    ]);
+    assert!(!ok(&missing_repo), "must require --repo when --patch is given");
+    assert!(err(&missing_repo).contains("--repo"), "err: {}", err(&missing_repo));
+
+    let unmapped = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "nope",
+    ]);
+    assert!(!ok(&unmapped), "must refuse an unresolvable base (no mapped clone)");
+    assert!(err(&unmapped).contains("no local clone"), "err: {}", err(&unmapped));
+}
+
+/// Build a real, applying diff that replaces `n` lines of `path` — `2n` changed lines total —
+/// for exercising the size gate at a chosen magnitude.
+fn diff_replacing_n_lines(codedir: &Path, path: &str, n: usize) -> String {
+    let orig: String = (0..n).map(|i| format!("orig{i}\n")).collect();
+    std::fs::write(codedir.join(path), &orig).unwrap();
+    assert!(git(codedir, &["add", "-A"]).status.success());
+    assert!(git(codedir, &["commit", "-q", "-m", "base-n"]).status.success());
+    let changed: String = (0..n).map(|i| format!("changed{i}\n")).collect();
+    diff_for_change(codedir, path, &changed)
+}
+
+#[test]
+fn patch_size_gate_warns_between_thresholds() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-warn");
+    // 100 lines replaced = 200 changed lines: between WARN(150) and REFUSE(400) → warns, sends.
+    let diff = diff_replacing_n_lines(&codedir, "big.rs", 100);
+    let patch_file = codedir.join("big.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(ok(&a), "between warn/refuse must still SEND: {}", err(&a));
+    assert!(err(&a).contains("changed lines"), "should hint about size: {}", err(&a));
+}
+
+#[test]
+fn patch_size_gate_refuses_above_400_without_flag_sends_with_it() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-refuse");
+    // 250 lines replaced = 500 changed lines: above REFUSE(400).
+    let diff = diff_replacing_n_lines(&codedir, "big.rs", 250);
+    let patch_file = codedir.join("big.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let refused = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&refused), "above 400 changed lines must refuse without --allow-large-patch");
+    assert!(err(&refused).contains("branch"), "should nudge toward a branch: {}", err(&refused));
+
+    let allowed = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "big change take 2",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib", "--allow-large-patch",
+    ]);
+    assert!(ok(&allowed), "--allow-large-patch should let it through: {}", err(&allowed));
+}
+
+#[test]
+fn patch_size_gate_hard_cap_refuses_even_with_the_flag() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-hardcap");
+    // 1100 lines replaced = 2200 changed lines: above the hard cap (2000) even allowed.
+    let diff = diff_replacing_n_lines(&codedir, "huge.rs", 1100);
+    let patch_file = codedir.join("huge.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "huge change",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib", "--allow-large-patch",
+    ]);
+    assert!(!ok(&a), "the hard cap refuses even with --allow-large-patch");
+    assert!(err(&a).contains("hard cap"), "err: {}", err(&a));
+}
+
+#[test]
+fn suggest_requires_patch_and_to_and_creates_a_tracked_request() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "suggest-happy");
+    let diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    let patch_file = codedir.join("s.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    // requires --patch
+    let no_patch = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "no patch here",
+    ]);
+    assert!(!ok(&no_patch), "suggest without --patch must fail");
+    assert!(err(&no_patch).contains("--patch"), "err: {}", err(&no_patch));
+
+    // requires --to (inherited request validation)
+    let no_to = c.confer(&[
+        "suggest", "--from", "alpha", "--summary", "s",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&no_to), "suggest without --to must fail (it's a request)");
+
+    let a = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "please take this",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(ok(&a), "err: {}", err(&a));
+    let id = newest_id(&c);
+    let j = out(&c.confer(&["show", &id, "--json"]));
+    assert!(j.contains("\"type\":\"request\""), "suggest must be a tracked request: {j}");
+    assert!(j.contains("\"patch\":true"), "j: {j}");
+    let reqs = out(&c.confer(&["requests", "--open"]));
+    assert!(reqs.contains("please take this"), "should show up on the open board: {reqs}");
+}
+
+#[test]
+fn apply_clean_when_head_equals_base_and_never_commits() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-clean");
+    let head_before = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(ok(&chk), "--check should predict a clean apply: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "apply failed: {}", err(&a));
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nCHANGED\nline3\n");
+    assert!(out(&a).contains("close the loop"), "should print the close-the-loop hint: {}", out(&a));
+
+    let head_after = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+    assert_eq!(head_before, head_after, "confer apply must NEVER commit");
+}
+
+#[test]
+fn apply_three_way_when_head_has_advanced_past_the_base() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-3way");
+    std::fs::write(codedir.join("other.rs"), "x\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "seed other.rs"]);
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Advance HEAD with an UNRELATED commit (a different file) — the patch's pinned base is no
+    // longer HEAD, but the patch itself still applies cleanly via --3way.
+    std::fs::write(codedir.join("other.rs"), "y\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "unrelated"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(ok(&chk), "--check should predict a clean 3-way apply: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "3-way apply failed: {}", err(&a));
+    assert!(out(&a).contains("3-way"), "should note the 3-way path: {}", out(&a));
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nCHANGED\nline3\n");
+}
+
+#[test]
+fn apply_check_conflict_is_exit_1_via_scratch_worktree() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-conflict");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // A CONFLICTING commit on top of the pinned base: touches the SAME line the patch does.
+    std::fs::write(codedir.join("f.rs"), "line1\nOTHEREDIT\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "conflicting edit"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 1, "a genuine 3-way conflict must be exit 1: {}", err(&chk));
+
+    // The real repo must be UNTOUCHED by the --check (no scratch leftovers, no dirty tree).
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "repo must stay clean after --check");
+}
+
+#[test]
+fn apply_already_landed_short_circuits() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-landed");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Land the SAME change directly (simulating "someone already applied + committed it").
+    std::fs::write(codedir.join("f.rs"), "line1\nCHANGED\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "landed"]);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 2, "already-landed must be exit 2: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "a landed patch is a REPORT, not an error: {}", err(&a));
+    assert!(out(&a).contains("already landed"), "{}", out(&a));
+}
+
+#[test]
+fn apply_unresolvable_when_no_clone_is_mapped() {
+    let c = new_hub().clone("alpha");
+    // A message whose repo was never mapped/registered at all (constructed via a mapped clone,
+    // then the machine-local map is pointed at a DIFFERENT machine by using a fresh $HOME for
+    // the check — simplest: just never map "mylib" here and hand-craft a confer-patch message).
+    let codedir = tmp("apply-unresolvable-src");
+    assert!(git(&codedir, &["init", "-q"]).status.success());
+    std::fs::write(codedir.join("f.rs"), "a\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "c0"]);
+    assert!(ok(&c.confer(&["repos", "map", "mylib", codedir.to_str().unwrap()])));
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "b\n");
+
+    // Now unmap it (point the machine-local map at nothing) by remapping "mylib" to a directory
+    // that's a DIFFERENT (non-matching) repo — capture_dir's identity check then refuses it, and
+    // there's no cwd/--ref-from fallback either.
+    let other = tmp("apply-unresolvable-other");
+    assert!(git(&other, &["init", "-q"]).status.success());
+    std::fs::write(other.join("g.rs"), "x\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "unrelated repo"]);
+    std::fs::create_dir_all(c.dir.join("repos")).unwrap();
+    let root_sha = out(&git(&codedir, &["rev-list", "--max-parents=0", "HEAD"])).trim().to_string();
+    std::fs::write(c.dir.join("repos").join("mylib.md"), format!("---\nrole: codedir\nroot_sha: {root_sha}\n---\n")).unwrap();
+    assert!(ok(&c.confer(&["repos", "map", "mylib", other.to_str().unwrap()])), "remap should still succeed (map doesn't check identity)");
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_eq!(code(&chk), 3, "no resolvable clone of the right repo → unresolvable (exit 3): {}", err(&chk));
+}
+
+#[test]
+fn apply_dirty_guard_refuses_unless_force() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "apply-dirty");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Dirty the touched path with UNRELATED uncommitted content (append a line).
+    std::fs::write(codedir.join("f.rs"), "line1\nline2\nline3\nUNRELATED\n").unwrap();
+
+    let bad = c.confer(&["apply", &id]);
+    assert!(!ok(&bad), "must refuse to apply onto an uncommitted touched path");
+    assert!(err(&bad).contains("uncommitted"), "err: {}", err(&bad));
+    assert!(err(&bad).contains("--force"), "err: {}", err(&bad));
+
+    let forced = c.confer(&["apply", &id, "--force"]);
+    assert!(ok(&forced), "--force should let it through: {}", err(&forced));
+}
+
+#[test]
+fn refs_and_show_carry_the_patch_kind_and_landed_chip() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "refs-patch-kind");
+
+    let id = post_patch(&c, &codedir, "mylib", "f.rs", "line1\nCHANGED\nline3\n");
+
+    // Before landing: `confer refs` marks it a patch, still open.
+    let refs_open = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(refs_open.contains("proposed a change here (open)"), "refs_open: {refs_open}");
+    let refs_json_open = out(&c.confer(&["refs", "mylib:f.rs", "--json"]));
+    assert!(refs_json_open.contains("\"patch\":true"), "refs_json_open: {refs_json_open}");
+
+    let shown_open = out(&c.confer(&["show", &id]));
+    assert!(shown_open.contains("proposed a change here (open)"), "shown_open: {shown_open}");
+
+    // Land it directly (commit the same content) — the SAME data now reads as applied/landed.
+    std::fs::write(codedir.join("f.rs"), "line1\nCHANGED\nline3\n").unwrap();
+    git(&codedir, &["add", "-A"]);
+    git(&codedir, &["commit", "-q", "-m", "landed"]);
+
+    let refs_landed = out(&c.confer(&["refs", "mylib:f.rs"]));
+    assert!(refs_landed.contains("proposed a change here (applied)"), "refs_landed: {refs_landed}");
+    let refs_json_landed = out(&c.confer(&["refs", "mylib:f.rs", "--json"]));
+    assert!(refs_json_landed.contains("\"staleness\":\"landed\""), "refs_json_landed: {refs_json_landed}");
+
+    let shown_landed = out(&c.confer(&["show", &id]));
+    assert!(shown_landed.contains("proposed a change here (applied)"), "shown_landed: {shown_landed}");
+}
+
+// ── design/45 review (0.8.0): receiver-side re-validation is enforced by construction ───────
+// (Jarvis's finding: write-time gates were courtesy-only — a hand-authored/replayed message
+// could reach `confer apply` with a binary diff, a byte-bomb, or a forged `result_hash`, and
+// bypass every gate. These tests exercise the `validate_patch` chokepoint from BOTH the honest
+// write path AND a hand-authored message reaching `confer apply` directly.)
+
+/// A real `git diff --binary` block for a brand-new binary file `path` with content `bytes`,
+/// scoped to that path (the codedir is left clean afterward — nothing staged or committed).
+fn binary_diff_new_file(codedir: &Path, path: &str, bytes: &[u8]) -> String {
+    std::fs::write(codedir.join(path), bytes).unwrap();
+    assert!(git(codedir, &["add", "--", path]).status.success());
+    let o = git(codedir, &["diff", "--binary", "--full-index", "--cached", "--", path]);
+    assert!(o.status.success(), "git diff --binary failed");
+    let diff = out(&o);
+    assert!(diff.contains("GIT binary patch"), "sanity: should be a real binary diff: {diff}");
+    git(codedir, &["reset", "-q"]);
+    let _ = std::fs::remove_file(codedir.join(path));
+    diff
+}
+
+/// A 26-char id, distinct enough for these hand-authored-message tests (doesn't need to be a
+/// REAL ULID — `schema::parse_message` only requires the field be a string, and nothing here
+/// depends on id-order semantics since each test posts exactly one such message).
+fn forged_id() -> String {
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let raw = format!("01FORGED{}{:08}", std::process::id(), n);
+    let mut s: String = raw.chars().filter(char::is_ascii_alphanumeric).collect();
+    while s.len() < 26 {
+        s.push('0');
+    }
+    s.chars().take(26).collect()
+}
+
+/// Hand-author a message directly into `c`'s hub — bypassing `confer append`/`suggest` and every
+/// write-time gate entirely, simulating a message that reached the store via SOME OTHER route
+/// (a hand-edited file, a compromised/out-of-date peer, a rogue client) — exactly the threat
+/// model design/45's receiver-side re-validation closes. Returns the message id.
+fn hand_craft_patch_message(c: &Clone, repo: &str, sha: &str, path: &str, result_hash: Option<&str>, diff: &str) -> String {
+    let id = forged_id();
+    let dir = c.dir.join("threads").join("forged");
+    std::fs::create_dir_all(&dir).unwrap();
+    let result_hash_line =
+        result_hash.map(|h| format!("\n    result_hash: {h}")).unwrap_or_default();
+    let fence = format!("```confer-patch repo={repo} sha={sha}\n{}\n```\n", diff.trim_end_matches('\n'));
+    let md = format!(
+        "---\nid: {id}\nfrom: forger\ntype: note\nts: 2026-07-18T00:00:00Z\nrefs:\n  - repo: {repo}\n    sha: {sha}\n    path: {path}\n    patch: true{result_hash_line}\n---\n\n{fence}\n"
+    );
+    std::fs::write(dir.join(format!("{id}.md")), md).unwrap();
+    id
+}
+
+#[test]
+fn patch_write_gate_refuses_a_binary_diff() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-write");
+
+    let diff = binary_diff_new_file(&codedir, "img.bin", &[0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    let patch_file = codedir.join("bin.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.append(&[
+        "--type", "note", "--to", "b", "--summary", "sneaky binary",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "a binary diff must be refused at write time");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+    // Nothing was committed to the codedir's working tree/index by the refused write path (the
+    // scratch `bin.diff` file itself is just this test's own input, not confer's doing).
+    let _ = std::fs::remove_file(&patch_file);
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "codedir must stay clean");
+}
+
+#[test]
+fn suggest_refuses_a_binary_diff() {
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-suggest");
+
+    let diff = binary_diff_new_file(&codedir, "img.bin", &[9u8, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    let patch_file = codedir.join("bin.diff");
+    std::fs::write(&patch_file, &diff).unwrap();
+
+    let a = c.confer(&[
+        "suggest", "--from", "alpha", "--to", "b", "--summary", "sneaky binary suggestion",
+        "--patch", patch_file.to_str().unwrap(), "--repo", "mylib",
+    ]);
+    assert!(!ok(&a), "confer suggest must also refuse a binary diff");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+}
+
+#[test]
+fn apply_refuses_a_binary_diff_smuggled_past_the_anti_spoof_pairing_rule() {
+    // The realistic smuggle: a MIXED diff — one ordinary text-file hunk (with real `--- `/`+++ `
+    // headers, so it CAN legitimately pair with a matching `patch:true` ref) plus a SECOND file's
+    // `GIT binary patch` block, which has NO `--- `/`+++ ` headers at all, so it's invisible to
+    // `parse_diff_touched_files`/the anti-spoof coverage check — yet `git apply` would still
+    // materialize it onto the real working tree. Before the `validate_patch` chokepoint, `confer
+    // apply` never re-checked for this at all.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-binary-apply");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let text_diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    // A leading NUL byte is what makes git's own heuristic classify this as binary.
+    let binary_diff = binary_diff_new_file(&codedir, "smuggled.bin", &[0u8, 1, 2, 3, 4, 5, 6, 7, 8]);
+    let combined = format!("{text_diff}{binary_diff}");
+
+    let expected_blob = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut ch| {
+                use std::io::Write;
+                ch.stdin.take().unwrap().write_all(b"line1\nCHANGED\nline3\n").unwrap();
+                ch.wait_with_output()
+            })
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", Some(&expected_blob), &combined);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(!ok(&chk), "a diff carrying a binary block must be refused even at --check");
+    assert!(err(&chk).contains("binary"), "err: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(!ok(&a), "a diff carrying a binary block must be refused at real apply");
+    assert!(err(&a).contains("binary"), "err: {}", err(&a));
+
+    // The working tree is untouched: neither the text change nor the smuggled binary file landed.
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nline2\nline3\n");
+    assert!(!codedir.join("smuggled.bin").exists(), "the smuggled binary file must NOT have been written");
+    assert!(out(&git(&codedir, &["status", "--porcelain"])).trim().is_empty(), "codedir must stay clean");
+}
+
+#[test]
+fn apply_refuses_an_oversized_diff_even_with_a_forged_small_line_count() {
+    // A hand-authored message whose diff is dominated by one enormous line (far beyond
+    // MAX_DIFF_BYTES) but touches only 2 changed (+/-) LINES — `changed_line_count` alone would
+    // read this as tiny and let it straight through the line-based size gate. The byte ceiling
+    // in `validate_patch` catches it independent of the (spoofable) line count.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-oversized-bytes");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    let huge_line = "x".repeat(2 * 1024 * 1024); // 2 MiB on a single `+` line
+    let diff = format!(
+        "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n line1\n-line2\n+{huge_line}\n line3\n"
+    );
+    assert_eq!(patch_changed_lines_sanity(&diff), 2, "sanity: only 2 changed lines by the naive count");
+
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", None, &diff);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert!(!ok(&chk), "an oversized-by-bytes diff must be refused even with a tiny changed-line count");
+    assert!(err(&chk).contains("byte"), "err: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(!ok(&a), "real apply must also refuse it");
+    assert_eq!(std::fs::read_to_string(codedir.join("f.rs")).unwrap(), "line1\nline2\nline3\n", "untouched");
+}
+
+/// The naive `+`/`-` count a spoofed diff is trying to hide behind (mirrors `changed_line_count`
+/// without depending on the crate — this test crate only links the built binary).
+fn patch_changed_lines_sanity(diff: &str) -> usize {
+    diff.lines()
+        .filter(|l| (l.starts_with('+') && !l.starts_with("+++")) || (l.starts_with('-') && !l.starts_with("---")))
+        .count()
+}
+
+#[test]
+fn apply_forged_result_hash_does_not_spoof_already_landed() {
+    // The P2 finding: `result_hash` is frontmatter the SENDER wrote. A peer who reads a target
+    // path's CURRENT `HEAD` blob OID and forges it as `result_hash` on a diff that has genuinely
+    // NOT landed must NOT get a false "already landed" — `confer apply` must independently verify
+    // (here: `git apply --check --reverse`), never trust the self-declared value.
+    let c = new_hub().clone("alpha");
+    let codedir = code_repo_mapped(&c, "patch-forged-result-hash");
+    let base_sha = out(&git(&codedir, &["rev-parse", "HEAD"])).trim().to_string();
+
+    // f.rs is STILL "line1\nline2\nline3\n" at HEAD — the diff below has never been applied.
+    let current_oid = String::from_utf8_lossy(
+        &Command::new("git")
+            .arg("-C").arg(&codedir)
+            .args(["rev-parse", "HEAD:f.rs"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    let diff = diff_for_change(&codedir, "f.rs", "line1\nCHANGED\nline3\n");
+    // Forge result_hash = the file's CURRENT (unrelated, un-landed) blob oid — exactly what an
+    // attacker who merely reads the live repo state could produce, without ever actually
+    // authoring/applying a change that produces it.
+    let id = hand_craft_patch_message(&c, "mylib", &base_sha, "f.rs", Some(&current_oid), &diff);
+
+    let chk = c.confer(&["apply", &id, "--check"]);
+    assert_ne!(code(&chk), 2, "a forged result_hash must NOT produce a false already-landed (exit 2): {}", err(&chk));
+    assert!(ok(&chk), "the real diff genuinely applies cleanly here: {}", err(&chk));
+
+    let a = c.confer(&["apply", &id]);
+    assert!(ok(&a), "apply failed: {}", err(&a));
+    assert!(!out(&a).contains("already landed"), "must not falsely report already landed: {}", out(&a));
+    assert_eq!(
+        std::fs::read_to_string(codedir.join("f.rs")).unwrap(),
+        "line1\nCHANGED\nline3\n",
+        "the real diff must actually have been applied, not skipped"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--body-file` / `--summary-file`: shell-free, byte-verbatim posting (no inline
+// arg for content a shell could mangle — backticks/$()/$VAR/!/quotes/fenced code/
+// unicode/ARG_MAX-scale bodies). See src/append.rs `cmd_append` + src/cli.rs `Append`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `show <id> --json`'s `body`/`summary` fields, for exact (not `contains`-based) comparison.
+fn show_json(c: &Clone, id: &str) -> serde_json::Value {
+    let o = c.confer(&["show", id, "--json"]);
+    assert!(ok(&o), "show --json failed: {}", err(&o));
+    serde_json::from_str(out(&o).lines().next().unwrap_or(""))
+        .unwrap_or_else(|e| panic!("show --json must be valid JSON ({e}): {}", out(&o)))
+}
+
+/// Nasty content covering every shell metacharacter class named in the spec: backticks
+/// (command substitution), `$(...)`, `$VAR`/`${VAR}`, `!` (history expansion), single AND
+/// double quotes, a fenced code block, and unicode (⌘K, →, ‼). Starts and ends on a
+/// non-whitespace character (`to_markdown`/`from_markdown` trim body/summary at rest — an
+/// existing, pre-existing invariant of ALL confer messages, not something `--body-file`
+/// changes — so this checks true byte-identity rather than a false negative from that trim).
+fn nasty_body() -> String {
+    "backticks: `date` and `echo hi`\n\
+     command subst: $(whoami) and $(echo pwned)\n\
+     vars: $HOME $USER ${PATH} and $9\n\
+     bang: sudo !! and !$\n\
+     quotes: \"double quoted\" and 'single quoted' and \"nested 'quotes' inside\"\n\
+     unicode: \u{2318}K \u{2192} done \u{203C}\n\
+     ```rust\n\
+     fn main() {\n\
+         println!(\"hello, `world`\");\n\
+     }\n\
+     ```"
+        .to_string()
+}
+
+fn nasty_summary() -> String {
+    "backticks `date` $(whoami) $HOME ${PATH} ! \"double\" 'single' unicode \u{2318}K \u{2192} \u{203C}"
+        .to_string()
+}
+
+#[test]
+fn append_body_file_roundtrips_nasty_bytes_exactly() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bodyfile");
+    let path = dir.join("body.md");
+    let body = nasty_body();
+    std::fs::write(&path, &body).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "nasty body via --body-file",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["body"].as_str().unwrap(),
+        body,
+        "--body-file must round-trip byte-identical"
+    );
+}
+
+#[test]
+fn append_summary_file_roundtrips_nasty_bytes_exactly() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("summaryfile");
+    let path = dir.join("summary.txt");
+    let summary = nasty_summary();
+    std::fs::write(&path, &summary).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["summary"].as_str().unwrap(),
+        summary,
+        "--summary-file must round-trip byte-identical"
+    );
+}
+
+#[test]
+fn append_summary_file_strips_single_trailing_newline() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("summaryfile-nl");
+    // The common case: a summary file written with `echo`/an editor/a heredoc ends in `\n`.
+    // A summary is one line, so that trailing newline is stripped (a `\r` before it too, for
+    // `\r\n` files) — the summary round-trips WITHOUT it. Body/summary-file byte-verbatim
+    // tests above still hold: only this one trailing newline is removed, nothing interior.
+    let path = dir.join("summary.txt");
+    std::fs::write(&path, "a one-line summary with `nasty` $(bits)\n").unwrap();
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["summary"].as_str().unwrap(),
+        "a one-line summary with `nasty` $(bits)",
+        "--summary-file must strip the single trailing newline (not keep it, not the interior)"
+    );
+
+    // `\r\n` line ending: the `\r` before the stripped `\n` goes too.
+    let crlf = dir.join("summary-crlf.txt");
+    std::fs::write(&crlf, "crlf summary\r\n").unwrap();
+    let id2 = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        crlf.to_str().unwrap(),
+        "--text",
+        "plain body",
+    ]);
+    assert_eq!(show_json(&c, &id2)["summary"].as_str().unwrap(), "crlf summary");
+}
+
+#[test]
+fn append_body_file_and_summary_file_together_roundtrip_both() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bothfile");
+    let body_path = dir.join("body.md");
+    let summary_path = dir.join("summary.txt");
+    let body = nasty_body();
+    let summary = nasty_summary();
+    std::fs::write(&body_path, &body).unwrap();
+    std::fs::write(&summary_path, &summary).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary-file",
+        summary_path.to_str().unwrap(),
+        "--body-file",
+        body_path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(v["body"].as_str().unwrap(), body);
+    assert_eq!(v["summary"].as_str().unwrap(), summary);
+}
+
+#[test]
+fn append_body_file_roundtrips_multi_kb_body_near_arg_max() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("bigbodyfile");
+    let path = dir.join("big.md");
+    // A few hundred KB — comfortably past what an inline `--text` arg can carry before
+    // hitting the shell's ARG_MAX, and past confer's own diff/embed size gates (which only
+    // apply to --ref/--patch, not a plain body). Ends on a non-whitespace char (see nasty_body).
+    let mut body = String::new();
+    for i in 0..6000 {
+        body.push_str(&format!("line {i}: the quick brown fox jumps over the lazy dog.\n"));
+    }
+    body.push_str("final line, no trailing newline: `tail` $(marker) end");
+    std::fs::write(&path, &body).unwrap();
+
+    let id = c.send(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "big body via --body-file",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    let v = show_json(&c, &id);
+    assert_eq!(
+        v["body"].as_str().unwrap().len(),
+        body.len(),
+        "big body must round-trip at full length (no truncation)"
+    );
+    assert_eq!(v["body"].as_str().unwrap(), body, "big body must round-trip byte-identical");
+}
+
+#[test]
+fn append_body_file_conflicts_with_text() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("conflict-body");
+    let path = dir.join("body.md");
+    std::fs::write(&path, "file body").unwrap();
+
+    let o = c.append(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "s",
+        "--text",
+        "inline body",
+        "--body-file",
+        path.to_str().unwrap(),
+    ]);
+    assert!(!ok(&o), "--body-file combined with --text must be rejected");
+    assert!(
+        err(&o).contains("--body-file") && err(&o).contains("--text"),
+        "error should name both conflicting flags: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn append_summary_file_conflicts_with_summary() {
+    let c = new_hub().clone("alpha");
+    let dir = tmp("conflict-summary");
+    let path = dir.join("summary.txt");
+    std::fs::write(&path, "file summary").unwrap();
+
+    let o = c.append(&[
+        "--type",
+        "note",
+        "--to",
+        "beta",
+        "--summary",
+        "inline summary",
+        "--summary-file",
+        path.to_str().unwrap(),
+        "--text",
+        "b",
+    ]);
+    assert!(!ok(&o), "--summary-file combined with --summary must be rejected");
+    assert!(
+        err(&o).contains("--summary") && err(&o).contains("--summary-file"),
+        "error should name both conflicting flags: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn append_requires_summary_or_summary_file() {
+    let c = new_hub().clone("alpha");
+    let o = c.append(&["--type", "note", "--to", "beta", "--text", "b"]);
+    assert!(!ok(&o), "append with neither --summary nor --summary-file must be rejected");
+    assert!(err(&o).contains("--summary"), "{}", err(&o));
+}
+
+// ── design/51 §6/Phase B: per-(hub, role) watch preferences persist in machine config ──────────
+
+/// Spawn `confer <args>` briefly (long enough to pass the startup hints, before the poll loop),
+/// kill it, and return its stderr — where `--wake-on`'s floor hint (or its absence) is emitted.
+fn spawn_and_capture_stderr(home: &Path, hub_dir: &Path, role: &str, args: &[&str]) -> String {
+    use std::io::Read;
+    let mut child = Command::new(BIN)
+        .env("HOME", home)
+        .env("CONFER_HUB", hub_dir)
+        .env("CONFER_ROLE", role)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    let _ = child.kill();
+    let mut s = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut s);
+    }
+    let _ = child.wait();
+    s
+}
+
+#[test]
+fn watch_prefs_persist_per_hub_role_and_reload_on_bare_rearm() {
+    // An explicit --wake-on is saved for this (hub, role) in machine config; a LATER bare
+    // re-arm for the SAME (hub, role) must reload it without the flag being re-passed.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "explicit --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `watch` must reload the saved wake-on=alert preference for this (hub, role): {reloaded}"
+    );
+}
+
+#[test]
+fn confer_arm_persists_wake_on_and_a_bare_rearm_reloads_it() {
+    // Same persistence contract, through `confer arm` (the paved-path re-arm command) rather
+    // than raw `watch` — the post-compaction auto-heal re-arm goes through `arm`.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["arm", "--role", "alpha"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let explicit = run(&["--wake-on", "alert"]);
+    assert!(
+        explicit.contains("alert (act-now only"),
+        "confer arm --wake-on alert must apply on this run: {explicit}"
+    );
+
+    let reloaded = run(&[]);
+    assert!(
+        reloaded.contains("alert (act-now only"),
+        "a bare `confer arm` must reload the saved wake-on=alert preference: {reloaded}"
+    );
+}
+
+#[test]
+fn explicit_watch_flag_overrides_a_saved_preference() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let run = |args: &[&str]| -> String {
+        let mut full = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
+        full.extend_from_slice(args);
+        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+    };
+
+    let _ = run(&["--wake-on", "alert"]);
+    let overridden = run(&["--wake-on", "all"]);
+    assert!(
+        overridden.contains("all (board mechanics"),
+        "an explicit --wake-on on a later run must override the saved preference, not defer to it: {overridden}"
+    );
+}
+
+#[test]
+fn watch_prefs_are_scoped_per_hub_and_role_not_shared() {
+    // alpha and beta are two DIFFERENT roles on the SAME hub (same hub_key) — beta's bare watch
+    // must not inherit alpha's saved --wake-on.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    let _ = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1", "--wake-on", "alert"],
+    );
+    let beta_bare = spawn_and_capture_stderr(
+        &b.home,
+        &b.dir,
+        "beta",
+        &["watch", "--role", "beta", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !beta_bare.contains("wake-rung floor"),
+        "a different role on the same hub must NOT inherit alpha's saved wake-on preference: {beta_bare}"
+    );
+}
+
+#[test]
+fn bare_watch_with_nothing_saved_defaults_to_notice() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let s = spawn_and_capture_stderr(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+    );
+    assert!(
+        !s.contains("wake-rung floor"),
+        "with nothing ever saved, the built-in default (notice) must apply — no floor hint: {s}"
     );
 }

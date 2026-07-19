@@ -1,0 +1,433 @@
+/* ── confer serve — global design tokens ──────────────────────────────
+   Ported from design/serve-dashboard-v2-mockup.html (the design source of
+   truth). Dark is the primary palette (`:root`); light is opted into via
+   `:root[data-theme="light"]`. This preserves the mockup's exact
+   "dark-primary + light-via-data-theme" model — the app starts dark and
+   the theme toggle flips `data-theme` on <html>. */
+
+:root {
+  --bg: #0c0f14;
+  --panel: #12161d;
+  --panel-2: #171c25;
+  --panel-3: #1c222c;
+  --border: #232a35;
+  --border-2: #2c3542;
+  --text: #dbe3ec;
+  --muted: #8a97a8;
+  --faint: #5b6675;
+  --accent: #2dd4bf;
+
+  --done: #46c66b;
+  --claimed: #5aa2f7;
+  --blocked: #e0a83a;
+  --error: #f26d6d;
+  --open: #2dd4bf;
+  --deferred: #b79cf0;
+  --note: #8a97a8;
+
+  /* Semantic WORK-STATE palette (ui/REDESIGN.md, "settled 2026-07-19") —
+     the six colors piece 5's ticket/board vocabulary uses, one meaning per
+     hue: state-open (unclaimed) / state-flight (in-flight/claimed/active) /
+     state-unowned (needs an owner) / state-stuck (blocked/critical) /
+     state-done (closed/resolved) / state-metric (neutral data-viz, e.g.
+     closure throughput — NOT a state, keeps state-flight green meaning only
+     "in-flight"). Deliberately NEW tokens rather than repointing the older
+     --open/--claimed/--blocked/--done/--error above: those are also reused
+     for unrelated axes (agent trust/liveness chips, the shared/foreign
+     TRUST frame below) that this settlement doesn't touch — collapsing them
+     into one set would silently recolor things the operator never asked to
+     change. New ticket/board components (TicketRow/TicketMiniCard/
+     TicketFullPopover, Board's cockpit) use ONLY this set. */
+  --state-open: #7dcfff;
+  --state-flight: #9ece6a;
+  --state-unowned: #e0af68;
+  --state-stuck: #f7768e;
+  --state-done: #565f89;
+  --state-metric: #2ac3de;
+
+  /* The "shared" trust-tier frame's own stable color — split out from
+     --claimed (below) so repointing that token for work-state purposes
+     elsewhere can never bleed into the trust axis, which REDESIGN.md keeps
+     deliberately orthogonal ("trust framing keeps its own axis"). Value
+     unchanged from --claimed's original blue — no visual change here. */
+  --trust-shared: #5aa2f7;
+
+  /* agent accents */
+  --ag-herald: #4ecab0;
+  --ag-reader: #d9b46a;
+  --ag-pipeline: #5aa2f7;
+  --ag-compositor: #7cc46a;
+  --ag-jarvis: #c58fd6;
+  --ag-orbit: #e0965a;
+
+  /* syntax-highlight tokens (dark) — see design/serve-dashboard-v2-mockup.html
+     for the tokenizer this pairs with in the mockup; production uses Shiki. */
+  --syn-keyword: #5aa2f7;
+  --syn-string: #8bcf8f;
+  --syn-comment: #6b7685;
+  --syn-number: #e0a83a;
+  --syn-function: #4ecab0;
+  --syn-type: #d9b46a;
+  --syn-punct: #8a97a8;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+
+  /* PHI-scaled spacing (dashboard redesign, ui/REDESIGN.md) — the same
+     golden-ratio spacing convention used across the workstation's other
+     surfaces (Astrolabos), applied here to the fleet map's macro rhythm
+     (band/domain/section gaps). Not a replacement for ad-hoc px spacing
+     inside a component — just the shared scale for "how far apart do these
+     BIG things sit". */
+  --phi1: 1rem;
+  --phi2: 1.618rem;
+  --phi3: 2.618rem;
+  --phi4: 4.236rem;
+
+  /* Trust-domain framing (ui/redesign-mockups/01-overview.html,
+     02-hub-nav.html) — derived from existing tokens rather than new hex
+     values, so both themes stay in sync automatically. Backed by the real
+     `Hub.tier` (design/48 §2, shipped) since piece 1: `own`/`shared` render
+     home, `foreign` renders foreign, `null` (never classified) renders
+     neutral — never defaulted to home. `--shared-frame` is piece 2's own
+     THIRD tier (the hub-nav rail groups Home/Shared/Foreign separately,
+     unlike Overview's coarser two-bucket home/foreign card framing) —
+     reuses `--claimed` (already this palette's blue) rather than inventing
+     a new hue. `--neutral-frame` is the "unclassified" bucket's color. */
+  --home-frame: var(--accent);
+  --home-glow: color-mix(in srgb, var(--accent) 13%, transparent);
+  --shared-frame: var(--trust-shared);
+  --shared-glow: color-mix(in srgb, var(--trust-shared) 13%, transparent);
+  --foreign-frame: var(--deferred);
+  --foreign-glow: color-mix(in srgb, var(--deferred) 10%, transparent);
+  --neutral-frame: var(--muted);
+  --neutral-glow: color-mix(in srgb, var(--muted) 8%, transparent);
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #f7f9fb;
+  --panel-3: #eef2f6;
+  --border: #e2e7ee;
+  --border-2: #d5dce5;
+  --text: #1b2230;
+  --muted: #5c6675;
+  --faint: #8b95a4;
+  --accent: #0d9488;
+
+  --done: #1f9d4d;
+  --claimed: #2f74d0;
+  --blocked: #b5760a;
+  --error: #d63b3b;
+  --open: #0d9488;
+  --deferred: #7c53c9;
+  --note: #7a8494;
+
+  --state-open: #2959aa;
+  --state-flight: #4f6d2e;
+  --state-unowned: #8a6c2f;
+  --state-stuck: #d81f57;
+  --state-done: #7a80a0;
+  --state-metric: #0f7c93;
+
+  --trust-shared: #2f74d0;
+
+  --ag-herald: #188f78;
+  --ag-reader: #a67c1f;
+  --ag-pipeline: #2f74d0;
+  --ag-compositor: #3f8f34;
+  --ag-jarvis: #8a4bbf;
+  --ag-orbit: #bf6420;
+
+  --syn-keyword: #2f74d0;
+  --syn-string: #1f8f4d;
+  --syn-comment: #8b95a4;
+  --syn-number: #b5760a;
+  --syn-function: #188f78;
+  --syn-type: #a67c1f;
+  --syn-punct: #5c6675;
+
+  --shadow: 0 6px 20px rgba(20, 30, 50, 0.12);
+
+  color-scheme: light;
+}
+
+/* Only when the app hasn't recorded an explicit theme choice yet do we let
+   the OS preference nudge the *initial* paint before JS sets data-theme —
+   the dark palette above stays the values, this just avoids a flash for
+   light-OS users prior to hydration. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    color-scheme: light dark;
+  }
+}
+
+/* ── minimal reset ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html {
+  /* Safety net: nothing in the app should ever force sideways scroll of the
+     document itself — off-canvas drawers (translateX slide-ins), wide
+     monospace content, etc. all clip/scroll inside their own containers.
+     This is a backstop, not a substitute for those containers doing their
+     job (see TicketCard/.track and CodeLens/.densefile for the actual
+     narrow-viewport fixes). */
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
+
+/* ── Shiki dual light/dark theming ──────────────────────────────────────
+   `highlight.ts` calls Shiki's `codeToTokens` with both themes and
+   `defaultColor: false`, so every token carries BOTH `--shiki-light` and
+   `--shiki-dark` as inline CSS custom properties. Which one actually paints
+   the glyph is decided here, keyed off the same `data-theme` attribute the
+   app's own theme toggle already flips — so code re-themes instantly with
+   no re-highlight. Dark is the default to match the rest of the app. */
+.shiki-tok {
+  color: var(--shiki-dark);
+}
+:root[data-theme='light'] .shiki-tok {
+  color: var(--shiki-light);
+}
+
+/* ── Markdown message bodies (`.prose.md`) ──────────────────────────────
+   Message bodies are peer-authored Markdown (see src/lib/markdown.ts —
+   rendered with markdown-it, then sanitized with DOMPurify) inserted via
+   `{@html}`. That content isn't visible to Svelte's scoped-CSS compiler, so
+   it's styled here globally rather than per-component. Legible in both
+   themes off the existing tokens; nothing here may force the page (or even
+   the message row) wider — long tokens/URLs wrap, and code blocks scroll
+   in their own container instead of the page. */
+.prose.md {
+  font-size: 13.5px;
+  /* Normal-weight body prose — NOT the summary line's semibold lead. This is
+     the single most load-bearing rule in this block: without an explicit
+     weight here, a note that's heavy on `**bold**` sub-headers (a common
+     agent-memo style) reads as "shouting" once every line runs together. */
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  /* Comfortable reading measure — only bites when the surrounding column is
+     wider than this, so it never fights the panel/rail layout widths. */
+  max-width: 72ch;
+}
+.prose.md > :first-child {
+  margin-top: 0;
+}
+.prose.md > :last-child {
+  margin-bottom: 0;
+}
+.prose.md br {
+  content: '';
+  display: block;
+  margin-top: 0.45em;
+}
+.prose.md p {
+  margin: 0 0 0.7em;
+}
+.prose.md h1,
+.prose.md h2,
+.prose.md h3,
+.prose.md h4,
+.prose.md h5,
+.prose.md h6 {
+  margin: 0.9em 0 0.4em;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text);
+}
+.prose.md h1 {
+  font-size: 1.25em;
+}
+.prose.md h2 {
+  font-size: 1.15em;
+}
+.prose.md h3 {
+  font-size: 1.05em;
+}
+.prose.md h4,
+.prose.md h5,
+.prose.md h6 {
+  font-size: 1em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.prose.md ul,
+.prose.md ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.4em;
+}
+.prose.md li {
+  margin: 0.15em 0;
+}
+.prose.md li > ul,
+.prose.md li > ol {
+  margin: 0.15em 0 0.15em 0.2em;
+}
+.prose.md strong {
+  font-weight: 700;
+  color: var(--text);
+}
+.prose.md em {
+  font-style: italic;
+}
+.prose.md del,
+.prose.md s {
+  color: var(--muted);
+}
+.prose.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+.prose.md a:hover {
+  text-decoration-color: var(--accent);
+}
+.prose.md blockquote {
+  margin: 0.5em 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--border-2);
+  color: var(--muted);
+}
+.prose.md hr {
+  margin: 0.9em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.prose.md code:not(pre code) {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--panel-3);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prose.md .mention {
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 0 4px;
+  border-radius: 5px;
+}
+/* piece 4, item 3 — "inline refs anchored to prose": Message.svelte's
+   anchorInlineRefs replaces an inline `--ref repo:path@sha` mention's
+   `code.mono` span with a real `<button class="inline-ref-chip">` at that exact
+   point in the rendered markup — this is that button's ONLY style
+   definition, since it's built with document.createElement (not template
+   markup Svelte's scoped-CSS compiler ever sees), same reasoning as
+   .mention/.prose.md above. */
+.prose.md .inline-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 5px;
+  padding: 0.05em 0.45em;
+  cursor: pointer;
+}
+.prose.md .inline-ref-chip:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.prose.md .inline-ref-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.prose.md pre {
+  margin: 0.6em 0;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  max-width: 100%;
+}
+.prose.md pre code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+.prose.md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.95em;
+}
+.prose.md th,
+.prose.md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.prose.md th {
+  background: var(--panel-3);
+  color: var(--muted);
+  font-weight: 650;
+}

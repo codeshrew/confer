@@ -1,0 +1,512 @@
+<script lang="ts">
+  // The focus reader (ui/redesign-mockups/03-thread-nav.html, piece 3, "C" —
+  // three depths: skim (stream) -> explore (peek) -> read (this)). `f`
+  // anywhere on a focused message drops it into a distraction-free,
+  // prose-typeset single-message view — the stream/graph/chrome stripped,
+  // the words getting real reading typography instead of the stream's
+  // clamped/compact treatment.
+  //
+  // Reuses the SAME real data the peek uses (thread.ts's buildTrail over the
+  // already-fetched `thread`/`messages`) for j/k "prev · next in thread" —
+  // one shared mental model of "what thread is this," not a second one.
+  // Code blocks/refs inside the body go through the SAME markdown +
+  // highlight.ts pipeline every other message body uses (no reinvented
+  // renderer) — "code blocks render in the code view" means the same Shiki
+  // tokenizer, not a bespoke one.
+  //
+  // READ-STATE (ui/REDESIGN.md piece 4, item 2 — 2026-07-19): the gutter
+  // now shows a real "seen by" line straight from `message.seenBy`
+  // (Herald's src/seen.rs) — the piece-3 deferral above is resolved.
+  //
+  // This is ALSO where "detail-viewed" gets recorded (Stefan's
+  // completionist-safe framing, load-bearing): opening the reader on a
+  // message and staying past a short DWELL (~2.5s) — or scrolling the
+  // body, a stronger deliberate-engagement signal that fires immediately —
+  // marks the message "opened" in the operator's own localStorage
+  // (readState.svelte.ts). This is a mark-READ action, never a mark-
+  // UNREAD one: absence from that set is neutral everywhere it's read
+  // (Message.svelte's row, the minimap's node) — no counter, no badge, no
+  // "N unread" pressure. An accidental f-then-Esc within the dwell window
+  // records nothing.
+  import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
+  import { formatClock, formatIso8601, formatLocalDateTime } from '../format';
+  import { buildTrail, KIND_TAG, type TrailNode } from '../thread';
+  import { isTypingTarget } from '../keys';
+  import { api } from '../api';
+  import { copyToClipboard } from '../clipboard';
+  import { readState } from '../readState.svelte';
+  import CopyIdButton from './CopyIdButton.svelte';
+  import CopiedToast from './CopiedToast.svelte';
+  import type { Agent, CodeRef, Message as MessageT, RefHit, ThreadNode } from '../types';
+
+  interface Props {
+    open: boolean;
+    msgId: string | null;
+    messages: MessageT[];
+    agents: Agent[];
+    thread: ThreadNode[];
+    hub: string;
+    /** j/k — move to the prev/next message in the SAME thread. A pure focus
+     * move (like the peek's own h/l/j/k) — never refetches, since the trail
+     * covering `msgId` already covers every node it could walk to. */
+    onNavigate?: (msgId: string) => void;
+    onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
+    onClose?: () => void;
+  }
+
+  let { open, msgId, messages, agents, thread, hub, onNavigate, onOpenRefs, onClose }: Props = $props();
+
+  const agentsById = $derived(new Map(agents.map((a) => [a.id, a])));
+  const message = $derived(messages.find((m) => m.id === msgId) ?? null);
+  const agent = $derived(message ? agentsById.get(message.from) : undefined);
+
+  // Same real trail the peek renders — reused, not recomputed differently,
+  // so "next in thread" here means the exact same thing it means there.
+  const trail = $derived(buildTrail(thread, messages));
+  const index = $derived(msgId ? trail.findIndex((n) => n.msgId === msgId) : -1);
+  const prevNode = $derived(index > 0 ? (trail[index - 1] ?? null) : null);
+  const nextNode = $derived(index >= 0 && index < trail.length - 1 ? (trail[index + 1] ?? null) : null);
+
+  const renderedBody = $derived(message ? renderMarkdown(message.body) : null);
+  let bodyEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    void renderedBody;
+    if (bodyEl) void highlightRenderedCodeBlocks(bodyEl);
+  });
+
+  // "detail-viewed" — completionist-safe (see the header note): a dwell
+  // timer per message, reset whenever `message` changes (j/k moving to a
+  // different one within the same open session must restart the clock,
+  // not carry over "already dwelled" from the last message). A scroll is
+  // a stronger deliberate-engagement signal and marks it immediately,
+  // bypassing the dwell.
+  const DETAIL_VIEW_DWELL_MS = 2500;
+  $effect(() => {
+    if (!open || !message) return;
+    const id = message.id;
+    const timer = setTimeout(() => readState.markDetailViewed(id), DETAIL_VIEW_DWELL_MS);
+    return () => clearTimeout(timer);
+  });
+
+  function handleBodyScroll() {
+    if (message) readState.markDetailViewed(message.id);
+  }
+
+  function shortId(id: string): string {
+    return id.length > 10 ? `${id.slice(0, 8)}…` : id;
+  }
+
+  function goTo(node: TrailNode | null) {
+    if (node) onNavigate?.(node.msgId);
+  }
+
+  // keyboard-architecture pass — `y` (vim yank) copies the focused
+  // message's FULL id (not the shortened display id — that's what
+  // `confer show <id>` / cross-referencing needs). The header's
+  // CopyIdButton covers the mouse path; `y` needs its own feedback since
+  // there's no button under the pointer when it fires from the keyboard.
+  let toastText = $state<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyFocusedId() {
+    if (!message) return;
+    const ok = await copyToClipboard(message.id);
+    if (!ok) return;
+    toastText = `copied ${shortId(message.id)}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastText = null;
+    }, 1500);
+  }
+
+  // The gutter's compact ref chips don't render CodeRefCard's own full
+  // preview (too wide for a narrow gutter column) — but the reverse-index
+  // hook still needs REAL hit data, not a fabricated empty array implying
+  // "nothing references this." Same `getRefs(hub, target, true)` call
+  // CodeRefCard itself makes before firing its own onRevHook.
+  async function openRefHits(ref: CodeRef) {
+    const target = `${ref.repo}:${ref.path}${ref.range ? `@${ref.range[0]}-${ref.range[1]}` : ''}`;
+    try {
+      const hits = await api.getRefs(hub, target, true);
+      onOpenRefs?.(ref, hits);
+    } catch (err) {
+      console.error('confer serve: failed to load reverse-index hits', target, err);
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (!open) return;
+    if (isTypingTarget(e.target)) return;
+    switch (e.key) {
+      case 'j':
+        e.preventDefault();
+        goTo(nextNode);
+        break;
+      case 'k':
+        e.preventDefault();
+        goTo(prevNode);
+        break;
+      case 'y':
+        e.preventDefault();
+        void copyFocusedId();
+        break;
+      case 'Escape':
+        // `f` itself is deliberately NOT handled here — App.svelte owns the
+        // open/close toggle for it (the single global handler that also
+        // decides whether `f` should open the reader in the first place),
+        // so there's exactly one source of truth instead of two listeners
+        // racing on the same keypress.
+        e.preventDefault();
+        onClose?.();
+        break;
+    }
+  }
+</script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+{#if open && message}
+  <div class="fr-overlay">
+    <div class="fr-backdrop" onclick={onClose} aria-hidden="true" data-testid="reader-backdrop"></div>
+    <div class="fr-panel" role="dialog" aria-modal="true" aria-label="Focus reader" tabindex="-1" data-testid="focus-reader">
+      <div class="fr-head">
+        <div class="fr-crumbs mono">
+          {#if message.topic}<span class="cz">#{message.topic}</span><span class="sep">›</span>{/if}
+          <span class="cz here">{shortId(message.id)}</span>
+          <CopyIdButton id={message.id} class="fr-copy-id" />
+        </div>
+        <span class="fr-badge">◉ focus read</span>
+        <CopiedToast text={toastText} />
+        <!-- piece 4, item 3.4 — prev/next borrows the minimap's own dot +
+             kind vocabulary (piece 4, item 1) instead of a bare id chip:
+             one visual language for "which node, what kind, whose color"
+             across the map and the reader. -->
+        <div class="fr-nav mono">
+          {#if prevNode}
+            <button type="button" class="pn-step" onclick={() => goTo(prevNode)} data-testid="reader-prev">
+              <span class="kn" style="background:{agentsById.get(prevNode.from)?.color ?? 'var(--muted)'}"></span>
+              <span class="kd2">{KIND_TAG[prevNode.type]}</span>
+              {shortId(prevNode.msgId)}
+            </button>
+            <span class="pn-arrow" aria-hidden="true">‹</span>
+          {/if}
+          <span class="pn-step cur">
+            <span class="kn" style="background:{agent?.color ?? 'var(--muted)'}"></span>
+            <span class="kd2">{KIND_TAG[message.type]}</span>
+            {shortId(message.id)}
+          </span>
+          {#if nextNode}
+            <span class="pn-arrow" aria-hidden="true">›</span>
+            <button type="button" class="pn-step" onclick={() => goTo(nextNode)} data-testid="reader-next">
+              <span class="kn" style="background:{agentsById.get(nextNode.from)?.color ?? 'var(--muted)'}"></span>
+              <span class="kd2">{KIND_TAG[nextNode.type]}</span>
+              {shortId(nextNode.msgId)}
+            </button>
+          {/if}
+          <span class="fr-kk-inline"><span class="kk">j</span><span class="kk">k</span> prev·next</span>
+        </div>
+        <button type="button" class="fr-close" aria-label="Close focus reader" onclick={onClose}>✕</button>
+      </div>
+
+      <div class="fr-body" onscroll={handleBodyScroll}>
+        <aside class="fr-gutter">
+          <div class="glab">from</div>
+          <div class="who">{agent?.display ?? message.from}</div>
+          <div class="whosub">{message.host ?? '—'} · {formatClock(message.ts)}</div>
+          {#if message.refs.length}
+            <div class="glab">refs</div>
+            {#each message.refs as ref (ref.repo + ':' + ref.path + '@' + ref.sha)}
+              <button type="button" class="gref" onclick={() => void openRefHits(ref)} title={`${ref.repo}/${ref.path}`}>
+                {ref.path}
+              </button>
+            {/each}
+          {/if}
+          <div class="glab">timestamp</div>
+          <!-- Local primary, UTC alongside it — "both, for clarity" (design/48).
+               Local is what the operator actually reads at a glance; the ISO
+               instant is the unambiguous wire-format fact underneath it. -->
+          <div class="whosub">{formatLocalDateTime(message.ts)}</div>
+          <div class="whosub mono dim">{formatIso8601(message.ts)}</div>
+          <!-- Real seen-by (src/seen.rs) — piece 4 resolves the piece-3
+               deferral. Honest by omission: an empty seenBy renders as
+               "not yet", never a fabricated roster. -->
+          <div class="glab">seen</div>
+          {#if message.seenBy.length}
+            {#each message.seenBy as s (s.role)}
+              <div class="whosub">{agentsById.get(s.role)?.display ?? s.role} · {formatClock(s.ts)}</div>
+            {/each}
+          {:else}
+            <div class="whosub dim">not yet</div>
+          {/if}
+        </aside>
+        <article class="fr-reading prose md" bind:this={bodyEl}>
+          {#if renderedBody}
+            {@html renderedBody}
+          {:else}
+            <p>{message.summary}</p>
+          {/if}
+        </article>
+      </div>
+
+      <div class="fr-keys">
+        <span><span class="kk">j</span><span class="kk">k</span> prev · next in thread</span>
+        <span><span class="kk">y</span> copy message id</span>
+        <span><span class="kk">f</span> exit focus</span>
+        <span><span class="kk">esc</span> exit focus</span>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  .fr-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--phi2, 24px);
+  }
+  .fr-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 6, 10, 0.6);
+  }
+  .fr-panel {
+    position: relative;
+    z-index: 1;
+    /* Near-full-screen, tall AND wide (operator feedback, 2026-07-19) — an
+       EXPLICIT size, not content-fit: the previous max-height:88vh/auto
+       let a short message shrink the panel down with it ("got shorter,
+       stayed same width"). A fixed 94vh means a one-line message still
+       gets the full immersive reader (mostly-empty space is fine — see
+       .fr-body below), and a long one scrolls within it. Width stays
+       generous (min(1500px, 95vw)) but the READING COLUMN doesn't stretch
+       with it — .fr-body's own 72ch measure + centering (below) turns the
+       extra width into intentional whitespace, not wider prose. */
+    width: min(1500px, 95vw);
+    height: 94vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .fr-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex-wrap: wrap;
+  }
+  .fr-crumbs {
+    font-size: 11.5px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .fr-crumbs .cz {
+    color: var(--muted);
+  }
+  .fr-crumbs .cz.here {
+    color: var(--text);
+    font-weight: 650;
+  }
+  .fr-crumbs .sep {
+    color: var(--faint);
+  }
+  /* CopyIdButton defaults to opacity:0 (design/41) — reveal it on the
+     header row's own hover/focus, same convention as Message's
+     .msg:hover :global(.msg-copy-id). */
+  .fr-head:hover :global(.fr-copy-id),
+  .fr-head:focus-within :global(.fr-copy-id) {
+    opacity: 1;
+  }
+  .fr-badge {
+    font: 700 9.5px/1 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 5px;
+    padding: 3px 7px;
+  }
+  .fr-nav {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  /* piece 4, item 3.4 — minimap-styled prev/current/next "step" pills:
+     author-colored knob + kind tag + short id, matching MetaThread's own
+     node vocabulary exactly (same KIND_TAG import, same knob-dot idea). */
+  .pn-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    font: 600 11px/1 var(--mono);
+    padding: 4px 8px;
+    border-radius: 999px;
+  }
+  button.pn-step:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  button.pn-step:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .pn-step.cur {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text);
+  }
+  .pn-step .kn {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .pn-step .kd2 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--faint);
+  }
+  .pn-arrow {
+    color: var(--faint);
+  }
+  .fr-kk-inline {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .fr-close {
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    border-radius: 7px;
+    flex: 0 0 auto;
+  }
+  .fr-close:hover {
+    color: var(--text);
+  }
+  .fr-close:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .fr-body {
+    /* Fills the now-EXPLICIT panel height (see .fr-panel) rather than
+       sizing to content — min-height:0 is required alongside flex:1 for
+       overflow-y:auto to actually scroll inside a flex column instead of
+       forcing the panel to grow past its fixed height. */
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    /* 72ch — the reading measure asked for, kept just under the ~75ch point
+       where a line stops being comfortable to track. justify-content:
+       center turns the panel's extra width into balanced whitespace on
+       BOTH sides of [gutter + column], not a lopsided gap on one side. */
+    grid-template-columns: 160px minmax(0, 72ch);
+    justify-content: center;
+    gap: var(--phi2, 24px);
+    padding: var(--phi2, 24px) var(--phi2, 24px) var(--phi3, 40px);
+  }
+  .fr-gutter {
+    font: 500 11px/1.5 var(--mono);
+    color: var(--muted);
+    border-right: 1px solid var(--border-soft, var(--border));
+    padding-right: 16px;
+  }
+  .fr-gutter .glab {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 9.5px;
+    color: var(--faint);
+    margin: 15px 0 5px;
+  }
+  .fr-gutter .glab:first-child {
+    margin-top: 0;
+  }
+  .fr-gutter .who {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .fr-gutter .whosub {
+    color: var(--faint);
+    font-size: 10.5px;
+  }
+  /* The secondary UTC line under the primary local timestamp — present
+     (never hidden — "both, for clarity"), just visually quieter. */
+  .fr-gutter .whosub.dim {
+    opacity: 0.68;
+    margin-top: 1px;
+  }
+  .fr-gutter .gref {
+    display: block;
+    width: 100%;
+    text-align: left;
+    color: var(--claimed);
+    border: 0;
+    background: transparent;
+    padding: 2px 0;
+    font: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fr-gutter .gref:hover {
+    text-decoration: underline;
+  }
+  /* Prose-typeset reading column — deliberately NOT the stream's compact
+     clamp: real line-height, a comfortable measure (63ch, matching the
+     mockup), sans body text. Headings/lists/code/etc are app.css's shared
+     `.prose.md` rules (same ones Message.svelte/RequestDetail use) — no
+     bespoke typography system just for this view. */
+  .fr-reading {
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .fr-keys {
+    border-top: 1px solid var(--border);
+    padding: 9px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font: 500 10.5px/1 var(--mono);
+    color: var(--muted);
+    flex: 0 0 auto;
+  }
+  .kk {
+    color: var(--text);
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-right: 2px;
+  }
+
+  @media (max-width: 700px) {
+    .fr-body {
+      grid-template-columns: 1fr;
+    }
+    .fr-gutter {
+      border-right: none;
+      border-bottom: 1px solid var(--border-soft, var(--border));
+      padding-right: 0;
+      padding-bottom: 12px;
+    }
+  }
+</style>

@@ -1,0 +1,322 @@
+<title>confer · board — triage cockpit redesign</title>
+<style>
+  :root{
+    --bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;
+    --highlight:#292e42;--border:#2b3050;--border-soft:#222741;
+    --fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;
+    --teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;
+    --open:#7dcfff;--flight:#9ece6a;--stuck:#f7768e;--unowned:#e0af68;--done:#565f89;
+    --shared:#7aa2f7;
+    --phi1:1rem;--phi2:1.618rem;--phi3:2.618rem;--phi4:4.236rem;
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);--maxw:1080px;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;
+    --highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;
+    --teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;
+    --open:#2959aa;--flight:#4f6d2e;--stuck:#d81f57;--unowned:#8a6c2f;--done:#7a80a0;--shared:#2e5db5;
+    --shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);
+  }}
+  :root[data-theme="dark"]{--bg:#1a1b26;--bg-deep:#16161e;--surface:#1f2335;--surface-2:#24283b;--panel:#1c2030;--highlight:#292e42;--border:#2b3050;--border-soft:#222741;--fg:#c0caf5;--fg-dim:#a9b1d6;--muted:#565f89;--muted-2:#414868;--teal:#2ac3de;--cyan:#7dcfff;--blue:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--orange:#ff9e64;--red:#f7768e;--magenta:#bb9af7;--accent:#7dcfff;--open:#7dcfff;--flight:#9ece6a;--stuck:#f7768e;--unowned:#e0af68;--done:#565f89;--shared:#7aa2f7;--shadow:0 1px 0 rgba(255,255,255,.02),0 12px 34px -14px rgba(0,0,0,.65);}
+  :root[data-theme="light"]{--bg:#e1e2e7;--bg-deep:#d4d6de;--surface:#eaebef;--surface-2:#dcdee6;--panel:#e6e7ee;--highlight:#cbcdd8;--border:#b3b7c7;--border-soft:#c6c9d6;--fg:#2f3550;--fg-dim:#444b6b;--muted:#7a80a0;--muted-2:#9aa0bd;--teal:#0f7c93;--cyan:#2959aa;--blue:#2e5db5;--green:#4f6d2e;--yellow:#8a6c2f;--orange:#b15c00;--red:#d81f57;--magenta:#7b41d6;--accent:#2959aa;--open:#2959aa;--flight:#4f6d2e;--stuck:#d81f57;--unowned:#8a6c2f;--done:#7a80a0;--shared:#2e5db5;--shadow:0 1px 0 rgba(255,255,255,.5),0 12px 34px -16px rgba(40,50,90,.35);}
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:var(--phi3) var(--phi2) var(--phi4)}
+  .mono{font-family:var(--font-mono)}
+  .lab{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+  .tnum{font-variant-numeric:tabular-nums}
+
+  .intro{margin-bottom:var(--phi3)}
+  .intro .eyebrow{color:var(--accent)}
+  .intro h1{font-size:1.7rem;font-weight:650;letter-spacing:-.01em;margin:.5rem 0 .4rem;text-wrap:balance}
+  .intro p{color:var(--fg-dim);max-width:64ch;margin:0;font-size:.98rem}
+  .intro .tag{display:inline-block;margin-top:var(--phi1);font-size:.75rem;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:.2rem .7rem}
+
+  .screen{background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:.5rem;padding:.6rem .9rem;background:var(--surface);border-bottom:1px solid var(--border)}
+  .chrome .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--muted-2);opacity:.6}
+  .chrome .url{margin-left:.4rem;font-family:var(--font-mono);font-size:.74rem;color:var(--muted);background:var(--bg-deep);padding:.18rem .6rem;border-radius:6px;border:1px solid var(--border-soft)}
+  .stage{padding:var(--phi2)}
+
+  /* header */
+  .bhead{display:flex;align-items:baseline;gap:.6rem;margin-bottom:var(--phi2);flex-wrap:wrap}
+  .tier{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--shared);background:color-mix(in srgb,var(--shared) 15%,transparent);border:1px solid color-mix(in srgb,var(--shared) 40%,transparent);border-radius:5px;padding:.15rem .45rem}
+  .bhead .hub{font-family:var(--font-mono);font-weight:640;font-size:1rem}
+  .bhead .verdict{margin-left:auto;font-size:.85rem;color:var(--fg-dim)}
+  .bhead .verdict b{color:var(--unowned)}
+
+  /* stat strip */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin-bottom:var(--phi2)}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:.85rem .95rem;position:relative;cursor:pointer;transition:border-color .15s}
+  .stat:hover{border-color:var(--accent)}
+  .stat::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:2px;background:var(--c)}
+  .stat .n{font-family:var(--font-mono);font-size:1.7rem;font-weight:700;line-height:1;color:var(--c);font-variant-numeric:tabular-nums}
+  .stat .k{font-size:.76rem;color:var(--fg-dim);margin-top:.3rem}
+  .stat .sub{font-family:var(--font-mono);font-size:.62rem;color:var(--muted);margin-top:.15rem}
+  .stat.open{--c:var(--open)} .stat.flight{--c:var(--flight)} .stat.stuck{--c:var(--stuck)} .stat.unowned{--c:var(--unowned)}
+
+  /* viz row */
+  .viz{display:grid;grid-template-columns:1fr 1fr;gap:var(--phi2);margin-bottom:var(--phi2)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1rem 1.1rem}
+  .card > .lab{display:block;margin-bottom:.8rem}
+  /* assignee load bars */
+  .load{display:flex;flex-direction:column;gap:.6rem}
+  .load .row{display:grid;grid-template-columns:5.5rem 1fr auto;align-items:center;gap:.7rem}
+  .load .who{display:flex;align-items:center;gap:.45rem;font-size:.82rem;min-width:0}
+  .load .av{width:1.35rem;height:1.35rem;border-radius:5px;display:grid;place-items:center;font:700 .58rem var(--font-mono);color:#0b0e17;flex:none}
+  .load .track{height:.7rem;border-radius:4px;background:var(--highlight);overflow:hidden}
+  .load .fill{height:100%;border-radius:4px}
+  .load .cnt{font-family:var(--font-mono);font-size:.72rem;color:var(--fg-dim);font-variant-numeric:tabular-nums}
+  .load .row.unassigned .who{color:var(--unowned);font-weight:600}
+  .load .row.unassigned .fill{background:repeating-linear-gradient(135deg,var(--unowned),var(--unowned) 5px,transparent 5px,transparent 9px);background-color:color-mix(in srgb,var(--unowned) 30%,transparent)}
+  .load .hint{font-size:.72rem;color:var(--muted);margin-top:.3rem}
+
+  /* throughput chart (SVG) */
+  .chart{display:flex;flex-direction:column}
+  .chart .bars{display:flex;align-items:flex-end;gap:4px;height:78px;margin-top:.2rem}
+  .chart .bar{flex:1;background:color-mix(in srgb,var(--teal) 50%,transparent);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+  .chart .bar.today{background:var(--teal)}
+  .chart .axis{display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:.58rem;color:var(--muted);margin-top:.35rem}
+  .chart .meta{font-family:var(--font-mono);font-size:.66rem;color:var(--fg-dim);margin-top:.5rem;display:flex;gap:.6rem;align-items:baseline}
+  .chart .meta b{color:var(--teal);font-size:.9rem}
+
+  /* status stacked bar (thin, under stats) */
+  .flowbar{display:flex;height:.5rem;border-radius:4px;overflow:hidden;margin-bottom:.4rem}
+  .flowbar .seg{height:100%}
+  .flowlegend{display:flex;gap:.9rem;font-family:var(--font-mono);font-size:.62rem;color:var(--muted);flex-wrap:wrap}
+  .flowlegend .lg{display:inline-flex;align-items:center;gap:.3rem}
+  .flowlegend .sw{width:.55rem;height:.55rem;border-radius:2px}
+
+  /* work list */
+  .worklab{display:flex;align-items:center;gap:.5rem;margin:1.1rem 0 .35rem}
+  .worklab .h{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+  .worklab .h.attn{color:var(--unowned)} .worklab .h.flight{color:var(--flight)} .worklab .h.stuck{color:var(--stuck)}
+  .worklab .c{font-family:var(--font-mono);font-size:.6rem;color:var(--muted)}
+  .worklab .ln{height:1px;flex:1;background:var(--border)}
+  .wlist{display:flex;flex-direction:column}
+  .item{display:grid;grid-template-columns:7px auto 1fr auto auto;align-items:center;gap:.6rem;padding:.3rem .55rem;border-radius:6px;border:1px solid transparent;cursor:pointer;transition:background .12s,border-color .12s}
+  .item:hover{background:var(--panel);border-color:var(--border)}
+  .item .dot{width:6px;height:6px;border-radius:50%;background:var(--c,var(--muted-2))}
+  .item.open{--c:var(--open)} .item.flight{--c:var(--flight)} .item.stuck{--c:var(--stuck)} .item.unowned{--c:var(--unowned)}
+  .item .id{font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+  .item .sum{font-size:.83rem;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .item .who{font-family:var(--font-mono);font-size:.64rem;color:var(--fg-dim);display:inline-flex;align-items:center;gap:.35rem;justify-self:end}
+  .item .who .av{width:1rem;height:1rem;border-radius:4px;display:grid;place-items:center;font:700 .48rem var(--font-mono);color:#0b0e17}
+  .item .who.none{color:var(--unowned)}
+  .item .age{font-family:var(--font-mono);font-size:.62rem;color:var(--muted-2);justify-self:end;font-variant-numeric:tabular-nums;width:2.6rem;text-align:right}
+  .item .age.stale{color:var(--stuck)}
+
+  /* collapsed done */
+  .done-fold{margin-top:var(--phi2);border:1px dashed var(--border);border-radius:9px;padding:.7rem .9rem;display:flex;align-items:center;gap:.6rem;color:var(--muted);font-size:.82rem;cursor:pointer}
+  .done-fold:hover{border-color:var(--muted)}
+  .done-fold .n{font-family:var(--font-mono);color:var(--fg-dim);font-weight:640}
+  .done-fold .chev{margin-left:auto;font-family:var(--font-mono);font-size:.7rem}
+
+  /* ===== ticket detail popover (the click experience) ===== */
+  .ticketcap{text-align:center;color:var(--muted);font-size:.85rem;margin:var(--phi3) 0 .9rem}
+  .ticketcap b{color:var(--fg-dim)}
+  .ticket{max-width:560px;margin:0 auto;background:var(--bg-deep);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .tk-head{display:flex;align-items:center;gap:.55rem;padding:.8rem 1rem;border-bottom:1px solid var(--border);background:var(--surface)}
+  .tk-kind{font-family:var(--font-mono);font-size:.58rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--flight);background:color-mix(in srgb,var(--flight) 15%,transparent);border:1px solid color-mix(in srgb,var(--flight) 40%,transparent);border-radius:4px;padding:.12rem .4rem}
+  .tk-id{font-family:var(--font-mono);font-size:.8rem;color:var(--fg)}
+  .tk-topic{font-family:var(--font-mono);font-size:.68rem;color:var(--muted)}
+  .tk-close{margin-left:auto;font-family:var(--font-mono);font-size:.7rem;color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:.1rem .4rem;cursor:pointer}
+  .tk-body{padding:1.1rem 1.2rem}
+  .tk-title{font-size:1.05rem;font-weight:640;line-height:1.35;margin:0 0 1.1rem;letter-spacing:-.01em}
+
+  /* the lifecycle track — the centerpiece */
+  .track3{display:grid;grid-template-columns:1fr 1fr 1fr;position:relative;margin:0 0 1.3rem}
+  .track3::before{content:"";position:absolute;top:11px;left:12%;right:12%;height:2px;background:var(--border)}
+  .track3 .prog{content:"";position:absolute;top:11px;left:12%;height:2px;background:var(--flight);width:38%}
+  .st{display:flex;flex-direction:column;align-items:center;gap:.4rem;position:relative;z-index:1}
+  .st .knob{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font:700 .7rem var(--font-mono);border:2px solid var(--border);background:var(--bg-deep);color:var(--muted)}
+  .st.done .knob{background:var(--flight);border-color:var(--flight);color:#0b0e17}
+  .st.current .knob{border-color:var(--flight);color:var(--flight);box-shadow:0 0 0 4px color-mix(in srgb,var(--flight) 20%,transparent);animation:pulse 2.6s ease-in-out infinite}
+  .st .sl{font-size:.76rem;font-weight:640;color:var(--fg-dim)}
+  .st.done .sl,.st.current .sl{color:var(--fg)}
+  .st .sm{font-family:var(--font-mono);font-size:.6rem;color:var(--muted);text-align:center;line-height:1.4}
+  .st.pending .knob{border-style:dashed}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px color-mix(in srgb,var(--flight) 18%,transparent)}50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--flight) 26%,transparent)}}
+  @media (prefers-reduced-motion:reduce){.st.current .knob{animation:none}}
+
+  .tk-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:.55rem .9rem;padding:.8rem 0;border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);margin-bottom:1rem}
+  .tk-meta .mrow{display:flex;align-items:center;gap:.5rem;font-size:.78rem}
+  .tk-meta .mk{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);width:4.5rem;flex:none}
+  .tk-meta .mv{color:var(--fg-dim);display:inline-flex;align-items:center;gap:.35rem;min-width:0}
+  .tk-meta .mv .av{width:1.1rem;height:1.1rem;border-radius:4px;display:grid;place-items:center;font:700 .5rem var(--font-mono);color:#0b0e17}
+  .tk-meta .refchip{font-family:var(--font-mono);font-size:.6rem;color:var(--cyan);border:1px solid color-mix(in srgb,var(--cyan) 35%,transparent);border-radius:4px;padding:.05rem .3rem}
+  .tk-excerpt{font-size:.85rem;color:var(--fg-dim);line-height:1.6}
+  .tk-foot{display:flex;gap:.6rem;padding:.7rem 1.2rem;border-top:1px solid var(--border);background:var(--surface);font-family:var(--font-mono);font-size:.66rem;color:var(--muted)}
+  .tk-foot .fbtn{color:var(--fg-dim);border:1px solid var(--border);border-radius:6px;padding:.2rem .55rem;cursor:pointer}
+  .tk-foot .fbtn:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* rationale */
+  .rationale{margin-top:var(--phi4)}
+  .rationale > .lab{display:block;margin-bottom:.5rem;color:var(--accent)}
+  .rationale h3{font-size:1.3rem;font-weight:640;margin:.2rem 0 var(--phi2);letter-spacing:-.01em;text-wrap:balance}
+  .qa{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--phi1)}
+  .q{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:1.1rem 1.2rem}
+  .q h4{margin:0 0 .4rem;font-size:.92rem;font-weight:640}
+  .q h4 .g{color:var(--accent);font-family:var(--font-mono);margin-right:.35rem}
+  .q p{margin:0;font-size:.85rem;color:var(--fg-dim)}
+  .q p .src{display:block;margin-top:.5rem;font-family:var(--font-mono);font-size:.62rem;color:var(--muted)}
+  footer{margin-top:var(--phi3);font-size:.75rem;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:var(--phi2)}
+  @media (max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}.viz{grid-template-columns:1fr}}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · board redesign</span>
+    <h1>A cockpit, not a ticket list.</h1>
+    <p>Arriving at the board, a human asks four things: <b>is anything stuck, what needs an owner, who's
+      carrying what, and are we closing faster than we open?</b> The old board answered none of them — it
+      was a flat list dominated by DONE. This makes the <b>shape of the work</b> the page, and buries the
+      done stuff behind one line.</p>
+    <span class="tag mono">mockup · triage cockpit · real projections + illustrative volume</span>
+  </div>
+
+  <div class="screen">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">127.0.0.1:8422 · confer-lab · board</span></div>
+    <div class="stage">
+
+      <div class="bhead">
+        <span class="tier">shared</span>
+        <span class="hub">codeshrew/confer-lab</span>
+        <span class="verdict"><b>2 need an owner</b> · 1 stuck · closing faster than opening ↗</span>
+      </div>
+
+      <!-- stat strip: the four questions, as numbers -->
+      <div class="stats">
+        <div class="stat open"><div class="n">6</div><div class="k">Open</div><div class="sub">active work</div></div>
+        <div class="stat flight"><div class="n">3</div><div class="k">In flight</div><div class="sub">claimed · being worked</div></div>
+        <div class="stat stuck"><div class="n">1</div><div class="k">Stuck</div><div class="sub">blocked or stale &gt;3d</div></div>
+        <div class="stat unowned"><div class="n">2</div><div class="k">Need an owner</div><div class="sub">open · no claimant</div></div>
+      </div>
+
+      <!-- thin status flow bar -->
+      <div class="flowbar" title="open / claimed / blocked composition">
+        <span class="seg" style="width:33%;background:var(--open)"></span>
+        <span class="seg" style="width:50%;background:var(--flight)"></span>
+        <span class="seg" style="width:17%;background:var(--stuck)"></span>
+      </div>
+      <div class="flowlegend">
+        <span class="lg"><span class="sw" style="background:var(--open)"></span>open 2</span>
+        <span class="lg"><span class="sw" style="background:var(--flight)"></span>claimed 3</span>
+        <span class="lg"><span class="sw" style="background:var(--stuck)"></span>blocked 1</span>
+        <span style="margin-left:auto;color:var(--muted)">36 closed (hidden)</span>
+      </div>
+
+      <!-- two visuals: who's carrying what + throughput -->
+      <div class="viz" style="margin-top:var(--phi2)">
+        <div class="card">
+          <!-- two always-visible sections, no toggle -->
+          <span class="lab" style="display:block;margin-bottom:.6rem">carrying <span style="color:var(--muted-2)">· who's doing the work</span></span>
+          <div class="load">
+            <div class="row"><span class="who"><span class="av" style="background:var(--cyan)">JA</span>Jarvis</span><div class="track"><div class="fill" style="width:66%;background:var(--flight)"></div></div><span class="cnt">2</span></div>
+            <div class="row"><span class="who"><span class="av" style="background:var(--green)">HE</span>Herald</span><div class="track"><div class="fill" style="width:33%;background:var(--flight)"></div></div><span class="cnt">1</span></div>
+          </div>
+          <span class="lab" style="display:block;margin:1rem 0 .6rem">asking <span style="color:var(--muted-2)">· who's waiting on work · <span style="color:var(--unowned)">■</span> unowned</span></span>
+          <div class="load">
+            <div class="row"><span class="who"><span class="av" style="background:var(--cyan)">JA</span>Jarvis</span><div class="track"><div class="fill" style="width:66%;background:color-mix(in srgb,var(--fg-dim) 30%,transparent);position:relative"><span style="position:absolute;right:0;top:0;bottom:0;width:50%;background:var(--unowned)"></span></div></div><span class="cnt">4</span></div>
+            <div class="row"><span class="who"><span class="av" style="background:var(--green)">HE</span>Herald</span><div class="track"><div class="fill" style="width:33%;background:color-mix(in srgb,var(--fg-dim) 30%,transparent)"></div></div><span class="cnt">2</span></div>
+          </div>
+        </div>
+
+        <div class="card chart">
+          <span class="lab">closure throughput · last 10 days</span>
+          <div class="bars">
+            <div class="bar" style="height:25%"></div>
+            <div class="bar" style="height:8%"></div>
+            <div class="bar" style="height:60%"></div>
+            <div class="bar" style="height:100%"></div>
+            <div class="bar" style="height:40%"></div>
+            <div class="bar" style="height:16%"></div>
+            <div class="bar" style="height:50%"></div>
+            <div class="bar" style="height:72%"></div>
+            <div class="bar" style="height:30%"></div>
+            <div class="bar today" style="height:44%"></div>
+          </div>
+          <div class="axis"><span>Jul 9</span><span>today</span></div>
+          <div class="meta"><b>+34</b> closed this week · <span style="color:var(--muted)">opened 21 — net −13, backlog shrinking</span></div>
+        </div>
+      </div>
+
+      <!-- the actionable work, grouped; DONE collapsed -->
+      <div class="worklab"><span class="h attn">▲ needs an owner</span><span class="c">2</span><span class="ln"></span></div>
+      <div class="wlist">
+        <div class="item unowned"><span class="dot"></span><span class="id">780AGN</span><span class="sum">Docs fix — README_TEMPLATE confer init scaffold is stale</span><span class="who none"><span class="av" style="background:var(--cyan)">JA</span>◇ open</span><span class="age stale">4d</span></div>
+        <div class="item unowned"><span class="dot"></span><span class="id">KVW3R1</span><span class="sum">Shadow-repo surfacing — referenced-but-untracked repos in the Repos view</span><span class="who none"><span class="av" style="background:var(--cyan)">JA</span>◇ open</span><span class="age">6h</span></div>
+      </div>
+
+      <div class="worklab"><span class="h flight">● in flight</span><span class="c">3</span><span class="ln"></span></div>
+      <div class="wlist">
+        <div class="item flight"><span class="dot"></span><span class="id">98XCNF</span><span class="sum">0.8.0 review + test: serve dashboard + ref/patch substrate — re-verify ba44522</span><span class="who"><span class="av" style="background:var(--cyan)">JA</span>Jarvis</span><span class="age">1h</span></div>
+        <div class="item flight"><span class="dot"></span><span class="id">MRCKY3</span><span class="sum">Project per-hub tier + sync on /api/hubs (design/48 s2-3)</span><span class="who"><span class="av" style="background:var(--green)">HE</span>Herald</span><span class="age">2h</span></div>
+        <div class="item flight"><span class="dot"></span><span class="id">F7XD1V</span><span class="sum">Fleet-wide safe-posting skill (shell-quoting-safe by default)</span><span class="who"><span class="av" style="background:var(--green)">HE</span>Herald</span><span class="age">40m</span></div>
+      </div>
+
+      <div class="worklab"><span class="h stuck">▲ blocked / stale</span><span class="c">1</span><span class="ln"></span></div>
+      <div class="wlist">
+        <div class="item stuck"><span class="dot"></span><span class="id">5W858S</span><span class="sum">Note-reference validation — scope options (waiting on recommendation)</span><span class="who none"><span class="av" style="background:var(--cyan)">JA</span>⊘ blocked</span><span class="age stale">1h</span></div>
+      </div>
+
+      <!-- the clutter, folded away -->
+      <div class="done-fold"><span>✓</span> <span class="n">36 closed</span> — the arc that's already resolved <span class="chev">show ⌄</span></div>
+
+    </div>
+  </div>
+
+  <!-- the click experience -->
+  <p class="ticketcap">Click a ticket → a focused <b>ticket view</b> — its lifecycle at a glance, then the detail.</p>
+  <div class="ticket">
+    <div class="tk-head">
+      <span class="tk-kind">request</span>
+      <span class="tk-id">98XCNF</span>
+      <span class="tk-topic">· #review-080 · shared</span>
+      <span class="tk-close">esc ✕</span>
+    </div>
+    <div class="tk-body">
+      <h3 class="tk-title">0.8.0 review + test: the serve dashboard + the ref/patch code-conversation substrate — pull review/0.8.0 and dogfood the ref round-trip</h3>
+
+      <div class="track3">
+        <span class="prog"></span>
+        <div class="st done"><span class="knob">✓</span><span class="sl">Requested</span><span class="sm">Herald<br>Jul 18 · 8:56 PM</span></div>
+        <div class="st current"><span class="knob">●</span><span class="sl">Claimed</span><span class="sm">Jarvis<br>Jul 18 · 9:39 PM</span></div>
+        <div class="st pending"><span class="knob">○</span><span class="sl">Done</span><span class="sm">—<br>in progress</span></div>
+      </div>
+
+      <div class="tk-meta">
+        <div class="mrow"><span class="mk">Requester</span><span class="mv"><span class="av" style="background:var(--green)">HE</span>Herald</span></div>
+        <div class="mrow"><span class="mk">Assignee</span><span class="mv"><span class="av" style="background:var(--cyan)">JA</span>Jarvis</span></div>
+        <div class="mrow"><span class="mk">Age</span><span class="mv">1h · claimed 22m ago</span></div>
+        <div class="mrow"><span class="mk">Refs</span><span class="mv"><span class="refchip">src/patch.rs</span><span class="refchip">design/45</span></span></div>
+      </div>
+
+      <p class="tk-excerpt">Big batch ready for review + testing: the whole serve dashboard (the 0.8.0 arc) plus the code-conversation substrate (refs → patches) and the designs behind them. This note dogfoods the ref system — it references design/47, design/45, src/patch.rs…</p>
+    </div>
+    <div class="tk-foot">
+      <span class="fbtn">open thread ›</span>
+      <span class="fbtn">focus read · f</span>
+      <span class="fbtn">copy id · y</span>
+      <span style="margin-left:auto">j k · prev · next ticket</span>
+    </div>
+  </div>
+
+  <div class="rationale">
+    <span class="lab">what a human actually cares about here</span>
+    <h3>Answer the four questions before showing a single ticket.</h3>
+    <div class="qa">
+      <div class="q"><h4><span class="g">▲</span>Is anything stuck?</h4><p>A <b>Stuck</b> stat + lane (blocked or stale &gt;3d). The thing quietly rotting gets a number, not a scroll.</p></div>
+      <div class="q"><h4><span class="g">◇</span>What needs an owner?</h4><p><b>Need an owner</b> — a stat and a top lane. Unowned open work is the operator's real to-do.</p></div>
+      <div class="q"><h4><span class="g">▬▷</span>Who's carrying / who's asking?</h4><p>One load card, toggle <b>Carrying ⇄ Asking</b>. Asking splits each requester's pile owned vs. <b>unowned</b> — a full unowned bar is who to route.</p></div>
+      <div class="q"><h4><span class="g">↗</span>Are we winning?</h4><p>Closure throughput + a net line. "Backlog shrinking" is a read a flat list can't give.</p></div>
+      <div class="q"><h4><span class="g">✓</span>Clear the clutter</h4><p><b>Done folds to one line.</b> Default view is live work; open the fold only to audit history.</p></div>
+      <div class="q"><h4><span class="g">◱</span>Click = drill</h4><p>A stat filters the list; a ticket opens the lifecycle view. Summary and detail, one click apart.</p></div>
+    </div>
+  </div>
+
+  <footer class="mono">confer board redesign · Tokyo Night · piece 5 · answer the four questions, then the work — done folds away</footer>
+</div>

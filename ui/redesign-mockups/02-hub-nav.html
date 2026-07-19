@@ -1,0 +1,308 @@
+<title>confer · hub navigation redesign</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bg-deep: #16161e; --rail: #15161f; --surface: #1f2335; --surface-2: #24283b;
+    --highlight: #292e42; --border: #2b3050; --border-soft: #222741;
+    --fg: #c0caf5; --fg-dim: #a9b1d6; --muted: #565f89; --muted-2: #414868;
+    --teal: #2ac3de; --cyan: #7dcfff; --blue: #7aa2f7; --green: #9ece6a;
+    --yellow: #e0af68; --orange: #ff9e64; --red: #f7768e; --magenta: #bb9af7;
+    --accent: #7dcfff;
+    --home: #2ac3de; --home-soft: rgba(42,195,222,.13);
+    --shared: #7aa2f7; --shared-soft: rgba(122,162,247,.13);
+    --foreign: #bb9af7; --foreign-soft: rgba(187,154,247,.12);
+    --phi1: 1rem; --phi2: 1.618rem; --phi3: 2.618rem; --phi4: 4.236rem;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 12px 34px -14px rgba(0,0,0,.65);
+    --maxw: 1120px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e1e2e7; --bg-deep: #d4d6de; --rail: #d9dbe4; --surface: #eaebef; --surface-2: #dcdee6;
+      --highlight: #cbcdd8; --border: #b3b7c7; --border-soft: #c6c9d6;
+      --fg: #2f3550; --fg-dim: #444b6b; --muted: #7a80a0; --muted-2: #9aa0bd;
+      --teal: #0f7c93; --cyan: #2959aa; --green: #4f6d2e; --yellow: #8a6c2f;
+      --red: #d81f57; --magenta: #7b41d6; --blue: #2e5db5; --accent: #2959aa;
+      --home: #0f7c93; --home-soft: rgba(15,124,147,.10);
+      --shared: #2e5db5; --shared-soft: rgba(46,93,181,.10);
+      --foreign: #7b41d6; --foreign-soft: rgba(123,65,214,.09);
+      --shadow: 0 1px 0 rgba(255,255,255,.5), 0 12px 34px -16px rgba(40,50,90,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1b26; --bg-deep: #16161e; --rail: #15161f; --surface: #1f2335; --surface-2: #24283b;
+    --border: #2b3050; --border-soft: #222741; --fg: #c0caf5; --fg-dim: #a9b1d6; --muted: #565f89; --muted-2: #414868;
+    --teal: #2ac3de; --green: #9ece6a; --yellow: #e0af68; --red: #f7768e; --magenta: #bb9af7; --blue: #7aa2f7; --accent: #7dcfff;
+    --home: #2ac3de; --home-soft: rgba(42,195,222,.13); --shared: #7aa2f7; --shared-soft: rgba(122,162,247,.13);
+    --foreign: #bb9af7; --foreign-soft: rgba(187,154,247,.12); --shadow: 0 1px 0 rgba(255,255,255,.02), 0 12px 34px -14px rgba(0,0,0,.65);
+  }
+  :root[data-theme="light"] {
+    --bg: #e1e2e7; --bg-deep: #d4d6de; --rail: #d9dbe4; --surface: #eaebef; --surface-2: #dcdee6;
+    --border: #b3b7c7; --border-soft: #c6c9d6; --fg: #2f3550; --fg-dim: #444b6b; --muted: #7a80a0; --muted-2: #9aa0bd;
+    --teal: #0f7c93; --green: #4f6d2e; --yellow: #8a6c2f; --red: #d81f57; --magenta: #7b41d6; --blue: #2e5db5; --accent: #2959aa;
+    --home: #0f7c93; --home-soft: rgba(15,124,147,.10); --shared: #2e5db5; --shared-soft: rgba(46,93,181,.10);
+    --foreign: #7b41d6; --foreign-soft: rgba(123,65,214,.09); --shadow: 0 1px 0 rgba(255,255,255,.5), 0 12px 34px -16px rgba(40,50,90,.35);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-sans); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: var(--phi3) var(--phi2) var(--phi4); }
+  .mono { font-family: var(--font-mono); }
+  .lab { font-family: var(--font-mono); font-size: .66rem; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  .intro { margin-bottom: var(--phi3); }
+  .intro .eyebrow { color: var(--accent); }
+  .intro h1 { font-size: 1.7rem; font-weight: 650; letter-spacing: -.01em; margin: .5rem 0 .4rem; text-wrap: balance; }
+  .intro p { color: var(--fg-dim); max-width: 64ch; margin: 0; font-size: .98rem; }
+  .intro .tag { display:inline-block; margin-top: var(--phi1); font-size:.75rem; color: var(--muted); border:1px solid var(--border); border-radius: 999px; padding: .2rem .7rem; }
+
+  /* app frame */
+  .screen { background: var(--bg-deep); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .chrome { display:flex; align-items:center; gap:.5rem; padding: .6rem .9rem; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .chrome .dot { width:.62rem; height:.62rem; border-radius:50%; background: var(--muted-2); opacity:.6; }
+  .chrome .url { margin-left:.4rem; font-family: var(--font-mono); font-size:.74rem; color: var(--muted); background: var(--bg-deep); padding:.18rem .6rem; border-radius:6px; border:1px solid var(--border-soft); }
+
+  .app { display: grid; grid-template-columns: 236px 1fr; min-height: 560px; }
+
+  /* ---- the rail ---- */
+  .rail { background: var(--rail); border-right: 1px solid var(--border); padding: .9rem .7rem; display:flex; flex-direction:column; gap:.4rem; }
+  .rail .brand { display:flex; align-items:center; gap:.55rem; padding: .1rem .35rem .5rem; }
+  .rail .mark { width:1.5rem; height:1.5rem; border-radius:6px; display:grid; place-items:center; background: linear-gradient(150deg, var(--teal), var(--blue)); color:#0b0e17; font-weight:800; font-family:var(--font-mono); font-size:.82rem; }
+  .rail .bname { font-weight:640; font-size:.92rem; }
+  .jump { display:flex; align-items:center; gap:.5rem; margin: .1rem .1rem .5rem; padding:.42rem .6rem; border-radius:8px; border:1px solid var(--border); background: var(--bg-deep); color: var(--muted); font-size:.78rem; cursor:text; }
+  .jump .kbd { margin-left:auto; font-family:var(--font-mono); font-size:.66rem; border:1px solid var(--border); border-radius:4px; padding:.05rem .3rem; color: var(--fg-dim); }
+
+  .fleet-entry { display:flex; align-items:center; gap:.55rem; padding:.45rem .55rem; border-radius:8px; font-size:.85rem; font-weight:600; color: var(--fg-dim); cursor:pointer; }
+  .fleet-entry .di { font-family:var(--font-mono); color: var(--accent); }
+  .fleet-entry:hover { background: var(--highlight); }
+
+  .grp { margin-top:.55rem; }
+  .grp .glab { display:flex; align-items:center; gap:.4rem; padding:.1rem .55rem .35rem; }
+  .grp .glab .gname { font-family:var(--font-mono); font-size:.62rem; letter-spacing:.13em; text-transform:uppercase; font-weight:700; }
+  .grp.home .glab .gname { color: var(--home); }
+  .grp.shared .glab .gname { color: var(--shared); }
+  .grp.foreign .glab .gname { color: var(--foreign); }
+  .grp .gcount { font-family:var(--font-mono); font-size:.6rem; color: var(--muted); }
+
+  .hub { position:relative; display:flex; align-items:center; gap:.55rem; padding:.4rem .55rem .4rem .7rem; border-radius:7px; cursor:pointer; transition: background .12s; }
+  .hub::before { content:""; position:absolute; left:0; top:6px; bottom:6px; width:2.5px; border-radius:2px; background: var(--tier-c); opacity:.55; }
+  .hub:hover { background: var(--highlight); }
+  .hub .hname { font-size:.83rem; color: var(--fg-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; }
+  .hub .hdot { width:.5rem; height:.5rem; border-radius:50%; flex:none; }
+  .hub .hbadge { font-family:var(--font-mono); font-size:.62rem; color: var(--muted); background: var(--bg-deep); border:1px solid var(--border-soft); border-radius:5px; padding:.02rem .3rem; flex:none; }
+  .grp.home .hub { --tier-c: var(--home); } .grp.shared .hub { --tier-c: var(--shared); } .grp.foreign .hub { --tier-c: var(--foreign); }
+  .hub.foreign-row::before { background: repeating-linear-gradient(var(--foreign) 0 3px, transparent 3px 5px); opacity:.8; }
+  .hdot.ok { background: var(--green); } .hdot.warn { background: var(--yellow); } .hdot.crit { background: var(--red); } .hdot.unk { background: var(--muted-2); }
+  .hub.active { background: color-mix(in srgb, var(--tier-c) 16%, transparent); }
+  .hub.active::before { opacity:1; width:3px; }
+  .hub.active .hname { color: var(--fg); font-weight:640; }
+  .illus { opacity:.72; }
+  .illus .hname::after { content:" ·"; color: var(--muted-2); }
+
+  /* ---- main workspace, tinted by the ACTIVE hub's tier ---- */
+  .main { position: relative; background: var(--bg); display:flex; flex-direction:column; }
+  /* the persistent "which world am I in" cue: a tier wash along the top edge */
+  .main::before { content:""; position:absolute; inset:0 0 auto 0; height:120px; pointer-events:none;
+    background: linear-gradient(180deg, var(--foreign-soft), transparent); }
+  .main.foreign { box-shadow: inset 3px 0 0 var(--foreign); }
+  .mhead { position:relative; display:flex; align-items:center; gap:.7rem; padding: .85rem var(--phi2); border-bottom:1px solid var(--border); }
+  .crumb { display:flex; align-items:center; gap:.5rem; font-family:var(--font-mono); font-size:.9rem; }
+  .crumb .sep { color: var(--muted-2); }
+  .crumb .cur { font-weight:640; }
+  .worldpill { display:inline-flex; align-items:center; gap:.35rem; font-family:var(--font-mono); font-size:.64rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:.2rem .5rem; border-radius:5px; color: var(--foreign); background: color-mix(in srgb, var(--foreign) 15%, transparent); border:1px solid color-mix(in srgb, var(--foreign) 40%, transparent); }
+  .mtabs { margin-left:auto; display:flex; gap:.1rem; font-size:.8rem; }
+  .mtabs .mt { padding:.3rem .6rem; border-radius:6px; color: var(--muted); cursor:pointer; }
+  .mtabs .mt.on { color: var(--fg); background: var(--highlight); font-weight:600; }
+
+  .mbody { position:relative; padding: var(--phi2); display:flex; flex-direction:column; gap: var(--phi1); }
+  .note-caption { font-size:.8rem; color: var(--muted); font-style:italic; }
+  .fakecard { background: var(--surface); border:1px solid var(--border); border-radius:10px; padding: 1rem 1.1rem; }
+  .fakecard .fc-h { display:flex; align-items:center; gap:.5rem; margin-bottom:.7rem; }
+  .fakecard .fc-h .who { display:flex; align-items:center; gap:.5rem; }
+  .av { width:1.7rem;height:1.7rem;border-radius:6px;display:grid;place-items:center;font:700 .66rem var(--font-mono); color:#0b0e17; }
+  .fc-line { height:.6rem; border-radius:4px; background: var(--highlight); }
+  .fc-line.w70{width:70%} .fc-line.w90{width:90%} .fc-line.w50{width:50%} .fc-line.w40{width:40%}
+  .fc-rows { display:flex; flex-direction:column; gap:.5rem; margin-top:.4rem; }
+
+  /* ---- ⌘K palette state ---- */
+  .palette-wrap { position:relative; margin-top: var(--phi3); }
+  .palette { max-width: 520px; margin: 0 auto; background: var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow: var(--shadow); overflow:hidden; }
+  .palette .pq { display:flex; align-items:center; gap:.6rem; padding:.8rem 1rem; border-bottom:1px solid var(--border); font-family:var(--font-mono); }
+  .palette .pq .cur { color: var(--accent); }
+  .palette .pq input { all:unset; flex:1; color: var(--fg); font-size:.92rem; }
+  .palette .presult { padding:.4rem; }
+  .palette .pr { display:flex; align-items:center; gap:.6rem; padding:.45rem .6rem; border-radius:7px; font-size:.85rem; }
+  .palette .pr.sel { background: var(--highlight); }
+  .palette .pr .ptier { font-family:var(--font-mono); font-size:.6rem; text-transform:uppercase; letter-spacing:.1em; padding:.1rem .4rem; border-radius:4px; }
+  .palette .pr .ptier.foreign { color: var(--foreign); background: var(--foreign-soft); }
+  .palette .pr .ptier.shared { color: var(--shared); background: var(--shared-soft); }
+  .palette .pr .pname { color: var(--fg-dim); }
+  .palette .pr.sel .pname { color: var(--fg); }
+  .palette .pr .phint { margin-left:auto; font-family:var(--font-mono); font-size:.62rem; color: var(--muted); }
+
+  /* rationale */
+  .rationale { margin-top: var(--phi4); }
+  .rationale > .lab { display:block; margin-bottom:.5rem; color: var(--accent); }
+  .rationale h3 { font-size:1.3rem; font-weight:640; margin:.2rem 0 var(--phi2); letter-spacing:-.01em; text-wrap:balance; }
+  .moves { display:grid; grid-template-columns: repeat(auto-fit, minmax(250px,1fr)); gap: var(--phi1); }
+  .move { background: var(--surface); border:1px solid var(--border); border-radius:11px; padding: 1.15rem 1.2rem; }
+  .move .k { display:flex; align-items:center; gap:.5rem; margin-bottom:.5rem; }
+  .move .k .g { font-family:var(--font-mono); font-size:.85rem; color: var(--accent); }
+  .move h4 { margin:0; font-size:.98rem; font-weight:640; }
+  .move p { margin:.4rem 0 0; font-size:.86rem; color: var(--fg-dim); }
+  .move .src { display:inline-block; margin-top:.7rem; font-family:var(--font-mono); font-size:.65rem; color: var(--muted); border:1px solid var(--border); border-radius:5px; padding:.15rem .45rem; }
+  .cmp { margin-top: var(--phi3); background: var(--surface); border:1px solid var(--border); border-radius:11px; padding: var(--phi2); }
+  .cmp h4 { margin:0 0 .8rem; }
+  .cmp .cols { display:grid; grid-template-columns:1fr 1fr; gap: var(--phi2); }
+  .cmp ul { margin:0; padding-left:1.1rem; font-size:.85rem; color: var(--fg-dim); }
+  .cmp ul li { margin:.3rem 0; }
+  .cmp .was li::marker { content:"× "; color: var(--red); }
+  .cmp .now li::marker { content:"→ "; color: var(--green); }
+  footer { margin-top: var(--phi3); font-size:.75rem; color: var(--muted); text-align:center; border-top:1px solid var(--border); padding-top: var(--phi2); }
+  @media (max-width: 720px) { .app { grid-template-columns: 1fr; } .rail { border-right:none; border-bottom:1px solid var(--border); } .cmp .cols { grid-template-columns:1fr; } }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · piece ② — hub navigation & scale</span>
+    <h1>A place for every hub, and every hub in its place.</h1>
+    <p>The tab-row runs out of room past a few hubs and tells you nothing about which world you're in.
+      This replaces it with a <b>persistent, trust-tiered rail</b>: hubs grouped Home / Shared / Foreign,
+      each with a stable home you reach by memory and a live health dot — and the workspace is tinted by
+      the hub you're in, so you always know whether you're on your own turf or someone else's.</p>
+    <span class="tag mono">mockup · shown at scale · real hubs + illustrative ones</span>
+  </div>
+
+  <!-- ============== MOCKUP ============== -->
+  <div class="screen">
+    <div class="chrome">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="url">127.0.0.1:8422 · confer-jarvis-orbit · board</span>
+    </div>
+    <div class="app">
+
+      <!-- the rail -->
+      <nav class="rail" aria-label="hubs">
+        <div class="brand"><span class="mark">c</span><span class="bname">confer</span></div>
+        <div class="jump">Jump to hub… <span class="kbd">⌘K</span></div>
+
+        <div class="fleet-entry"><span class="di">◆</span> All hubs <span style="margin-left:auto;font-family:var(--font-mono);font-size:.62rem;color:var(--muted)">fleet</span></div>
+
+        <div class="grp home">
+          <div class="glab"><span class="gname">Home</span><span class="gcount">· your fleet · 2</span></div>
+          <div class="hub"><span class="hname">agent-coord</span><span class="hbadge">3</span><span class="hdot ok"></span></div>
+          <div class="hub"><span class="hname">popos-ops</span><span class="hdot unk" title="sync unknown"></span></div>
+        </div>
+
+        <div class="grp shared">
+          <div class="glab"><span class="gname">Shared</span><span class="gcount">· co-owned · 2</span></div>
+          <div class="hub"><span class="hname">codeshrew/confer-lab</span><span class="hbadge">2</span><span class="hdot warn" title="1 stuck"></span></div>
+          <div class="hub illus"><span class="hname">acme/design-partners</span><span class="hdot ok"></span></div>
+        </div>
+
+        <div class="grp foreign">
+          <div class="glab"><span class="gname">Foreign</span><span class="gcount">· someone else's · 3</span></div>
+          <div class="hub foreign-row active"><span class="hname">codeshrew/confer-jarvis-orbit</span><span class="hbadge">1</span><span class="hdot crit" title="Work Orbit down"></span></div>
+          <div class="hub foreign-row illus"><span class="hname">lela/heliosphere</span><span class="hdot ok"></span></div>
+          <div class="hub foreign-row illus"><span class="hname">lela/atrium</span><span class="hdot unk"></span></div>
+        </div>
+      </nav>
+
+      <!-- main workspace, tinted foreign -->
+      <section class="main foreign">
+        <div class="mhead">
+          <div class="crumb"><span class="cur">codeshrew/confer-jarvis-orbit</span></div>
+          <span class="worldpill">◇ foreign hub</span>
+          <div class="mtabs"><span class="mt">Overview</span><span class="mt on">Chat</span><span class="mt">Board</span><span class="mt">Fleet</span><span class="mt">Code</span></div>
+        </div>
+        <div class="mbody">
+          <div class="note-caption">The whole workspace carries a magenta edge + "foreign hub" pill while you're here —
+            you can't mistake it for your own. Switch to a Home hub and it goes teal.</div>
+          <div class="fakecard">
+            <div class="fc-h"><div class="who"><span class="av" style="background:var(--magenta)">OR</span><b style="font-size:.9rem">orbit</b><span class="lab">Athena · 2m ago</span></div></div>
+            <div class="fc-rows"><div class="fc-line w90"></div><div class="fc-line w70"></div><div class="fc-line w40"></div></div>
+          </div>
+          <div class="fakecard">
+            <div class="fc-h"><div class="who"><span class="av" style="background:var(--green)">HE</span><b style="font-size:.9rem">Herald</b><span class="lab">Batman · 5m ago</span></div></div>
+            <div class="fc-rows"><div class="fc-line w70"></div><div class="fc-line w50"></div></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ⌘K palette -->
+  <div class="palette-wrap">
+    <p class="lab" style="text-align:center; color:var(--muted); margin-bottom:.8rem">…and at 20 hubs, ⌘K jumps you anywhere in two keystrokes</p>
+    <div class="palette">
+      <div class="pq"><span class="cur">⌘K</span><input value="orb" readonly aria-label="jump to hub"><span class="lab" style="color:var(--muted)">↑↓ to move · ↵ open</span></div>
+      <div class="presult">
+        <div class="pr sel"><span class="ptier foreign">foreign</span><span class="pname">codeshrew/confer-jarvis-<b>orb</b>it</span><span class="phint">Work Orbit down</span></div>
+        <div class="pr"><span class="ptier foreign">foreign</span><span class="pname">lela/heliosphere</span><span class="phint">healthy</span></div>
+        <div class="pr"><span class="ptier shared">shared</span><span class="pname">acme/design-partners</span><span class="phint">healthy</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- rationale -->
+  <div class="rationale">
+    <span class="lab">why this scales where the tab-row doesn't</span>
+    <h3>Four moves — each turning "how many hubs fit" into "no ceiling."</h3>
+    <div class="moves">
+      <div class="move">
+        <div class="k"><span class="g">▚</span><h4>Grouped by trust, always</h4></div>
+        <p>Hubs live under Home / Shared / Foreign headers, colored by tier. You never scan a flat list
+          wondering whose hub is whose — the structure carries the trust boundary the review said we
+          were flattening.</p>
+        <span class="src">law #2 · trust domains stay separate</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">⌖</span><h4>A stable home you reach by memory</h4></div>
+        <p>Each hub keeps its spot in the rail. After a day you reach for orbit without reading — muscle
+          memory, not a hunt. That's the Astrolabos law working on navigation: position encodes identity.</p>
+        <span class="src">Astrolabos · position = identity</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">◐</span><h4>The workspace tells you which world you're in</h4></div>
+        <p>The active hub's tier tints the whole workspace — a magenta edge + "foreign hub" pill on
+          someone else's turf, teal on your own. The orientation is ambient and constant, not a label you
+          have to go read.</p>
+        <span class="src">P1 · "keep me oriented"</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">⌘</span><h4>No ceiling: scroll, or ⌘K</h4></div>
+        <p>Twenty hubs? The rail scrolls, grouped; ⌘K jumps you anywhere in two keystrokes, filtered and
+          tier-labeled. The horizontal tab-row simply runs out of pixels — this doesn't.</p>
+        <span class="src">P1 · won't-scale, solved</span>
+      </div>
+    </div>
+
+    <div class="cmp">
+      <h4>The same fleet, two ways to move through it</h4>
+      <div class="cols">
+        <div>
+          <span class="lab was" style="color:var(--muted)">today · the tab-row</span>
+          <ul class="was">
+            <li>Horizontal tabs run out of room past ~4 hubs</li>
+            <li>Internal and foreign hubs sit side by side, undifferentiated</li>
+            <li>Nothing tells you which hub's world you're currently in</li>
+            <li>No fast jump — you hunt along the row</li>
+          </ul>
+        </div>
+        <div>
+          <span class="lab now" style="color:var(--muted)">this redesign · the trust-tiered rail</span>
+          <ul class="now">
+            <li>Vertical, grouped, scrollable — no hub ceiling</li>
+            <li>Home / Shared / Foreign, tier-colored, never confused</li>
+            <li>Workspace tinted by the active hub's tier — always oriented</li>
+            <li>⌘K jumps anywhere, filtered + tier-labeled</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <p class="note-caption" style="margin-top:1rem">Only <b>codeshrew/confer-lab</b> (shared) and <b>codeshrew/confer-jarvis-orbit</b> (foreign) are live today;
+      the others illustrate how the rail holds together as you federate with more collaborators. Health dots + tiers are real signals — a `null` would read <span class="mono">unknown</span> (grey), never a fake green.</p>
+  </div>
+
+  <footer class="mono">confer · hub navigation redesign concept · Tokyo Night · piece ② of the dashboard redesign · position=identity, trust stays separate, no fabricated state</footer>
+</div>

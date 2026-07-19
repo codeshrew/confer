@@ -177,7 +177,7 @@ pub fn state_lock(lock_path: &Path) -> Option<std::fs::File> {
     if let Some(parent) = lock_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(lock_path).ok()?;
+    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(lock_path).ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match file.try_lock_exclusive() {
@@ -202,7 +202,7 @@ pub fn try_update_lock() -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path).ok()?;
+    let file = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&path).ok()?;
     match file.try_lock_exclusive() {
         Ok(()) => Some(file),
         Err(_) => None,

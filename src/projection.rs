@@ -95,6 +95,17 @@ pub fn claimants(msgs: &[Message], req_id: &str) -> Vec<String> {
     seen
 }
 
+/// Who authored the request/thread-root a message is `of` (or that it directly is, when the
+/// message itself is the request). Used receiver-side to tell "a done/error ON MY request" (wake
+/// rung: alert/notice) apart from "the same event on a request I merely observe" (transactional) —
+/// design/51 §3. `of` is resolved to a full id at append time, so an exact id match is the normal
+/// path; `id_ref_matches` tolerates a legacy short-id reference.
+pub fn request_author<'a>(msgs: &'a [Message], req_id: &str) -> Option<&'a str> {
+    msgs.iter()
+        .find(|m| id_ref_matches(&m.front.id, req_id))
+        .map(|m| m.front.from.as_str())
+}
+
 /// A stale-open request is flagged for debt visibility.
 pub const STALE_SECS: i64 = 3 * 86400;
 
@@ -197,6 +208,166 @@ impl Board {
     }
 }
 
+/// Walk `of` → `reply_to` → `supersedes` back to the conversation HEAD (the request
+/// or original message a message hangs off), so a reverse-lookup hit answers with a
+/// THREAD, not a loose message id. Bounded against cycles / dangling parents.
+pub fn thread_root<'a>(msgs: &'a [Message], m: &'a Message) -> &'a Message {
+    let mut cur = m;
+    for _ in 0..64 {
+        let Some(pref) = cur
+            .front
+            .of
+            .as_deref()
+            .or(cur.front.reply_to.as_deref())
+            .or(cur.front.supersedes.as_deref())
+        else {
+            break;
+        };
+        match msgs.iter().find(|x| id_ref_matches(&x.front.id, pref)) {
+            Some(p) if !std::ptr::eq(p, cur) => cur = p,
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// design/45 §1.2/§1.7: the three tenses a `RefHit` can denote — read off the stored `patch`
+/// marker (a `confer-ref` embed is still `Ref`; only `patch: true` refs are `Patch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    Ref,
+    Patch,
+}
+
+/// One code reference as the reverse index sees it: the ref itself + the message and
+/// thread that made it (resolved to the thread root + its request status).
+#[derive(Debug, Clone)]
+pub struct RefHit {
+    pub repo: String,
+    pub path: String,
+    pub sha: String,
+    pub range: Option<[u64; 2]>,
+    pub content_hash: Option<String>,
+    /// design/45 §1.7: `Patch` for a `patch: true` ref, else `Ref` (a pointer or embed).
+    pub kind: RefKind,
+    /// design/45 §1.2: present only on a `Patch` hit — the blob OID the touched path would have
+    /// after applying (absent on a deletion).
+    pub result_hash: Option<String>,
+    /// design/44 §3 — temporal identity fields, carried through unchanged from the
+    /// stored `CodeRef` (no enrichment here; see `refcode`/`api::coderef_json` for the
+    /// legacy `commit_date` best-effort enrichment at read time).
+    pub ref_name: Option<String>,
+    pub ref_type: Option<String>,
+    pub commit_date: Option<String>,
+    pub dirty: bool,
+    pub untracked: bool,
+    pub base_ref: Option<String>,
+    pub fork_point: Option<String>,
+    pub msg_id: String,
+    pub from: String,
+    pub msg_type: String,
+    pub ts: String,
+    pub topic: Option<String>,
+    pub summary: String,
+    /// The conversation head this ref hangs off (walk of/reply_to/supersedes).
+    pub thread_root: String,
+    /// Folded status when the thread root is a request (OPEN|CLAIMED|…), else None.
+    pub request_status: Option<&'static str>,
+}
+
+/// Reverse index — `(repo, path) → refs`, folded from the log. The backbone of
+/// "given this code, what conversations reference it": a PURE projection (no server
+/// index), rebuilt per query, mirroring `Board::fold`. `git blame` is a later
+/// precision layer, never the discovery mechanism (design/40).
+#[derive(Debug, Clone, Default)]
+pub struct RefIndex {
+    pub by_file: BTreeMap<(String, String), Vec<RefHit>>,
+}
+
+/// One distinct referenced file, as `RefIndex::files()` summarizes it — the shape
+/// `/api/codefiles` hydrates the web Code view's file tree from.
+#[derive(Debug, Clone)]
+pub struct FileSummary {
+    pub repo: String,
+    pub path: String,
+    pub ref_count: usize,
+    /// Most recent referencing message's ts (RFC3339).
+    pub last_ts: String,
+}
+
+impl RefIndex {
+    pub fn fold(msgs: &[Message]) -> RefIndex {
+        let mut idx = RefIndex::default();
+        for m in msgs {
+            if m.front.refs.is_empty() {
+                continue;
+            }
+            let root = thread_root(msgs, m);
+            let rstatus =
+                (root.front.msg_type == "request").then(|| request_status(msgs, &root.front.id));
+            for r in &m.front.refs {
+                idx.by_file.entry((r.repo.clone(), r.path.clone())).or_default().push(RefHit {
+                    repo: r.repo.clone(),
+                    path: r.path.clone(),
+                    sha: r.sha.clone(),
+                    range: r.range,
+                    content_hash: r.content_hash.clone(),
+                    kind: if r.patch { RefKind::Patch } else { RefKind::Ref },
+                    result_hash: r.result_hash.clone(),
+                    ref_name: r.ref_name.clone(),
+                    ref_type: r.ref_type.clone(),
+                    commit_date: r.commit_date.clone(),
+                    dirty: r.dirty,
+                    untracked: r.untracked,
+                    base_ref: r.base_ref.clone(),
+                    fork_point: r.fork_point.clone(),
+                    msg_id: m.front.id.clone(),
+                    from: m.front.from.clone(),
+                    msg_type: m.front.msg_type.clone(),
+                    ts: m.front.ts.clone(),
+                    topic: m.front.topic.clone(),
+                    summary: m.summary_line(),
+                    thread_root: root.front.id.clone(),
+                    request_status: rstatus,
+                });
+            }
+        }
+        idx
+    }
+
+    /// One distinct `(repo, path)` this index has hits for — the "list all referenced
+    /// files" projection (`/api/codefiles`'s source), as opposed to `query`'s "who
+    /// references THIS file" lookup.
+    pub fn files(&self) -> Vec<FileSummary> {
+        self.by_file
+            .iter()
+            .map(|((repo, path), hits)| {
+                let last_ts = hits.iter().map(|h| h.ts.as_str()).max().unwrap_or("").to_string();
+                FileSummary { repo: repo.clone(), path: path.clone(), ref_count: hits.len(), last_ts }
+            })
+            .collect()
+    }
+
+    /// Hits matching `repo` (+ optional `path`), overlapping `range` when given. A hit
+    /// with no range matches any line query (a whole-file reference). Newest-first.
+    pub fn query(&self, repo: &str, path: Option<&str>, range: Option<[u64; 2]>) -> Vec<&RefHit> {
+        let overlaps = |hr: Option<[u64; 2]>| match (hr, range) {
+            (_, None) => true,
+            (None, Some(_)) => true,
+            (Some(h), Some(q)) => h[0] <= q[1] && q[0] <= h[1],
+        };
+        let mut out: Vec<&RefHit> = self
+            .by_file
+            .iter()
+            .filter(|((rp, pt), _)| rp == repo && path.is_none_or(|p| pt == p))
+            .flat_map(|(_, hits)| hits.iter())
+            .filter(|h| overlaps(h.range))
+            .collect();
+        out.sort_by(|a, b| b.msg_id.cmp(&a.msg_id));
+        out
+    }
+}
+
 /// One agent as the roster/presence fold sees it — resolved display fields so a
 /// renderer only formats. `presence` is carried raw so the renderer computes
 /// liveness against its own `now`.
@@ -205,6 +376,10 @@ pub struct AgentRow {
     pub id: String,
     pub display: String,
     pub desc: Option<String>,
+    /// The role card's full markdown BODY (`roster::Role.profile`) — the freeform profile
+    /// prose below the frontmatter, distinct from the one-line `desc`. `None` when the role has
+    /// no `.md` card or the card is frontmatter-only.
+    pub profile: Option<String>,
     pub expected_host: Option<String>,
     /// Most recent post ts (RFC3339) and the host it came from, if any.
     pub last_ts: Option<String>,
@@ -256,6 +431,7 @@ pub fn agents(
             AgentRow {
                 display: roster::display(roster, &id).to_string(),
                 desc: roster.get(&id).and_then(|r| r.desc.clone()),
+                profile: roster.get(&id).and_then(|r| r.profile.clone()),
                 expected_host: roster::host(roster, &id).map(str::to_string),
                 last_ts,
                 last_host,
@@ -293,6 +469,10 @@ pub struct Health {
     pub behind: Option<u64>,
     pub watch: Option<watchlock::WatchState>,
     pub disk_gb: Option<f64>,
+    /// Seconds since this clone's last successful fetch (`.git/FETCH_HEAD` mtime),
+    /// the honest "synced N ago" signal. `None` when never fetched / not statable —
+    /// the front-end must render "sync unknown", never a fabricated time.
+    pub last_fetch_secs: Option<u64>,
 }
 
 /// One line in the activity tail (raw ids; the renderer resolves display).
@@ -316,6 +496,11 @@ pub struct Snapshot {
     pub tail: Vec<TailItem>,
     pub health: Health,
     pub error: Option<String>,
+    /// The raw folded messages (chronological order not guaranteed here — callers that
+    /// need it sort by `front.id`). Retained so the API layer (`serve`'s `/api/*`) can
+    /// serve topics/messages/threads straight from this cached snapshot instead of a
+    /// fresh `store::all_messages` + re-fold per request.
+    pub messages: Vec<Message>,
 }
 
 impl Snapshot {
@@ -359,7 +544,7 @@ impl Snapshot {
             .collect();
 
         let health = probe_health(&dir);
-        Snapshot { dir, label, roster, board, agents, tail, health, error: None }
+        Snapshot { dir, label, roster, board, agents, tail, health, error: None, messages: msgs }
     }
 
     pub fn errored(dir: PathBuf, label: String, msg: &str) -> Snapshot {
@@ -370,14 +555,23 @@ impl Snapshot {
             board: Board::default(),
             agents: Vec::new(),
             tail: Vec::new(),
-            health: Health { role: String::new(), reachable: Some(false), pending: None, behind: None, watch: None, disk_gb: None },
+            health: Health { role: String::new(), reachable: Some(false), pending: None, behind: None, watch: None, disk_gb: None, last_fetch_secs: None },
             error: Some(msg.to_string()),
+            messages: Vec::new(),
         }
     }
 }
 
+/// Seconds since this clone's last successful fetch, from `.git/FETCH_HEAD`'s mtime.
+/// `None` when the file is absent (never fetched, or `.git` isn't a plain dir) or the
+/// clock skews backwards — an honest "unknown", never a fabricated zero.
+fn last_fetch_secs(dir: &Path) -> Option<u64> {
+    let mtime = std::fs::metadata(dir.join(".git").join("FETCH_HEAD")).ok()?.modified().ok()?;
+    std::time::SystemTime::now().duration_since(mtime).ok().map(|d| d.as_secs())
+}
+
 /// Local-only health probe (no network): role, pending/behind vs upstream, watch
-/// state, free disk. `reachable` stays `None` until a live worker sets it.
+/// state, free disk, last-fetch age. `reachable` stays `None` until a live worker sets it.
 pub fn probe_health(dir: &Path) -> Health {
     let role = config::resolve_role(None, dir).unwrap_or_default();
     let count = |range: &str| {
@@ -397,6 +591,7 @@ pub fn probe_health(dir: &Path) -> Health {
         behind: count("HEAD..@{u}"),
         watch,
         disk_gb: disk_free_gb(dir),
+        last_fetch_secs: last_fetch_secs(dir),
         role,
     }
 }
@@ -478,5 +673,182 @@ mod tests {
             m("01B", "bob", "done", Some("01A"), None, Some("duplicate")),
         ];
         assert_eq!(done_resolution(&msgs, "01A").as_deref(), Some("duplicate"));
+    }
+
+    #[test]
+    fn id_ref_matches_edge_cases() {
+        // exact match always wins.
+        assert!(id_ref_matches("01ABCDEFGH", "01ABCDEFGH"));
+        // a suffix of >= 8 chars matches (the short-id affordance).
+        assert!(id_ref_matches("01J8Z9K3QH7XABCDEF", "K3QH7XABCDEF"));
+        // a suffix shorter than 8 chars is rejected — too likely to collide.
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", "ABCDEF"));
+        // a LEADING prefix never matches (ULIDs share a timestamp prefix — prefix
+        // matching would conflate unrelated messages posted close in time).
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", "01J8Z9K3"));
+        // an empty reference never matches anything.
+        assert!(!id_ref_matches("01J8Z9K3QH7XABCDEF", ""));
+        assert!(!id_ref_matches("", ""));
+    }
+
+    #[test]
+    fn claimants_are_distinct_and_first_claim_ordered() {
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "claim", Some("01A"), None, None),
+            m("01C", "carol", "claim", Some("01A"), None, None),
+            // bob claims again (a re-claim after a blocked/unblocked cycle) — must not
+            // duplicate or reorder; bob stays head (first claimant = owner).
+            m("01D", "bob", "claim", Some("01A"), None, None),
+        ];
+        assert_eq!(claimants(&msgs, "01A"), vec!["bob".to_string(), "carol".to_string()]);
+    }
+
+    #[test]
+    fn request_deferred_fold_order_claim_clears_a_prior_defer() {
+        let mut req = m("01A", "alice", "request", None, None, None);
+        req.front.defer = false;
+        let msgs = vec![
+            req.clone(),
+            m("01B", "bob", "defer", Some("01A"), None, None),
+        ];
+        assert!(request_deferred(&msgs, &req), "an explicit defer event moves it to the backlog");
+
+        // a later claim commits to active work — clears the defer.
+        let msgs2 = vec![
+            req.clone(),
+            m("01B", "bob", "defer", Some("01A"), None, None),
+            m("01C", "carol", "claim", Some("01A"), None, None),
+        ];
+        assert!(!request_deferred(&msgs2, &req), "a claim after defer clears it (Phase 2 semantics)");
+
+        // sender-time defer facet (front.defer=true) also counts, with no events at all.
+        let mut sender_deferred = req.clone();
+        sender_deferred.front.defer = true;
+        assert!(request_deferred(&[sender_deferred.clone()], &sender_deferred));
+    }
+
+    #[test]
+    fn thread_root_walks_of_reply_to_supersedes_and_guards_cycles() {
+        // A plain chain: C -of-> B -of-> A (a request). Root is A.
+        let msgs = vec![
+            m("01A", "alice", "request", None, None, None),
+            m("01B", "bob", "note", Some("01A"), None, None),
+            m("01C", "carol", "note", Some("01B"), None, None),
+        ];
+        let leaf = msgs.iter().find(|x| x.front.id == "01C").unwrap();
+        assert_eq!(thread_root(&msgs, leaf).front.id, "01A");
+
+        // A dangling parent (of/reply_to points at an id that doesn't exist) stops at
+        // the message itself rather than panicking or looping.
+        let dangling = vec![m("01Z", "dave", "note", Some("nonexistent"), None, None)];
+        assert_eq!(thread_root(&dangling, &dangling[0]).front.id, "01Z");
+
+        // A 2-cycle (A points at B, B points at A) must terminate, not loop forever —
+        // the walk stops as soon as it would revisit the message it started the hop
+        // from (guarded by the bounded loop + ptr_eq check either way).
+        let mut a = m("01A", "alice", "note", Some("01B"), None, None);
+        let mut b = m("01B", "bob", "note", Some("01A"), None, None);
+        a.front.reply_to = None;
+        b.front.reply_to = None;
+        let cyc = vec![a, b];
+        let root = thread_root(&cyc, &cyc[0]);
+        assert!(root.front.id == "01A" || root.front.id == "01B", "must terminate on some node in the cycle: {}", root.front.id);
+    }
+
+    fn code_ref(repo: &str, path: &str, range: Option<[u64; 2]>) -> crate::schema::CodeRef {
+        crate::schema::CodeRef {
+            repo: repo.into(),
+            path: path.into(),
+            sha: "a".repeat(40),
+            range,
+            content_hash: None,
+            ref_name: None,
+            ref_type: None,
+            commit_date: None,
+            dirty: false,
+            untracked: false,
+            rev: None,
+            base_ref: None,
+            fork_point: None,
+            patch: false,
+            result_hash: None,
+        }
+    }
+
+    #[test]
+    fn ref_index_query_matches_whole_file_and_overlapping_ranges() {
+        let mut whole = m("01A", "alice", "note", None, None, None);
+        whole.front.refs = vec![code_ref("lib", "f.rs", None)];
+        let mut ranged = m("01B", "bob", "note", None, None, None);
+        ranged.front.refs = vec![code_ref("lib", "f.rs", Some([10, 20]))];
+        let msgs = vec![whole, ranged];
+        let idx = RefIndex::fold(&msgs);
+
+        // A whole-file ref (no range) matches ANY line query.
+        let hits_any_line = idx.query("lib", Some("f.rs"), Some([500, 500]));
+        assert!(hits_any_line.iter().any(|h| h.msg_id == "01A"), "whole-file ref should match any line");
+
+        // A query with no range at all matches every hit regardless of the hit's range.
+        let all = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(all.len(), 2);
+
+        // Overlap: query [15,16] intersects the ranged hit [10,20].
+        let overlap = idx.query("lib", Some("f.rs"), Some([15, 16]));
+        assert!(overlap.iter().any(|h| h.msg_id == "01B"));
+
+        // No overlap: query [30,40] misses the ranged hit entirely (but the whole-file
+        // ref still matches — it has no range to miss).
+        let miss = idx.query("lib", Some("f.rs"), Some([30, 40]));
+        assert!(miss.iter().any(|h| h.msg_id == "01A"));
+        assert!(!miss.iter().any(|h| h.msg_id == "01B"), "a disjoint range must not match: {miss:?}");
+
+        // A different repo/path never matches.
+        assert!(idx.query("other", Some("f.rs"), None).is_empty());
+        assert!(idx.query("lib", Some("nope.rs"), None).is_empty());
+
+        // Newest-first ordering (by msg_id descending).
+        let all_sorted = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(all_sorted[0].msg_id, "01B");
+    }
+
+    #[test]
+    fn ref_index_files_summarizes_distinct_targets() {
+        let mut a1 = m("01A", "alice", "note", None, None, None);
+        a1.front.ts = "2026-07-16T10:00:00Z".into();
+        a1.front.refs = vec![code_ref("lib", "f.rs", None)];
+        let mut a2 = m("01B", "bob", "note", None, None, None);
+        a2.front.ts = "2026-07-16T11:00:00Z".into();
+        a2.front.refs = vec![code_ref("lib", "f.rs", Some([10, 20]))];
+        let mut b1 = m("01C", "carol", "note", None, None, None);
+        b1.front.ts = "2026-07-16T09:00:00Z".into();
+        b1.front.refs = vec![code_ref("lib", "g.rs", None)];
+        let msgs = vec![a1, a2, b1];
+        let idx = RefIndex::fold(&msgs);
+
+        let mut files = idx.files();
+        files.sort_by(|x, y| y.ref_count.cmp(&x.ref_count).then(x.path.cmp(&y.path)));
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].repo, "lib");
+        assert_eq!(files[0].path, "f.rs");
+        assert_eq!(files[0].ref_count, 2);
+        assert_eq!(files[0].last_ts, "2026-07-16T11:00:00Z");
+        assert_eq!(files[1].path, "g.rs");
+        assert_eq!(files[1].ref_count, 1);
+        assert_eq!(files[1].last_ts, "2026-07-16T09:00:00Z");
+    }
+
+    #[test]
+    fn ref_index_fold_carries_thread_root_and_request_status() {
+        let req = m("01A", "alice", "request", None, None, None);
+        let mut reply = m("01B", "bob", "note", Some("01A"), None, None);
+        reply.front.refs = vec![code_ref("lib", "f.rs", Some([1, 2]))];
+        let claim = m("01C", "bob", "claim", Some("01A"), None, None);
+        let msgs = vec![req, reply, claim];
+        let idx = RefIndex::fold(&msgs);
+        let hits = idx.query("lib", Some("f.rs"), None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].thread_root, "01A");
+        assert_eq!(hits[0].request_status, Some("CLAIMED"));
     }
 }

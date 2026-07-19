@@ -1,0 +1,460 @@
+<title>confer · fleet overview — redesign</title>
+<style>
+  :root {
+    /* Tokyo Night — dark (default) */
+    --bg: #1a1b26; --bg-deep: #16161e; --surface: #1f2335; --surface-2: #24283b;
+    --highlight: #292e42; --border: #2b3050; --border-soft: #222741;
+    --fg: #c0caf5; --fg-dim: #a9b1d6; --muted: #565f89; --muted-2: #414868;
+    --teal: #2ac3de; --cyan: #7dcfff; --blue: #7aa2f7; --green: #9ece6a;
+    --yellow: #e0af68; --orange: #ff9e64; --red: #f7768e; --magenta: #bb9af7;
+    --accent: #7dcfff;
+    --home-frame: #2ac3de; --home-glow: rgba(42,195,222,.13);
+    --foreign-frame: #bb9af7; --foreign-glow: rgba(187,154,247,.10);
+    --card: var(--surface); --card-2: var(--surface-2);
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 8px 30px -12px rgba(0,0,0,.6);
+    --node-ring: rgba(192,202,245,.14);
+
+    --phi1: 1rem; --phi2: 1.618rem; --phi3: 2.618rem; --phi4: 4.236rem;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --maxw: 1080px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e1e2e7; --bg-deep: #d4d6de; --surface: #eaebef; --surface-2: #dcdee6;
+      --highlight: #cbcdd8; --border: #b3b7c7; --border-soft: #c6c9d6;
+      --fg: #2f3550; --fg-dim: #444b6b; --muted: #7a80a0; --muted-2: #9aa0bd;
+      --teal: #0f7c93; --cyan: #2959aa; --blue: #2e7de9; --green: #4f6d2e;
+      --yellow: #8a6c2f; --orange: #b15c00; --red: #d81f57; --magenta: #7b41d6;
+      --accent: #2959aa;
+      --home-frame: #0f7c93; --home-glow: rgba(15,124,147,.09);
+      --foreign-frame: #7b41d6; --foreign-glow: rgba(123,65,214,.07);
+      --shadow: 0 1px 0 rgba(255,255,255,.5), 0 10px 30px -14px rgba(40,50,90,.35);
+      --node-ring: rgba(47,53,80,.12);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1b26; --bg-deep: #16161e; --surface: #1f2335; --surface-2: #24283b;
+    --highlight: #292e42; --border: #2b3050; --border-soft: #222741;
+    --fg: #c0caf5; --fg-dim: #a9b1d6; --muted: #565f89; --muted-2: #414868;
+    --teal: #2ac3de; --cyan: #7dcfff; --green: #9ece6a; --yellow: #e0af68;
+    --red: #f7768e; --magenta: #bb9af7; --accent: #7dcfff;
+    --home-frame: #2ac3de; --home-glow: rgba(42,195,222,.13);
+    --foreign-frame: #bb9af7; --foreign-glow: rgba(187,154,247,.10);
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 8px 30px -12px rgba(0,0,0,.6);
+    --node-ring: rgba(192,202,245,.14);
+  }
+  :root[data-theme="light"] {
+    --bg: #e1e2e7; --bg-deep: #d4d6de; --surface: #eaebef; --surface-2: #dcdee6;
+    --highlight: #cbcdd8; --border: #b3b7c7; --border-soft: #c6c9d6;
+    --fg: #2f3550; --fg-dim: #444b6b; --muted: #7a80a0; --muted-2: #9aa0bd;
+    --teal: #0f7c93; --cyan: #2959aa; --green: #4f6d2e; --yellow: #8a6c2f;
+    --red: #d81f57; --magenta: #7b41d6; --accent: #2959aa;
+    --home-frame: #0f7c93; --home-glow: rgba(15,124,147,.09);
+    --foreign-frame: #7b41d6; --foreign-glow: rgba(123,65,214,.07);
+    --shadow: 0 1px 0 rgba(255,255,255,.5), 0 10px 30px -14px rgba(40,50,90,.35);
+    --node-ring: rgba(47,53,80,.12);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-sans);
+    line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: var(--phi3) var(--phi2) var(--phi4); }
+
+  .mono { font-family: var(--font-mono); }
+  .lab { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- page intro ---- */
+  .intro { margin-bottom: var(--phi3); }
+  .intro .eyebrow { color: var(--accent); }
+  .intro h1 { font-size: 1.7rem; font-weight: 650; letter-spacing: -.01em; margin: .5rem 0 .4rem;
+    text-wrap: balance; }
+  .intro p { color: var(--fg-dim); max-width: 62ch; margin: 0; font-size: .98rem; }
+  .intro .tag { display:inline-block; margin-top: var(--phi1); font-size:.75rem; color: var(--muted);
+    border:1px solid var(--border); border-radius: 999px; padding: .2rem .7rem; }
+
+  /* ---- the mockup frame ---- */
+  .screen { background: var(--bg-deep); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); overflow: hidden; }
+  .chrome { display:flex; align-items:center; gap:.5rem; padding: .6rem .9rem; background: var(--surface);
+    border-bottom: 1px solid var(--border); }
+  .chrome .dot { width:.62rem; height:.62rem; border-radius:50%; background: var(--muted-2); opacity:.6; }
+  .chrome .url { margin-left:.4rem; font-family: var(--font-mono); font-size:.74rem; color: var(--muted);
+    background: var(--bg-deep); padding:.18rem .6rem; border-radius:6px; border:1px solid var(--border-soft); }
+  .stage { padding: var(--phi2); background:
+    radial-gradient(120% 90% at 15% -10%, var(--home-glow), transparent 60%),
+    radial-gradient(120% 90% at 90% 120%, var(--foreign-glow), transparent 55%); }
+
+  /* ---- honesty band ---- */
+  .band { display:flex; align-items:flex-start; justify-content:space-between; gap: var(--phi2);
+    padding-bottom: var(--phi2); border-bottom: 1px dashed var(--border); margin-bottom: var(--phi2); }
+  .band .brand { display:flex; align-items:center; gap:.6rem; }
+  .band .mark { width:1.8rem; height:1.8rem; border-radius:7px; display:grid; place-items:center;
+    background: linear-gradient(150deg, var(--teal), var(--blue)); color:#0b0e17; font-weight:800;
+    font-family: var(--font-mono); font-size:1rem; }
+  .band h2 { margin:0; font-size:1.02rem; font-weight:640; letter-spacing:-.01em; }
+  .band .verdict { display:flex; flex-direction:column; align-items:flex-end; gap:.15rem; text-align:right; }
+  .verdict .head { font-size:.98rem; font-weight:640; }
+  .verdict .head .ok { color: var(--green); }
+  .verdict .sub { font-size:.78rem; color: var(--fg-dim); }
+  .verdict .sub b.warn { color: var(--yellow); font-weight:640; }
+  .verdict .sub b.crit { color: var(--red); font-weight:640; }
+  .freshness { display:flex; gap:.9rem; margin-top:.45rem; }
+  .freshness .fx { display:flex; align-items:center; gap:.35rem; font-size:.72rem; color: var(--muted); }
+  .freshness .fx .pip { width:.5rem; height:.5rem; border-radius:50%; background: var(--green); }
+  .freshness .fx.warn .pip { background: var(--yellow); }
+
+  /* ---- the fleet map ---- */
+  .map { display:flex; flex-direction:column; gap: var(--phi2); }
+  .domain { border-radius: 12px; padding: var(--phi2) var(--phi2) 1.15rem; position:relative;
+    background: var(--card); }
+  .domain.home { border:1.5px solid var(--home-frame); box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+  .domain.foreign { border:1.5px dashed var(--foreign-frame); background:
+    repeating-linear-gradient(135deg, transparent, transparent 13px, rgba(187,154,247,.03) 13px, rgba(187,154,247,.03) 14px), var(--card); }
+  .domain .dhead { display:flex; align-items:baseline; justify-content:space-between; gap:.6rem;
+    margin-bottom: 1.1rem; flex-wrap:wrap; }
+  .domain .dtitle { display:flex; align-items:center; gap:.55rem; }
+  .tier { font-family: var(--font-mono); font-size:.6rem; letter-spacing:.14em; text-transform:uppercase;
+    padding:.18rem .5rem; border-radius:5px; font-weight:700; }
+  .tier.home { color: var(--home-frame); background: color-mix(in srgb, var(--home-frame) 15%, transparent);
+    border:1px solid color-mix(in srgb, var(--home-frame) 40%, transparent); }
+  .tier.foreign { color: var(--foreign-frame); background: color-mix(in srgb, var(--foreign-frame) 14%, transparent);
+    border:1px solid color-mix(in srgb, var(--foreign-frame) 40%, transparent); }
+  .domain .dname { font-family: var(--font-mono); font-size:.92rem; color: var(--fg); font-weight:600; }
+  .domain .dmeta { font-size:.76rem; color: var(--muted); }
+  .domain .dsync { font-size:.72rem; color: var(--muted); display:flex; align-items:center; gap:.35rem; }
+  .domain .dsync .pip { width:.45rem;height:.45rem;border-radius:50%;background:var(--green); }
+
+  /* agent nodes */
+  .agents { display:flex; flex-wrap:wrap; gap: var(--phi1); }
+  .node { flex: 1 1 160px; min-width: 150px; max-width: 220px; background: var(--card-2);
+    border:1px solid var(--border); border-radius: 10px; padding: .8rem .85rem; position:relative;
+    transition: transform .15s ease, border-color .15s ease; }
+  .node:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .node .top { display:flex; align-items:center; gap:.55rem; margin-bottom:.5rem; }
+  .avatar { width:2rem; height:2rem; border-radius:8px; display:grid; place-items:center;
+    font-family: var(--font-mono); font-size:.72rem; font-weight:700; color:#0b0e17; position:relative; flex:none; }
+  .avatar::after { content:""; position:absolute; inset:-4px; border-radius:11px; border:2px solid transparent; }
+  /* liveness in the appearance channel */
+  .node.live .avatar { box-shadow: 0 0 0 2px var(--bg-deep), 0 0 14px -1px currentColor; animation: breathe 3.4s ease-in-out infinite; }
+  .node.down { opacity:.62; }
+  .node.down .avatar { background: transparent !important; color: var(--muted) !important;
+    border:1.5px dashed var(--muted-2); box-shadow:none; }
+  .node .who { min-width:0; }
+  .node .nm { font-weight:640; font-size:.9rem; line-height:1.15; }
+  .node .host { font-family: var(--font-mono); font-size:.68rem; color: var(--muted); }
+  .node .state { display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; margin-top:.15rem; }
+  .chip { font-family: var(--font-mono); font-size:.64rem; padding:.12rem .4rem; border-radius:4px;
+    display:inline-flex; align-items:center; gap:.25rem; border:1px solid var(--border); color: var(--fg-dim); }
+  .chip.signed { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+  .chip.live { color: var(--green); }
+  .chip.stale { color: var(--yellow); }
+  .chip.down { color: var(--muted); }
+  .chip.wip { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 40%, transparent);
+    background: color-mix(in srgb, var(--cyan) 12%, transparent); }
+  .liveglyph { font-size:.7rem; }
+  .live .liveglyph { color: var(--green); }
+  .stale .liveglyph { color: var(--yellow); }
+
+  /* work-in-flight rail inside a domain */
+  .flight { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--border-soft);
+    display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+  .flight .lab { margin-right:.2rem; }
+  .work { font-family: var(--font-mono); font-size:.72rem; padding:.25rem .55rem; border-radius:6px;
+    border:1px solid var(--border); color: var(--fg-dim); display:inline-flex; gap:.4rem; align-items:center; }
+  .work .id { color: var(--muted); }
+  .work.wip { border-color: color-mix(in srgb, var(--cyan) 45%, transparent); color: var(--cyan); }
+  .work.stuck { border-color: color-mix(in srgb, var(--yellow) 50%, transparent); color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 9%, transparent); }
+  .work.stuck::before { content:"▲"; }
+  .quiet { font-size:.76rem; color: var(--muted); font-style:italic; }
+
+  /* ---- attention overlay ---- */
+  .attn { margin-top: var(--phi2); border-top: 1px dashed var(--border); padding-top: var(--phi2); }
+  .attn .ahead { display:flex; align-items:baseline; gap:.6rem; margin-bottom:.8rem; }
+  .attn .ahead .lab { color: var(--fg-dim); }
+  .attn .n { font-family: var(--font-mono); font-size:.72rem; color: var(--red); font-weight:700; }
+  .attn .hint { font-size:.74rem; color: var(--muted); margin-left:auto; }
+  .arow { display:flex; align-items:center; gap:.75rem; padding:.7rem .85rem; border-radius:9px;
+    background: var(--card); border:1px solid var(--border); margin-bottom:.5rem; }
+  .arow .sev { font-family:var(--font-mono); font-weight:700; flex:none; width:1.1rem; text-align:center; }
+  .arow.warn { border-left:3px solid var(--yellow); } .arow.warn .sev { color: var(--yellow); }
+  .arow.crit { border-left:3px solid var(--red); } .arow.crit .sev { color: var(--red); }
+  .arow .body { min-width:0; }
+  .arow .verb { font-size:.9rem; font-weight:600; }
+  .arow .ctx { font-size:.75rem; color: var(--muted); }
+  .arow .ctx .anchor { color: var(--foreign-frame); font-family:var(--font-mono); }
+  .arow .ctx .anchor.home { color: var(--home-frame); }
+  .arow .act { margin-left:auto; display:flex; gap:.4rem; flex:none; }
+  .btn { font-family: var(--font-mono); font-size:.7rem; padding:.3rem .6rem; border-radius:6px;
+    border:1px solid var(--border); background: var(--surface-2); color: var(--fg-dim); cursor:pointer;
+    transition: border-color .15s, color .15s; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* ---- rationale ---- */
+  .rationale { margin-top: var(--phi4); }
+  .rationale > .lab { display:block; margin-bottom:.5rem; color: var(--accent); }
+  .rationale h3 { font-size:1.3rem; font-weight:640; margin:.2rem 0 var(--phi2); letter-spacing:-.01em; text-wrap:balance; }
+  .moves { display:grid; grid-template-columns: repeat(auto-fit, minmax(250px,1fr)); gap: var(--phi1); }
+  .move { background: var(--surface); border:1px solid var(--border); border-radius:11px; padding: 1.15rem 1.2rem; }
+  .move .k { display:flex; align-items:center; gap:.5rem; margin-bottom:.5rem; }
+  .move .k .g { font-family:var(--font-mono); font-size:.8rem; color: var(--accent); }
+  .move h4 { margin:0; font-size:.98rem; font-weight:640; }
+  .move p { margin:.4rem 0 0; font-size:.86rem; color: var(--fg-dim); }
+  .move .src { display:inline-block; margin-top:.7rem; font-family:var(--font-mono); font-size:.66rem;
+    color: var(--muted); border:1px solid var(--border); border-radius:5px; padding:.15rem .45rem; }
+  .before { margin-top: var(--phi3); background: var(--surface); border:1px solid var(--border);
+    border-radius:11px; padding: var(--phi2); }
+  .before h4 { margin:0 0 .8rem; font-size:.95rem; }
+  .cmp { display:grid; grid-template-columns:1fr 1fr; gap: var(--phi2); }
+  .cmp .col .lab { display:block; margin-bottom:.5rem; }
+  .cmp ul { margin:0; padding-left:1.1rem; font-size:.85rem; color: var(--fg-dim); }
+  .cmp ul li { margin:.3rem 0; }
+  .cmp .was li::marker { content:"× "; color: var(--red); }
+  .cmp .now li::marker { content:"→ "; color: var(--green); }
+  footer { margin-top: var(--phi3); font-size:.76rem; color: var(--muted); text-align:center;
+    border-top:1px solid var(--border); padding-top: var(--phi2); }
+
+  @keyframes breathe { 0%,100%{ box-shadow: 0 0 0 2px var(--bg-deep), 0 0 10px -2px currentColor; }
+    50%{ box-shadow: 0 0 0 2px var(--bg-deep), 0 0 18px 1px currentColor; } }
+  @media (prefers-reduced-motion: reduce) { .node.live .avatar { animation:none; } }
+  @media (max-width: 680px) { .cmp { grid-template-columns:1fr; } .band { flex-direction:column; }
+    .verdict { align-items:flex-start; text-align:left; } }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <span class="lab eyebrow">confer · dashboard redesign</span>
+    <h1>The fleet is a place, not a list.</h1>
+    <p>Today's Overview ranks every alert into one flat column. But a fleet has structure — hubs you
+      trust differently, agents that live on fixed machines, work that flows between them. This redesign
+      makes that structure the interface: <b>position tells you who and where, appearance tells you how
+      they're doing</b>, and the "what needs you" queue rides on top of the map instead of replacing it.</p>
+    <span class="tag mono">mockup · live fleet state · 2026-07-18</span>
+  </div>
+
+  <!-- ================= THE MOCKUP ================= -->
+  <div class="screen">
+    <div class="chrome">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="url">127.0.0.1:8422 · overview</span>
+    </div>
+    <div class="stage">
+
+      <!-- honesty band: verdict + per-hub sync freshness -->
+      <div class="band">
+        <div>
+          <div class="brand">
+            <span class="mark">c</span>
+            <h2>confer · fleet</h2>
+          </div>
+          <div class="freshness">
+            <span class="fx"><span class="pip"></span> confer-lab synced <b class="mono">12s</b> ago</span>
+            <span class="fx"><span class="pip"></span> orbit synced <b class="mono">1m</b> ago</span>
+          </div>
+        </div>
+        <div class="verdict">
+          <div class="head"><span class="ok">✓ Steady</span></div>
+          <div class="sub"><b class="warn">1 thing needs you</b> · <b class="warn">1 agent down</b></div>
+          <div class="sub mono" style="font-size:.7rem;color:var(--muted)">5 agents · 2 hubs · 3 open · 1 in&nbsp;progress</div>
+        </div>
+      </div>
+
+      <!-- the fleet map -->
+      <div class="map">
+
+        <!-- HOME / internal domain -->
+        <section class="domain home" aria-label="internal hub confer-lab">
+          <div class="dhead">
+            <div class="dtitle">
+              <span class="tier home">home</span>
+              <span class="dname">codeshrew/confer-lab</span>
+              <span class="dmeta">· internal · 2 agents</span>
+            </div>
+            <span class="dsync"><span class="pip"></span> synced 12s ago · in sync</span>
+          </div>
+          <div class="agents">
+            <div class="node live" style="color:var(--cyan)">
+              <div class="top">
+                <span class="avatar" style="background:var(--cyan)">JA</span>
+                <span class="who"><div class="nm">Jarvis</div><div class="host">pop-os</div></span>
+              </div>
+              <div class="state">
+                <span class="chip signed">✓ signed</span>
+                <span class="chip live"><span class="liveglyph">⬤</span> live</span>
+                <span class="chip wip">● 1 WIP</span>
+              </div>
+            </div>
+            <div class="node live" style="color:var(--green)">
+              <div class="top">
+                <span class="avatar" style="background:var(--green)">HE</span>
+                <span class="who"><div class="nm">Herald</div><div class="host">Batman</div></span>
+              </div>
+              <div class="state">
+                <span class="chip signed">✓ signed</span>
+                <span class="chip live"><span class="liveglyph">⬤</span> live</span>
+              </div>
+            </div>
+          </div>
+          <div class="flight">
+            <span class="lab">work in flight</span>
+            <span class="work wip"><span class="id">98XCNF</span> 0.8.0 review · Jarvis</span>
+            <span class="work stuck"><span class="id">780AGN</span> docs fix · unclaimed 3d</span>
+            <span class="work"><span class="id">E7AP6K</span> each_key bug → Herald</span>
+          </div>
+        </section>
+
+        <!-- FOREIGN / external domain -->
+        <section class="domain foreign" aria-label="external hub confer-jarvis-orbit">
+          <div class="dhead">
+            <div class="dtitle">
+              <span class="tier foreign">foreign</span>
+              <span class="dname">codeshrew/confer-jarvis-orbit</span>
+              <span class="dmeta">· Lela's fleet · 4 agents</span>
+            </div>
+            <span class="dsync"><span class="pip"></span> synced 1m ago · quiet</span>
+          </div>
+          <div class="agents">
+            <div class="node live" style="color:var(--magenta)">
+              <div class="top">
+                <span class="avatar" style="background:var(--magenta)">OR</span>
+                <span class="who"><div class="nm">orbit</div><div class="host">Athena</div></span>
+              </div>
+              <div class="state"><span class="chip signed">✓ signed</span><span class="chip live"><span class="liveglyph">⬤</span> live</span></div>
+            </div>
+            <div class="node live" style="color:var(--cyan)">
+              <div class="top">
+                <span class="avatar" style="background:var(--cyan)">JA</span>
+                <span class="who"><div class="nm">Jarvis</div><div class="host">pop-os</div></span>
+              </div>
+              <div class="state"><span class="chip signed">✓ signed</span><span class="chip live"><span class="liveglyph">⬤</span> live</span></div>
+            </div>
+            <div class="node live" style="color:var(--green)">
+              <div class="top">
+                <span class="avatar" style="background:var(--green)">HE</span>
+                <span class="who"><div class="nm">Herald</div><div class="host">Batman</div></span>
+              </div>
+              <div class="state"><span class="chip signed">✓ signed</span><span class="chip live"><span class="liveglyph">⬤</span> live</span></div>
+            </div>
+            <div class="node down">
+              <div class="top">
+                <span class="avatar">WO</span>
+                <span class="who"><div class="nm">Work Orbit</div><div class="host">Hestia · down</div></span>
+              </div>
+              <div class="state"><span class="chip signed">✓ signed</span><span class="chip down"><span class="liveglyph">○</span> down 2h</span></div>
+            </div>
+          </div>
+          <div class="flight"><span class="lab">work in flight</span><span class="quiet">quiet — no open requests</span></div>
+        </section>
+      </div>
+
+      <!-- attention overlay: derived, anchored to the map above -->
+      <div class="attn">
+        <div class="ahead">
+          <span class="lab">needs you</span><span class="n">2</span>
+          <span class="hint">↑ each item points back to where it lives on the map</span>
+        </div>
+        <div class="arow warn">
+          <span class="sev">▲</span>
+          <div class="body">
+            <div class="verb">Work Orbit is down — restart the session on Hestia</div>
+            <div class="ctx">on <span class="anchor">foreign · orbit</span> · down 2h · signed, so it's a host issue not a trust one</div>
+          </div>
+          <div class="act"><button class="btn">copy orbit-work</button></div>
+        </div>
+        <div class="arow warn">
+          <span class="sev">▲</span>
+          <div class="body">
+            <div class="verb">Nudge Herald — a request has sat unclaimed 3 days</div>
+            <div class="ctx"><span class="mono">780AGN</span> docs fix · on <span class="anchor home">home · confer-lab</span> · addressed to Herald, no claimant</div>
+          </div>
+          <div class="act"><button class="btn">copy gitconv</button><button class="btn">open thread ›</button></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <!-- ================= /MOCKUP ================= -->
+
+  <!-- rationale -->
+  <div class="rationale">
+    <span class="lab">why this is better</span>
+    <h3>Five moves, each fixing something the flat list gets wrong.</h3>
+    <div class="moves">
+      <div class="move">
+        <div class="k"><span class="g">⬤ / ○</span><h4>Appearance encodes state</h4></div>
+        <p>A live agent breathes with a soft glow; a down one goes hollow and dim. Health is a
+          gestalt you feel across the map — not a number you parse. Work Orbit being out reads
+          instantly, before you read a word.</p>
+        <span class="src">Astrolabos · position=identity, appearance=state</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">▚</span><h4>Trust domains stay separate</h4></div>
+        <p>Your internal hub gets a solid teal frame; a foreign hub gets a dashed magenta one and
+          can never mint a top-priority alarm without local corroboration. The review's #1 finding —
+          the queue flattened trust — designed away.</p>
+        <span class="src">review BX4VP1 · trust-tier as first-class</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">◷</span><h4>"All clear" can't be a stale lie</h4></div>
+        <p>Every hub shows when it last <i>synced</i>, not just when the page last polled. A calm map
+          backed by three-hour-old data now says so out loud — the zeroth signal of a triage view is
+          whether you can trust the view.</p>
+        <span class="src">review BX4VP1 · sync-freshness in the masthead</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">▲</span><h4>Attention rides on the map</h4></div>
+        <p>The "who + verb + copy-the-name" triage — the best part of today's design — is kept, but
+          each item now points back to <i>where it lives</i>: a down node, a stuck request between two
+          agents. You act, then you see the place you acted on.</p>
+        <span class="src">design/47 · the good part, anchored</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">⌄</span><h4>One honest glance, then depth</h4></div>
+        <p>Level one is the whole fleet in a screen. A hub opens to its board; an agent opens to its
+          threads. No fabricated "seen" dots, no synthesized rosters — every mark on this map is a
+          real fact folded from the log.</p>
+        <span class="src">Lacuna · layered complexity · empty-state contract</span>
+      </div>
+      <div class="move">
+        <div class="k"><span class="g">●</span><h4>Work has a home</h4></div>
+        <p>Requests aren't abstract rows — they sit inside the hub they belong to, colored by state:
+          in-flight (cyan), stuck (amber ▲), plain. WIP shows on the agent carrying it, so "who's on
+          what" is visible instead of derived.</p>
+        <span class="src">confer board · claim/WIP made spatial</span>
+      </div>
+    </div>
+
+    <div class="before">
+      <h4>The same fleet, two ways of seeing it</h4>
+      <div class="cmp">
+        <div class="col">
+          <span class="lab was">today · the flat list</span>
+          <ul class="was">
+            <li>One ranked column; internal and foreign alerts interleaved</li>
+            <li>"updated 4s ago" = poll age; stale hub data reads as calm</li>
+            <li>Fleet health is a text roster you scan line by line</li>
+            <li>A request is a row detached from who owns it or where it lives</li>
+            <li>"seen" dots and rosters are synthesized filler</li>
+          </ul>
+        </div>
+        <div class="col">
+          <span class="lab now">this redesign · the fleet map</span>
+          <ul class="now">
+            <li>Two trust-tiered domains you can never confuse</li>
+            <li>Per-hub sync freshness — "all clear" is verifiable</li>
+            <li>Health is a glance: glows, hollows, one amber node</li>
+            <li>Work sits in its hub, on its agent, colored by state</li>
+            <li>Every mark is a real fact folded from the log</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mono">
+    confer fleet overview — redesign concept · Tokyo Night · rendered with live state from confer-lab + confer-jarvis-orbit
+  </footer>
+</div>
