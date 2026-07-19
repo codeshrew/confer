@@ -859,6 +859,79 @@ pub(crate) fn cmd_lifecycle(
     a: LifecycleArgs,
     resolution: Option<String>,
 ) -> Result<()> {
+    // Auto-claim on resolve: the board's ownership state must be truthful by
+    // construction. `done`/`error`/`blocked` are how work LEAVES the board, and an
+    // unclaimed (or self-unclaimed) request that just got resolved is a lie about
+    // who worked it. If the RESOLVING role has no claim of its own on this request
+    // yet, fire a real `claim` — same msg_type, same append path as a hand-run
+    // `{CONFER} claim --of <id>` — attributed to self, BEFORE the resolve lands.
+    //
+    // This covers both the common case (nobody has claimed it) and the handoff case
+    // (a DIFFERENT role holds the claim): `claimants()` is a list, not a single
+    // owner slot — head = owner, tail = contested/handoff — so adding the resolver
+    // as an additional claimant doesn't steal or overwrite the existing claim's
+    // attribution, it just records (truthfully) that the resolver also touched it.
+    // Never claim on behalf of anyone but self, and never double-claim if the
+    // resolver already has one.
+    if matches!(msg_type, "done" | "error" | "blocked") && !a.of.trim().is_empty() {
+        let root = config::repo_root()?;
+        let role = config::resolve_role(a.from.clone(), &root)?;
+        let all = store::all_messages(&root)?;
+        let query = a.of.trim();
+        let canonical = match resolve_unique(&all, query) {
+            Ok(id) => Some(id.to_string()),
+            Err(_) if is_full_ulid(query) => Some(query.to_string()),
+            // Unresolvable — let cmd_append's own --of resolution below produce the
+            // real, user-facing error; don't duplicate that validation here.
+            Err(_) => None,
+        };
+        if let Some(req_id) = canonical {
+            let prior = claimants(&all, &req_id);
+            if !prior.iter().any(|c| c == &role) {
+                cmd_append(AppendArgs {
+                    msg_type: "claim".to_string(),
+                    text: None,
+                    body_file: None,
+                    // Same default a hand-run `{CONFER} claim --of <id>` gets (cmd_lifecycle's
+                    // own "claiming" default below) — no editorializing; the "why" belongs on
+                    // the done/error/blocked --summary, not the auto-claim.
+                    summary: Some("claiming".to_string()),
+                    summary_file: None,
+                    to: Vec::new(),
+                    cc: Vec::new(),
+                    priority: None,
+                    topic: None,
+                    reply_to: None,
+                    of: Some(req_id.clone()),
+                    supersedes: None,
+                    from: a.from.clone(),
+                    src: None,
+                    refs: Vec::new(),
+                    allow_empty_body: true,
+                    resolution: None,
+                    defer: false,
+                    allow_secret: false,
+                    ref_from: None,
+                    allow_dirty: false,
+                    patch: None,
+                    patch_repo: None,
+                    allow_large_patch: false,
+                })?;
+                // Keep the notice truthful: "was unclaimed" only when nobody held
+                // it; in the handoff case name the prior owner (we add our own
+                // claim alongside theirs, never overwriting their attribution).
+                let was = match prior.first() {
+                    None => "was unclaimed".to_string(),
+                    Some(owner) => format!("was claimed by {owner}"),
+                };
+                eprintln!(
+                    "confer: auto-claimed {} ({}) as part of resolving",
+                    short_id(&req_id),
+                    was
+                );
+            }
+        }
+    }
     let default_summary = match (msg_type, resolution.as_deref()) {
         ("done", Some(r)) => r.to_string(),
         ("done", None) => "done".to_string(),

@@ -3379,6 +3379,151 @@ fn e2e_lifecycle_verbs_accept_append_addressing() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-claim on resolve: `done`/`error`/`blocked` must leave the board's
+// ownership state truthful — if the RESOLVING role has no claim of its own on
+// the request, a real `claim` (self) is auto-emitted BEFORE the resolve lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Read a thread's messages as (type, from) pairs, oldest-first (mirrors the file's
+/// existing `thread --json` usage — NDJSON of `to_json` objects).
+fn thread_events(c: &Clone, id: &str) -> Vec<(String, String)> {
+    let o = c.confer(&["thread", id, "--json"]);
+    assert!(ok(&o), "thread --json: {}", err(&o));
+    out(&o)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("thread --json line must parse ({e}): {l}"));
+            (
+                v["type"].as_str().unwrap().to_string(),
+                v["from"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn done_on_unclaimed_request_auto_claims_then_closes() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed") && err(&d).contains("was unclaimed"),
+        "a transparent auto-claim notice must be printed: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    assert_eq!(
+        events,
+        vec![
+            ("request".to_string(), "alpha".to_string()),
+            ("claim".to_string(), "beta".to_string()),
+            ("done".to_string(), "beta".to_string()),
+        ],
+        "the auto-claim (beta) must land BEFORE the done, in order: {events:?}"
+    );
+}
+
+#[test]
+fn done_after_a_manual_claim_never_double_claims() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    a.pull();
+    let d = b.confer(&["done", "--of", &r, "--summary", "did it"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        !err(&d).contains("auto-claimed"),
+        "must NOT auto-claim when the resolver already holds a claim: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<_> = events.iter().filter(|(t, _)| t == "claim").collect();
+    assert_eq!(
+        claims,
+        vec![&("claim".to_string(), "beta".to_string())],
+        "exactly one claim message, never a duplicate: {events:?}"
+    );
+}
+
+#[test]
+fn auto_claim_is_attributed_to_the_resolver_never_another_role() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma"); // present in the hub, uninvolved — must never appear as the claimant
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["done", "--of", &r, "--summary", "did it"])));
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(claims, vec!["beta"], "the auto-claim's author must be exactly the resolver (beta): {events:?}");
+    assert!(!claims.contains(&"alpha"), "must never fabricate a claim on the requester's behalf");
+    assert!(!claims.contains(&"gamma"), "must never fabricate a claim on an uninvolved role's behalf");
+    let _ = g; // only needed to exist in the hub, never acted on
+}
+
+/// Contested/handoff case: gamma resolves a request beta already claimed. gamma
+/// has no claim of its own, so it auto-claims too — `claimants()` is a list
+/// (head = owner, tail = contested), so gamma joining as a second claimant
+/// doesn't steal or overwrite beta's (first/owner) attribution; it just
+/// truthfully records that gamma also touched the request while closing it.
+#[test]
+fn done_by_a_different_role_adds_its_own_claim_without_overwriting_the_existing_one() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])));
+    g.pull();
+    let d = g.confer(&["done", "--of", &r, "--summary", "cleaning up for beta"]);
+    assert!(ok(&d), "done: {}", err(&d));
+    assert!(
+        err(&d).contains("auto-claimed"),
+        "gamma has no claim of its own on this request, so it must auto-claim too: {}",
+        err(&d)
+    );
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events
+        .iter()
+        .filter(|(t, _)| t == "claim")
+        .map(|(_, from)| from.as_str())
+        .collect();
+    assert_eq!(
+        claims,
+        vec!["beta", "gamma"],
+        "beta's original claim stays first/owner; gamma is appended as a second, \
+         contested claimant rather than overwriting beta's attribution: {events:?}"
+    );
+}
+
 #[test]
 fn e2e_supersede_removes_old_from_active_board() {
     let hub = new_hub();
