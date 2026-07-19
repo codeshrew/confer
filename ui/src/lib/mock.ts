@@ -1053,6 +1053,13 @@ export const mockCodeFiles: CodeFile[] = [
   { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', refCount: 2, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
   { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 1, mapped: true, lastTs: '2026-07-17T14:52:00Z' },
   { repo: 'wealdlore', path: 'studio-markup/citations.py', refCount: 1, mapped: false, lastTs: '2026-07-10T09:00:00Z' },
+  // Piece 11 Phase 4 — a MAPPED file with genuinely ZERO conversations
+  // referencing it (no mockRefHits entry has this path). Exercises the
+  // real "you're on HEAD, nothing pinned" state — `codeSha` falls back to
+  // the literal `'HEAD'` (RefHit.pickSha's own empty-hits case), so this is
+  // the only fixture that naturally drives the rev chip's green HEAD state
+  // rather than the amber pinned one every other mapped file exercises.
+  { repo: 'wealdlore', path: 'Sources/Reader/EmptyView.swift', refCount: 0, mapped: true, lastTs: '2026-06-01T00:00:00Z' },
   // piece 7 (ui/REDESIGN.md) — a genuine SHADOW repo: --ref'd by real
   // messages but never registered in this hub's inventory (mockRepos has
   // no 'openjarvis' entry). Closes the loop on the Board's own

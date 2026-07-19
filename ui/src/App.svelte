@@ -646,19 +646,25 @@
   // (walking the actual compacted structure, not a raw path split) so a
   // crumb segment always corresponds to exactly one real tree row —
   // clicking it can reveal that exact row (see onCrumbSegmentClick below).
-  const codeCrumb = $derived.by((): { segments: BreadcrumbNode[]; full: string; sha: string | null } => {
+  // Piece 11 Phase 4 (11-code-view-BUILD-BRIEF.md) — `sha` is now the
+  // resolved sha ALWAYS (including the literal `'HEAD'` string), not null
+  // at HEAD — the rev chip below needs to render an explicit "HEAD" state,
+  // not omit itself, so the operator always knows for sure which revision
+  // they're looking at. `isHead` names that check once instead of
+  // repeating the `=== 'HEAD'` string compare at every render site.
+  const codeCrumb = $derived.by((): { segments: BreadcrumbNode[]; full: string; sha: string | null; isHead: boolean } => {
     const cs = codeState.forHub(appState.hub);
     // design/44 §6 item 2.4 — the repo node was selected as the view target
     // itself (a repo rollup, not a single file): the crumb is just the repo.
     if (cs.viewMode === 'repo' && cs.activeRepo) {
-      return { segments: [{ label: cs.activeRepo, nodeId: cs.activeRepo }], full: cs.activeRepo, sha: null };
+      return { segments: [{ label: cs.activeRepo, nodeId: cs.activeRepo }], full: cs.activeRepo, sha: null, isHead: false };
     }
     const active = cs.files.find((f) => fileKey(f) === cs.activeKey);
-    if (!active) return { segments: [], full: '', sha: null };
+    if (!active) return { segments: [], full: '', sha: null, isHead: false };
     const tree = buildTree(cs.files);
     const chain = breadcrumbFromTree(tree, active.repo, fileKey(active));
     const full = `${active.repo}/${active.path}`;
-    return { segments: chain, full, sha: cs.codeSha !== 'HEAD' ? cs.codeSha : null };
+    return { segments: chain, full, sha: cs.codeSha, isHead: cs.codeSha === 'HEAD' };
   });
   const codeCrumbDisplay = $derived(collapseBreadcrumb(codeCrumb.segments, 4));
 
@@ -1031,13 +1037,31 @@
             {/if}
           {/each}
           {#if codeCrumb.sha}
-            <span class="ct-sha" title="Rendered at the newest reference's pinned sha">@{codeCrumb.sha.slice(0, 10)}</span>
-          {/if}
-          {#if codeCrumbMeta.refName}
-            <span class="ct-refname" data-testid="code-header-refname">{codeCrumbMeta.refName}</span>
-          {/if}
-          {#if codeCrumbMeta.commitDate}
-            <span class="ct-commit-date" data-testid="code-header-date">{formatIsoDate(codeCrumbMeta.commitDate)}</span>
+            <!-- Piece 11 Phase 4 — revision orientation: ALWAYS shown (never
+                 omitted at HEAD, unlike the old `ct-sha`-only treatment) so
+                 the operator always knows for sure whether they're seeing
+                 the tip or a specific pinned commit. `head`/`pinned` reuse
+                 the SAME conversation-state palette (`--state-flight`
+                 green / `--state-unowned` amber) rather than a second color
+                 system — the brief's own instruction. -->
+            <span class="rev-chip" class:head={codeCrumb.isHead} class:pinned={!codeCrumb.isHead} data-testid="rev-chip">
+              <span class="rev-glyph">{codeCrumb.isHead ? '●' : '◷'}</span>
+              <span class="rev-sha">{codeCrumb.isHead ? 'HEAD' : `@${codeCrumb.sha.slice(0, 10)}`}</span>
+            </span>
+            {#if codeCrumbMeta.refName}
+              <span class="ct-refname" data-testid="code-header-refname">{codeCrumbMeta.refName}</span>
+            {/if}
+            {#if codeCrumbMeta.commitDate}
+              <span class="ct-commit-date" data-testid="code-header-date">{formatIsoDate(codeCrumbMeta.commitDate)}</span>
+            {/if}
+            {#if !codeCrumb.isHead}
+              <!-- Phase 4 — a STUB this phase: the affordance exists (mock
+                   11/12's `⇄ compare to HEAD`) but the real diff view is
+                   deferred, so it's disabled rather than wired to nothing. -->
+              <button type="button" class="compare-head" data-testid="compare-to-head" disabled title="Diff view — coming soon">
+                ⇄ compare to HEAD
+              </button>
+            {/if}
           {/if}
         {:else}
           <span class="c strong">Repos</span>
@@ -1637,13 +1661,43 @@
     font-family: var(--mono);
     font-size: 12.5px;
   }
-  .ct-sha {
+  /* Piece 11 Phase 4 — the revision chip: head=green/pinned=amber via the
+     SAME `--state-*` tokens the conversation palette uses elsewhere, not a
+     second color system. */
+  .rev-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font: 600 10.5px/1 var(--mono);
-    color: var(--muted);
-    background: var(--panel-3);
-    border: 1px solid var(--border);
     border-radius: 5px;
     padding: 3px 6px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .rev-chip.head {
+    color: var(--state-flight);
+    border-color: color-mix(in srgb, var(--state-flight) 40%, transparent);
+    background: color-mix(in srgb, var(--state-flight) 11%, transparent);
+  }
+  .rev-chip.pinned {
+    color: var(--state-unowned);
+    border-color: color-mix(in srgb, var(--state-unowned) 42%, transparent);
+    background: color-mix(in srgb, var(--state-unowned) 12%, transparent);
+  }
+  .rev-glyph {
+    font-size: 9px;
+  }
+  .compare-head {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--faint);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    padding: 3px 6px;
+    cursor: not-allowed;
+    white-space: nowrap;
+    flex: 0 0 auto;
   }
   .ct-refname {
     font: 600 10.5px/1 var(--mono);

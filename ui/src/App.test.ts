@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import App from './App.svelte';
-import { appState } from './lib/stores.svelte';
+import { appState, codeState } from './lib/stores.svelte';
 import { overlayStack } from './lib/overlayStack.svelte';
+import { fileKey } from './lib/codeTree';
 
 // jsdom has no real layout/viewport, so these tests exercise the responsive
 // *structure* (the drawer/scrim elements exist, and their open/closed state
@@ -19,6 +20,10 @@ import { overlayStack } from './lib/overlayStack.svelte';
 // readState.test.ts already guard their own singletons against).
 beforeEach(() => {
   overlayStack.clear();
+  // Piece 11 Phase 4 — same singleton-leak concern: a Code-view test that
+  // sets `activeKey` (below) would otherwise leave it pointed at whatever
+  // file it last selected for the next test that touches Code.
+  codeState.clear();
 });
 
 describe('App — default landing (design/47 §3)', () => {
@@ -622,5 +627,56 @@ describe('App — piece 10 Phase A: the overlay stack fixes the dossier→ticket
     // j/k didn't grow the stack.
     expect(screen.queryByTestId('ticket-popover')).not.toBeInTheDocument();
     expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+  });
+});
+
+describe('App — piece 11 Phase 4: the revision orientation chip', () => {
+  it('pinned (amber): the default file has real hits, so the crumb shows the pinned sha + real ref/date, and a disabled compare-to-HEAD stub', async () => {
+    appState.drawer = 'none';
+    appState.view = 'code';
+    appState.hub = '';
+    render(App);
+
+    // The chip renders immediately at the store's initial `codeSha: 'HEAD'`
+    // default, then flips once the file's real refs finish loading — wait
+    // for the settled state rather than the first paint.
+    await screen.findByTestId('rev-chip');
+    await waitFor(() => expect(screen.getByTestId('rev-chip')).toHaveClass('pinned'));
+    const chip = screen.getByTestId('rev-chip');
+    expect(chip).not.toHaveClass('head');
+    expect(chip).toHaveTextContent('◷');
+    expect(chip).toHaveTextContent('@a3f1c9'); // the mock's real pinned sha, unpadded (6 chars < the 10-char slice)
+
+    expect(await screen.findByTestId('code-header-refname')).toHaveTextContent('main');
+    expect(screen.getByTestId('code-header-date')).toBeInTheDocument();
+
+    const compare = screen.getByTestId('compare-to-head');
+    expect(compare).toBeDisabled();
+    expect(compare).toHaveTextContent('compare to HEAD');
+  });
+
+  it('HEAD (green): a mapped file with zero real hits falls back to the literal HEAD sha — explicit, not omitted, no ref/date, no compare stub', async () => {
+    appState.drawer = 'none';
+    appState.view = 'code';
+    appState.hub = '';
+    render(App);
+
+    // Let the default file's fetch settle first, then switch to the
+    // fixture with genuinely zero conversations (mock.ts's EmptyView.swift).
+    await screen.findByTestId('rev-chip');
+    await waitFor(() => expect(screen.getByTestId('rev-chip')).toHaveClass('pinned'));
+    codeState.forHub('agent-coord').activeKey = fileKey({ repo: 'wealdlore', path: 'Sources/Reader/EmptyView.swift' });
+
+    await waitFor(() => expect(screen.getByTestId('rev-chip')).toHaveClass('head'));
+    const chip = screen.getByTestId('rev-chip');
+    expect(chip).not.toHaveClass('pinned');
+    expect(chip).toHaveTextContent('●');
+    expect(chip).toHaveTextContent('HEAD');
+
+    // Law #3 — no fabricated ref/date when nothing real is pinned, and no
+    // compare-to-HEAD stub (comparing HEAD to itself is meaningless).
+    expect(screen.queryByTestId('code-header-refname')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('code-header-date')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('compare-to-head')).not.toBeInTheDocument();
   });
 });
