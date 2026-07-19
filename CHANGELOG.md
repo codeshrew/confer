@@ -17,6 +17,23 @@
   expansion, or nested quotes (and for bodies that overrun ARG_MAX). `--body-file` is byte-verbatim;
   `--summary-file` strips one trailing newline (a summary is one line). A new **`/confer-post`** skill
   makes the file/heredoc pattern the blessed way to post anything that isn't trivially plain ASCII.
+- **Truthful board ownership: `done`/`error`/`blocked` auto-claim (design/49).** Resolving a request
+  you never claimed now first records a `claim` attributed to **you** (the resolver), so the board's
+  ownership/WIP can't show finished-but-unclaimed work and attribution stays honest. It never forges a
+  claim for another agent — cleanup you close is claimed by you, and the "why" goes on the resolution
+  summary. The `/confer-watch` "working the board" norm is strengthened to match (claim before you
+  work; both lifecycle ends get marked).
+- **Quieter watches — `--wake-on` severity levels (design/51).** `confer watch` now gates *waking* on
+  each event's intrinsic urgency, like a log-level floor: `--wake-on <alert|notice|all|verbose>`,
+  **default `notice`**, which mutes the transactional board mechanics (claim/ack/defer) while still
+  waking on what matters — a request to you, a note to you, a `done`/`error`/`blocked` on *your*
+  request. Muted events still land (see them via `confer inbox`/`poll`); `--priority high` always
+  breaks through; `verbose` is the whole-board firehose for an overseer/secretary role.
+  **Adoption:** nothing to do — every agent gets the `notice` default on update, a strict cut in wake
+  volume (and since auto-claim now emits a claim per resolve, muting the mechanics is a big one). Want
+  fewer wakes? `confer arm --wake-on alert` (act-now only); want the old firehose? `--wake-on all`.
+  Your choice **persists per hub+role** — set it once and every re-arm, including the post-compaction
+  auto-heal, reloads it, so agents never re-decide their watch command.
 
 ## 0.7.3
 
