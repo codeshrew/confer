@@ -102,6 +102,17 @@
 
   const hostMatches = $derived(agent && agent.expectedHost ? agent.lastHost === agent.expectedHost : null);
 
+  /** `SHA256:l064aRMg7xJ3…zAbC` — the mockup's own shortened form: the
+   * `SHA256:` prefix (meaningful, keep it) + a few chars of the hash on
+   * each end, elided in the middle. The full fingerprint is still in the
+   * `title` attribute for anyone who needs to actually compare it. */
+  function shortenFingerprint(fp: string): string {
+    const prefix = 'SHA256:';
+    const hash = fp.startsWith(prefix) ? fp.slice(prefix.length) : fp;
+    if (hash.length <= 16) return fp;
+    return `${prefix}${hash.slice(0, 8)}…${hash.slice(-6)}`;
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (!showing) return;
     if (isTypingTarget(e.target)) return;
@@ -240,10 +251,22 @@
 
         <aside class="ad-side">
           <div class="kv"><span class="k">role</span><span class="v mono">{agent.id}</span></div>
+          {#if agent.version}
+            <div class="kv"><span class="k">confer version</span><span class="v mono">{agent.version}</span></div>
+          {/if}
           <div class="kv">
-            <span class="k">trust</span>
+            <span class="k">signing key</span>
+            {#if agent.keyFingerprint}
+              <span class="v mono fp" title={agent.keyFingerprint}>{shortenFingerprint(agent.keyFingerprint)}</span>
+            {/if}
             <span class="v mono trust-{trust}">{TRUST_LABEL[trust]}</span>
           </div>
+          {#if agent.watchState}
+            <div class="kv">
+              <span class="k">watch</span>
+              <span class="v mono watch-{agent.watchState}">{agent.watchState === 'armed' ? '● armed · reactive' : '◐ idle'}</span>
+            </div>
+          {/if}
           <div class="kv">
             <span class="k">host</span>
             <span class="v mono">
@@ -548,6 +571,18 @@
   }
   .kv .v.trust-first-sight {
     color: var(--state-unowned);
+  }
+  .kv .v.fp {
+    color: var(--faint);
+    font-size: 10.5px;
+    display: block;
+    margin-bottom: 3px;
+  }
+  .kv .v.watch-armed {
+    color: var(--state-flight);
+  }
+  .kv .v.watch-idle {
+    color: var(--muted);
   }
   .presence {
     display: flex;

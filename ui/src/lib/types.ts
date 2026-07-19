@@ -152,6 +152,23 @@ export interface Agent {
   liveness?: Liveness;
   hbAgeSecs?: number | null;
   trust?: Trust;
+  // Piece 8b's Fleet dossier fields (Herald, src/api.rs's `agent_row_json`,
+  // commit 32ef9a4) — same honest-nullable pattern as tier/sync/seenBy:
+  // always-present keys, `null` when the underlying signal genuinely isn't
+  // known, never a guessed value.
+  /** The confer build the agent's own TRUST-GATED heartbeat carries, the
+   * fleet pin-form `"0.6.9 (45a9c04)"` — `null` when no trusted beat
+   * publishes a build (an untrusted/forged/replayed beat must not assert a
+   * believed version either). */
+  version: string | null;
+  /** `liveness` re-mapped to the narrower "is a watcher actually armed"
+   * vocabulary: `'armed'` (fresh beat) / `'idle'` (stale — seen recently but
+   * past cadence) / `null` (down, or no trusted beat at all — no basis to
+   * claim either state). A pure fold of `liveness`, not a new signal. */
+  watchState: 'armed' | 'idle' | null;
+  /** The pinned signing key's SHA256 fingerprint from the verified role
+   * card (`"SHA256:…"`) — `null` for unverified/mismatch/no card. */
+  keyFingerprint: string | null;
   color: string;
   abbr: string;
   wip: { id: string; summary: string; status: RequestStatus }[];

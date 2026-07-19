@@ -160,6 +160,12 @@ export const mockAgents: Agent[] = [
     lastHost: 'gitconv',
     live: true,
     verified: 'signed',
+    // piece 8b (src/api.rs's agent_row_json, Herald commit 32ef9a4) — a
+    // live/signed agent's watch is genuinely armed, and its trust-gated
+    // beat carries a real version + its verified card a real fingerprint.
+    version: '0.7.3 (a3f1c9d)',
+    watchState: 'armed',
+    keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbC',
     color: 'var(--ag-herald)',
     abbr: 'HE',
     wip: [],
@@ -173,6 +179,9 @@ export const mockAgents: Agent[] = [
     lastHost: 'reader',
     live: true,
     verified: 'signed',
+    version: '0.7.3 (a3f1c9d)',
+    watchState: 'armed',
+    keyFingerprint: 'SHA256:9fK2mNpQ4rS6tUvWxYzAbCdEfGhIjKlMnOpQrStUvWx',
     color: 'var(--ag-reader)',
     abbr: 'RE',
     wip: [{ id: 'req_01JQ8f2', summary: 'plate-bundle endpoint', status: 'DONE' }],
@@ -186,6 +195,9 @@ export const mockAgents: Agent[] = [
     lastHost: 'studio',
     live: true,
     verified: 'signed',
+    version: '0.7.3 (a3f1c9d)',
+    watchState: 'armed',
+    keyFingerprint: 'SHA256:aB3cD5eF7gH9iJkLmNoPqRsTuVwXyZ1aB3cD5eF7gH9',
     color: 'var(--ag-pipeline)',
     abbr: 'PI',
     wip: [{ id: 'req_01JQa91', summary: 'alignment pass', status: 'CLAIMED' }],
@@ -199,6 +211,12 @@ export const mockAgents: Agent[] = [
     lastHost: 'studio-markup',
     live: true,
     verified: 'signed',
+    // A trailing confer build — still live/armed/signed, just not on the
+    // exact same build as the rest of the fleet (a real, honest fact the
+    // dossier's version row is FOR: catching this at a glance).
+    version: '0.7.2 (f00dfee)',
+    watchState: 'armed',
+    keyFingerprint: 'SHA256:qR7sT9uV1wX3yZ5aB7cD9eF1gH3iJ5kL7mN9oP1qR3s',
     color: 'var(--ag-compositor)',
     abbr: 'CO',
     wip: [{ id: 'req_01JQc4a', summary: 'CSL schema decision', status: 'BLOCKED' }],
@@ -212,6 +230,13 @@ export const mockAgents: Agent[] = [
     lastHost: 'jarvis',
     live: true,
     verified: 'first-sight',
+    // first-sight still means a real, cryptographically-valid signed beat
+    // — just the first time this key's been seen — so it still carries a
+    // real version/fingerprint; only unverified/mismatch/no-card nulls
+    // the fingerprint (see orbit below).
+    version: '0.7.3 (a3f1c9d)',
+    watchState: 'armed',
+    keyFingerprint: 'SHA256:zY8xW6vU4tS2rQ0pO8nM6lK4jI2hG0fE8dC6bA4zY2x',
     color: 'var(--ag-jarvis)',
     abbr: 'JA',
     wip: [],
@@ -225,6 +250,12 @@ export const mockAgents: Agent[] = [
     lastHost: 'orbit',
     live: false,
     verified: 'unverified',
+    // down (no trusted beat) + unverified (no confirmed card) — every new
+    // field is honestly null, not guessed: no basis for a version, no
+    // basis for an armed/idle watch state, no confirmed key to fingerprint.
+    version: null,
+    watchState: null,
+    keyFingerprint: null,
     color: 'var(--ag-orbit)',
     abbr: 'OR',
     wip: [{ id: 'req_01JQe88', summary: 'plate-pipeline follow-up', status: 'OPEN' }],
@@ -531,6 +562,12 @@ const mockConferLabOverview: Overview = overviewOf(
       live: true,
       verified: 'unverified',
       trust: 'mismatch',
+      // A key MISMATCH is exactly the untrusted case the honest-nullable
+      // rule exists for — no version/watch/fingerprint claimed for an
+      // identity we can't vouch for, regardless of how fresh its beat is.
+      version: null,
+      watchState: null,
+      keyFingerprint: null,
       color: 'var(--ag-jarvis)',
       abbr: 'SE',
       wip: [],
@@ -544,6 +581,9 @@ const mockConferLabOverview: Overview = overviewOf(
       lastHost: 'gitconv',
       live: true,
       verified: 'signed',
+      version: '0.7.3 (a3f1c9d)',
+      watchState: 'armed',
+      keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbC',
       color: 'var(--ag-herald)',
       abbr: 'HE',
       wip: [{ id: 'req_02LAB1', summary: 'review the patch', status: 'CLAIMED' }],
@@ -578,6 +618,9 @@ const mockJarvisOrbitOverview: Overview = overviewOf(
       lastHost: 'orbit',
       live: true,
       verified: 'signed',
+      version: '0.7.3 (a3f1c9d)',
+      watchState: 'armed',
+      keyFingerprint: 'SHA256:mN4oP6qR8sT0uV2wX4yZ6aB8cD0eF2gH4iJ6kL8mN0o',
       color: 'var(--ag-orbit)',
       abbr: 'OR',
       wip: [],

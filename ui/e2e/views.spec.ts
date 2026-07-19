@@ -160,3 +160,35 @@ test('Board\'s left rail is a Fleet-as-filter (not the chat channel list) — cl
   await expect(fleetRail.getByText('Compositor')).not.toBeVisible();
   await expect(boardView.getByTestId('board-filter-chips')).toContainText('Compositor');
 });
+
+test('the agent dossier shows real confer version, watch state, and a shortened key fingerprint', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Fleet', exact: true }).click();
+  const fleetView = page.getByTestId('fleet-view');
+  await fleetView.getByText('Herald', { exact: true }).click();
+
+  const dossier = page.getByTestId('agent-dossier');
+  await expect(dossier).toBeVisible();
+  await expect(dossier.getByText('confer version')).toBeVisible();
+  await expect(dossier.getByText('0.7.3 (a3f1c9d)')).toBeVisible();
+  await expect(dossier.getByText('watch')).toBeVisible();
+  await expect(dossier.getByText('● armed · reactive')).toBeVisible();
+  // The fingerprint is shortened on screen, full value only in the title.
+  const fp = dossier.locator('.fp');
+  await expect(fp).toBeVisible();
+  await expect(fp).toHaveText(/^SHA256:.{8}….{6}$/);
+  await expect(fp).toHaveAttribute('title', /^SHA256:/);
+});
+
+test('an agent with no confer version/watch/key data honestly omits those rows — orbit, down and unverified', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Fleet', exact: true }).click();
+  const fleetView = page.getByTestId('fleet-view');
+  await fleetView.getByText('Orbit', { exact: true }).click();
+
+  const dossier = page.getByTestId('agent-dossier');
+  await expect(dossier).toBeVisible();
+  await expect(dossier.getByText('confer version')).not.toBeVisible();
+  await expect(dossier.getByText('watch')).not.toBeVisible();
+  await expect(dossier.locator('.fp')).not.toBeVisible();
+  // The signing key row itself still shows — just the trust label, no fingerprint.
+  await expect(dossier.getByText('signing key')).toBeVisible();
+});

@@ -22,6 +22,9 @@ const jarvis: Agent = {
   liveness: 'live',
   hbAgeSecs: 0,
   trust: 'signed',
+  version: null,
+  watchState: null,
+  keyFingerprint: null,
   color: '#7dcfff',
   abbr: 'JA',
   wip: [{ id: 'req_98xcnf', summary: '0.8.0 review', status: 'CLAIMED' }],
@@ -39,6 +42,9 @@ const herald: Agent = {
   liveness: 'live',
   hbAgeSecs: 60,
   trust: 'signed',
+  version: '0.6.9 (45a9c04)',
+  watchState: 'armed',
+  keyFingerprint: 'SHA256:l064aRMg7xJ3nQvKp2wZ8fThYbNcMdEeRtUvWxYzAbGwUBn4',
   color: '#9ece6a',
   abbr: 'HE',
   wip: [],
@@ -144,11 +150,60 @@ describe('AgentDossier', () => {
     expect(onNavigate).toHaveBeenCalledWith('herald');
   });
 
-  it('never fabricates confer version, watch state, or a signing-key fingerprint — none of that text appears', async () => {
+  it('never fabricates confer version, watch state, or a signing-key fingerprint — none of that text appears when the agent has none', async () => {
     render(AgentDossier, { open: true, agentId: 'jarvis', agents: [jarvis], requests: [], messages: [] });
     await screen.findByTestId('agent-dossier');
     expect(screen.queryByText(/confer version/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/armed/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/SHA256/)).not.toBeInTheDocument();
+  });
+
+  describe('piece 8b follow-up — real confer version / watch state / key fingerprint (Herald, src/api.rs 32ef9a4)', () => {
+    it('shows the real confer version when the agent has one', async () => {
+      render(AgentDossier, { open: true, agentId: 'herald', agents: [herald], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.getByText('confer version')).toBeInTheDocument();
+      expect(screen.getByText('0.6.9 (45a9c04)')).toBeInTheDocument();
+    });
+
+    it('shows the real armed watch state, colored distinctly from idle', async () => {
+      const { container } = render(AgentDossier, { open: true, agentId: 'herald', agents: [herald], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.getByText('watch')).toBeInTheDocument();
+      expect(screen.getByText('● armed · reactive')).toBeInTheDocument();
+      expect(container.querySelector('.watch-armed')).toBeInTheDocument();
+    });
+
+    it('shows an idle watch state distinctly, not fabricated as armed', async () => {
+      const idle: Agent = { ...herald, watchState: 'idle' };
+      const { container } = render(AgentDossier, { open: true, agentId: 'herald', agents: [idle], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.getByText('◐ idle')).toBeInTheDocument();
+      expect(container.querySelector('.watch-idle')).toBeInTheDocument();
+      expect(screen.queryByText(/armed/)).not.toBeInTheDocument();
+    });
+
+    it('shows a shortened key fingerprint, with the full value in the title for hover', async () => {
+      const { container } = render(AgentDossier, { open: true, agentId: 'herald', agents: [herald], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      const fp = container.querySelector('.fp') as HTMLElement;
+      expect(fp).toBeInTheDocument();
+      expect(fp.textContent).toBe('SHA256:l064aRMg…GwUBn4');
+      expect(fp.getAttribute('title')).toBe(herald.keyFingerprint);
+    });
+
+    it('when a field is null, that row is honestly omitted — not shown as "unknown" text mixed in with real rows', async () => {
+      // jarvis has all three null; herald (armed) proves the row exists
+      // when real, so this proves it's a real per-agent omission, not a
+      // component that never renders the row at all.
+      const { container } = render(AgentDossier, { open: true, agentId: 'jarvis', agents: [jarvis, herald], requests: [], messages: [] });
+      await screen.findByTestId('agent-dossier');
+      expect(screen.queryByText('confer version')).not.toBeInTheDocument();
+      expect(screen.queryByText('watch')).not.toBeInTheDocument();
+      // The "signing key" row itself still renders (trust is always shown)
+      // — only the fingerprint sub-line is honestly absent.
+      expect(screen.getByText('signing key')).toBeInTheDocument();
+      expect(container.querySelector('.fp')).toBeNull();
+    });
   });
 });
