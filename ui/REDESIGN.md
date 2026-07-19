@@ -88,6 +88,46 @@ the page has focus in many configurations) with `F6`/`Shift+F6` as the documente
 
 ---
 
+## Cross-cutting: the semantic state palette (settled 2026-07-19)
+
+Work/agent state colors must be **consistent tool-wide AND mutually distinct** (operator flagged open≈in-flight
+and unowned≈stuck as too-close). One meaning per hue, spread across the wheel:
+
+| state | hue | dark | light | means |
+|-------|-----|------|-------|-------|
+| **open / available / fresh** | cyan | `#7dcfff` | `#2959aa` | unclaimed, not a problem |
+| **in-flight / claimed / active / live** | green | `#9ece6a` | `#4f6d2e` | being worked / healthy (= live agent) |
+| **needs-owner / attention / warn / stale** | amber | `#e0af68` | `#8a6c2f` | soft alert — pick up / getting old |
+| **stuck / blocked / critical / down / mismatch** | red | `#f7768e` | `#d81f57` | hard problem |
+| **done / resolved** | muted grey | `#565f89` | `#7a80a0` | closed, collapsed |
+| **metrics (throughput etc.)** | teal | `#2ac3de` | `#0f7c93` | neutral data-viz — NOT a state, keeps green = in-flight only |
+
+Trust framing keeps its own axis (home/shared vs foreign) — that's orthogonal to work-state. When a piece
+touches an older component whose colors predate this (e.g. an AgentNode WIP badge that was cyan), realign it.
+
+## Cross-cutting: the composable card system (settled 2026-07-19)
+
+Every content **type** (ticket, code-ref, note) exists at THREE zoom levels — one identity, one color/lifecycle
+language, three densities:
+
+1. **Row** — one line in a list/stream (`scan` many). What the board/chat lists already use.
+2. **Mini card** — rich but small: a glanceable summary + **mini progress/state** + who/age; **embeds inside
+   other views and PORTALS into the full view** (never a dead-end link). `CodeRefCard` is the existing
+   precedent (mini code view → full code view); generalize it to ticket + note.
+3. **Full popover** — the whole item: the ticket **lifecycle popover** (Requested→Claimed→Done, adapts per
+   state: open/in-flight/done-with-resolution/blocked-with-red-branch), meta, teaser — a **launchpad, not a
+   container** (jumps out to thread / focus reader / code; shows no thread list or full body itself).
+
+**Composition:** a detail popover shows a **Related column** of mini cards (its tickets · code · thread) as a
+**focusable pane** — `↑↓`/`j k` select, `↵` opens that item's full view. This is the connective tissue that
+makes the enriched note/thread popover (piece 6) rich: body + related mini cards, assembled from the shared set.
+
+**Four zoom levels of a request:** Board (all work) → Ticket card (one item's status) → Thread/peek (the
+conversation) → Focus reader (the words). Each owns one level; no duplication. Refs:
+`redesign-mockups/05-board-cockpit.html` (cockpit + ticket popover), `05-composable-cards.html` (the card system).
+
+---
+
 ## The human-experience problems this must solve
 
 Named by the operator (2026-07-18), in priority order:
@@ -112,9 +152,10 @@ Named by the operator (2026-07-18), in priority order:
 | 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a persistent, trust-tiered rail (Home/Shared/Foreign/Unclassified, real health dots) + workspace tint; first slice of the keyboard-first layer (⌘K palette, rail j/k/gg/G, g+number views, ? which-key). Reference: `redesign-mockups/02-hub-nav.html`. | ✅ done |
 | 3 | **Thread / meta-thread nav + focus reader (P2)** | SETTLED affordance = **side-peek** (stream stays the anchor, never a page-swap) + a REAL breadcrumb trail (from `Message.of`/`replyTo`, walked with h/l/j/k) + the meta-thread drawn as a legible reference-graph trail (cross-topic hops marked). Plus a **focus reader** (`f`, from anywhere) for deep single-message reading. Reference: `redesign-mockups/03-thread-nav.html`. | ✅ done |
 | 4 | **Chat + meta-thread** | Item 0 (pane-focus leak bug, fixed). Item 1 (meta-thread minimap, `redesign-mockups/04-metathread-minimap.html`). Item 2 (real read-state: watermark + real seenBy + completionist-safe detail-viewed — see the CONTRACT GAP #58 note above). Item 3 (sticky day header, true summary density — chips only, no rendered blocks — inline refs anchored to prose, minimap-styled focus-reader prev/next; `redesign-mockups/04-chat-glance.html`). All four done. | ✅ done |
-| 5 | **Board** | Claim / WIP / lifecycle made spatial and honest; the ack-story + claim-norm surfaced (design/48/49). | ○ queued |
-| 6 | **Code** | The ref/patch view under the shared language; density gutter, reverse index. | ○ queued |
-| 7 | **Fleet** | Per-agent detail as the drill target of an Overview node. | ○ queued |
+| 5 | **Board = triage cockpit + the shared card system** | Reframe the flat ticket list as a **cockpit**: stat strip (Open/In-flight/Stuck/Needs-owner) → real visuals (assignee+requester load, closure throughput) → actionable work grouped by state, **DONE collapsed**. Establish the **card system** (ticket row/mini/full) + the **ticket lifecycle popover** (Requested→Claimed→Done, adapts per state). Left column → **Fleet-as-filter** rail (collapsible), no channel list. Refs: `redesign-mockups/05-board-cockpit.html`, `05-composable-cards.html`. | ▶ next |
+| 6 | **Enriched note / thread popover** | Make the note/thread popover rich by **composing** the card system: the note body + a keyboard-selectable **Related** column of mini cards (tickets · code · thread). The `f` reader stays pure reading; this is the *inspect* view. Ref: `05-composable-cards.html`. | ○ queued |
+| 7 | **Code** | The ref/patch view under the shared language; density gutter, reverse index. Reuses the mini code-ref card. | ○ queued |
+| 8 | **Fleet** | Per-agent detail as the drill target of an Overview node. | ○ queued |
 
 Later phases (backend, out of this branch's frontend scope but noted): real `/api/attention`,
 per-hub sync-health projection, seen-by projection, shadow-repo surfacing.
