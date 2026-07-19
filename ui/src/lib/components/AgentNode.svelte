@@ -192,9 +192,15 @@
   .an-live-down {
     color: var(--faint);
   }
+  /* Piece 5 (ui/REDESIGN.md, "the semantic state palette") — WIP means an
+     agent has in-flight/claimed work, which the settled palette assigns
+     green (`--state-flight`), not the blue `--claimed` token this badge
+     borrowed before the palette existed. Realigned here as the piece's
+     named cross-cutting fix; `--claimed` itself is untouched (still used
+     elsewhere for its original, unrelated meanings). */
   .an-wip {
-    color: var(--claimed);
-    border-color: color-mix(in srgb, var(--claimed) 40%, transparent);
-    background: color-mix(in srgb, var(--claimed) 12%, transparent);
+    color: var(--state-flight);
+    border-color: color-mix(in srgb, var(--state-flight) 40%, transparent);
+    background: color-mix(in srgb, var(--state-flight) 12%, transparent);
   }
 </style>

@@ -25,6 +25,33 @@
   --deferred: #b79cf0;
   --note: #8a97a8;
 
+  /* Semantic WORK-STATE palette (ui/REDESIGN.md, "settled 2026-07-19") —
+     the six colors piece 5's ticket/board vocabulary uses, one meaning per
+     hue: state-open (unclaimed) / state-flight (in-flight/claimed/active) /
+     state-unowned (needs an owner) / state-stuck (blocked/critical) /
+     state-done (closed/resolved) / state-metric (neutral data-viz, e.g.
+     closure throughput — NOT a state, keeps state-flight green meaning only
+     "in-flight"). Deliberately NEW tokens rather than repointing the older
+     --open/--claimed/--blocked/--done/--error above: those are also reused
+     for unrelated axes (agent trust/liveness chips, the shared/foreign
+     TRUST frame below) that this settlement doesn't touch — collapsing them
+     into one set would silently recolor things the operator never asked to
+     change. New ticket/board components (TicketRow/TicketMiniCard/
+     TicketFullPopover, Board's cockpit) use ONLY this set. */
+  --state-open: #7dcfff;
+  --state-flight: #9ece6a;
+  --state-unowned: #e0af68;
+  --state-stuck: #f7768e;
+  --state-done: #565f89;
+  --state-metric: #2ac3de;
+
+  /* The "shared" trust-tier frame's own stable color — split out from
+     --claimed (below) so repointing that token for work-state purposes
+     elsewhere can never bleed into the trust axis, which REDESIGN.md keeps
+     deliberately orthogonal ("trust framing keeps its own axis"). Value
+     unchanged from --claimed's original blue — no visual change here. */
+  --trust-shared: #5aa2f7;
+
   /* agent accents */
   --ag-herald: #4ecab0;
   --ag-reader: #d9b46a;
@@ -72,8 +99,8 @@
      a new hue. `--neutral-frame` is the "unclassified" bucket's color. */
   --home-frame: var(--accent);
   --home-glow: color-mix(in srgb, var(--accent) 13%, transparent);
-  --shared-frame: var(--claimed);
-  --shared-glow: color-mix(in srgb, var(--claimed) 13%, transparent);
+  --shared-frame: var(--trust-shared);
+  --shared-glow: color-mix(in srgb, var(--trust-shared) 13%, transparent);
   --foreign-frame: var(--deferred);
   --foreign-glow: color-mix(in srgb, var(--deferred) 10%, transparent);
   --neutral-frame: var(--muted);
@@ -101,6 +128,15 @@
   --open: #0d9488;
   --deferred: #7c53c9;
   --note: #7a8494;
+
+  --state-open: #2959aa;
+  --state-flight: #4f6d2e;
+  --state-unowned: #8a6c2f;
+  --state-stuck: #d81f57;
+  --state-done: #7a80a0;
+  --state-metric: #0f7c93;
+
+  --trust-shared: #2f74d0;
 
   --ag-herald: #188f78;
   --ag-reader: #a67c1f;
