@@ -20,6 +20,7 @@
   import MetaThread from './lib/components/MetaThread.svelte';
   import TicketFullPopover from './lib/components/TicketFullPopover.svelte';
   import NotePopover from './lib/components/NotePopover.svelte';
+  import AgentDossier from './lib/components/AgentDossier.svelte';
   import ReverseIndexPanel from './lib/components/ReverseIndexPanel.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
   import { api } from './lib/api';
@@ -494,13 +495,44 @@
     pendingBoardSelect = null;
   });
 
-  /** A Fleet-health card's fix hint — jump to that hub's Fleet view. A
-   * per-agent anchor within Fleet is design/41 Phase 3's job; for now the
-   * hub switch alone is the useful part (design/47 §2.6). */
-  function drillToFleet(hub: string, _agentId: string) {
-    appState.view = 'fleet';
+  // piece 8b — the reusable agent dossier's own open/close, separate from
+  // any view/selection state (same `focusReaderOpen`/`ticketPopoverOpen`
+  // shape): opening it never navigates anywhere, so "esc closes → back
+  // where you were" is true by construction, not something to re-derive.
+  let dossierOpen = $state(false);
+  let dossierAgentId = $state<string | null>(null);
+  function openAgentDossier(agentId: string) {
+    dossierAgentId = agentId;
+    dossierOpen = true;
+  }
+
+  /** Overview's `AgentNode` click (design/47 §2.6's original "jump to that
+   * hub's Fleet view" — now opens the dossier POPOVER directly instead,
+   * per piece 8b: "clicking an agent on the Overview lands here." Overview
+   * is cross-hub, so the same deferred-select pattern `drillToRequest`
+   * already uses: if the target agent's hub isn't loaded yet, switch hubs
+   * first and open once that hub's fleet has actually landed. Doesn't
+   * change `appState.view` — the dossier is reachable without leaving
+   * wherever the reader already was. */
+  let pendingAgentDossier = $state<{ hub: string; agentId: string } | null>(null);
+
+  function drillToFleet(hub: string, agentId: string) {
+    if (appState.hub === hub) {
+      openAgentDossier(agentId);
+      return;
+    }
+    pendingAgentDossier = { hub, agentId };
     appState.hub = hub;
   }
+
+  $effect(() => {
+    const p = pendingAgentDossier;
+    if (!p) return;
+    if (appState.hub !== p.hub) return;
+    if (!overview || overview.hub.id !== p.hub) return;
+    openAgentDossier(p.agentId);
+    pendingAgentDossier = null;
+  });
 
   /** The context strip's per-hub rollup — drills into that hub's Board
    * (design/47 §2.6: "a hub mini-rollup → that hub's Board"). */
@@ -1008,6 +1040,7 @@
             onSelectTicket={selectTicket}
             onOpenFocus={openInFocusReader}
             onOpenNote={openNotePopover}
+            onOpenAgent={openAgentDossier}
             onOpenRefs={openRefs}
           />
         {/if}
@@ -1027,7 +1060,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'fleet'}>
         {#if fleetMounted}
-          <Fleet agents={overview?.fleet ?? []} hubName={appState.hub} />
+          <Fleet agents={overview?.fleet ?? []} hubName={appState.hub} {messages} onOpenAgent={openAgentDossier} />
         {/if}
       </div>
       <div class="view-pane" class:active={appState.view === 'code'}>
@@ -1175,6 +1208,29 @@
   onOpenRefs={openRefs}
   onOpenThread={() => (notePopoverOpen = false)}
   onClose={() => (notePopoverOpen = false)}
+/>
+
+<!-- piece 8b (ui/REDESIGN.md) — the reusable agent dossier: an agent is a
+     composable type too (row=AgentNode/FleetPresenceCard, full=this
+     popover), reachable from anywhere one appears. Wired at three entry
+     points per the brief's own DoD: the Fleet deck (openAgentDossier),
+     Overview's AgentNode (drillToFleet, above), and a message's seen-by
+     roster (SeenIndicator → Message → ChatStream → here). `agents`/
+     `requests`/`messages` are the CURRENT hub's — cross-hub presence is
+     the dossier's own lazy fetch (fetchHubOverviews), not threaded
+     through here. -->
+<AgentDossier
+  open={dossierOpen}
+  agentId={dossierAgentId}
+  agents={overview?.fleet ?? []}
+  requests={overview?.board.requests ?? []}
+  {messages}
+  onOpenTicket={(id) => {
+    dossierOpen = false;
+    selectTicket(id);
+  }}
+  onNavigate={(id) => (dossierAgentId = id)}
+  onClose={() => (dossierOpen = false)}
 />
 
 <style>

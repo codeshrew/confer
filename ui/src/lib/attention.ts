@@ -208,6 +208,27 @@ function itemId(...parts: (string | null | undefined)[]): string {
   return parts.filter((p) => p !== null && p !== undefined).join(':');
 }
 
+/** Piece 8's dossier "present in" panel — one row per hub this agent
+ * identity occurs on, with that hub's OWN `lastTs` (unlike `FleetCard`,
+ * which collapses to a single overall `lastTs` for its severity-ranking
+ * purpose — the dossier explicitly wants per-hub last-seen). Real trust-
+ * tier framing (`Hub.tier`) carried through so the identity/presence panel
+ * reads foreign-as-foreign, same as everywhere else this axis appears. */
+export interface AgentHubPresence {
+  hub: string;
+  tier: HubTier | null;
+  lastTs: string | null;
+}
+
+export function agentPresence(hubOverviews: { hub: Hub; overview: Overview }[], agentId: string): AgentHubPresence[] {
+  const out: AgentHubPresence[] = [];
+  for (const { hub, overview } of hubOverviews) {
+    const agent = overview.fleet.find((a) => a.id === agentId);
+    if (agent) out.push({ hub: hub.id, tier: hub.tier ?? null, lastTs: agent.lastTs });
+  }
+  return out;
+}
+
 // A request left OPEN with no claimant is only worth surfacing once it's had
 // a little time to sit — a request filed a minute ago isn't "unowned," it's
 // just new. (The 3-day `stale` mark already covers the long-unclaimed case;

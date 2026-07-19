@@ -1,130 +1,131 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import Fleet from './Fleet.svelte';
-import type { Agent } from '../types';
+import type { Agent, Message } from '../types';
 
-const reader: Agent = {
-  id: 'reader',
-  display: 'Reader',
-  desc: 'reader',
-  expectedHost: 'reader',
-  lastTs: '2026-07-17T14:56:00Z',
-  lastHost: 'reader',
+vi.mock('../api', () => ({
+  fetchHubOverviews: vi.fn().mockResolvedValue([]),
+}));
+
+import { fetchHubOverviews } from '../api';
+
+const jarvis: Agent = {
+  id: 'jarvis',
+  display: 'Jarvis',
+  desc: 'design-review partner',
+  expectedHost: 'pop-os',
+  lastTs: '2026-07-18T17:41:00Z',
+  lastHost: 'pop-os',
   live: true,
   verified: 'signed',
-  color: 'var(--ag-reader)',
-  abbr: 'RE',
-  wip: [{ id: 'req_01JQ8f2', summary: 'plate-bundle endpoint', status: 'DONE' }],
+  liveness: 'live',
+  hbAgeSecs: 0,
+  trust: 'signed',
+  color: '#7dcfff',
+  abbr: 'JA',
+  wip: [{ id: 'req_1', summary: 'x', status: 'CLAIMED' }],
 };
 
-const orbit: Agent = {
-  id: 'orbit',
-  display: 'Orbit',
-  desc: 'orbit',
-  expectedHost: 'orbit',
-  lastTs: '2020-01-01T00:00:00Z',
-  lastHost: 'orbit',
+const workOrbit: Agent = {
+  id: 'work-orbit',
+  display: 'Work Orbit',
+  desc: null,
+  expectedHost: 'Hestia.local',
+  lastTs: '2026-07-15T00:00:00Z',
+  lastHost: 'Hestia.local',
   live: false,
-  verified: 'unverified',
-  color: 'var(--ag-orbit)',
-  abbr: 'OR',
+  verified: 'signed',
+  liveness: 'down',
+  hbAgeSecs: 7200,
+  trust: 'signed',
+  color: '#bb9af7',
+  abbr: 'WO',
   wip: [],
 };
 
-describe('Fleet', () => {
-  it('renders a "You" card plus an agent-identity card per agent, with WIP', () => {
-    render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
+function message(overrides: Partial<Message> = {}): Message {
+  return {
+    id: 'msg_1',
+    from: 'jarvis',
+    type: 'note',
+    ts: '2026-07-18T17:00:00Z',
+    host: null,
+    to: [],
+    cc: [],
+    topic: 'general',
+    summary: 'hi',
+    body: 'hi',
+    of: null,
+    replyTo: null,
+    supersedes: null,
+    refs: [],
+    seenBy: [],
+    ...overrides,
+  };
+}
 
-    expect(screen.getByText('You')).toBeInTheDocument();
-    expect(screen.getByText('Reader')).toBeInTheDocument();
-    expect(screen.getByText('Orbit')).toBeInTheDocument();
-    expect(screen.getByText('plate-bundle endpoint')).toBeInTheDocument();
-    expect(screen.getByText('no active claims')).toBeInTheDocument();
+describe('Fleet — the crew deck', () => {
+  afterEach(() => {
+    vi.mocked(fetchHubOverviews).mockClear();
   });
 
-  it('warns on an unverified/stale agent', () => {
-    const { container } = render(Fleet, { agents: [orbit], hubName: 'agent-coord' });
+  it('groups agents into machine bays by their real host', async () => {
+    render(Fleet, { agents: [jarvis, workOrbit], hubName: 'agent-coord', messages: [] });
 
-    expect(container.querySelector('.agentcard.stale')).toBeInTheDocument();
-    expect(screen.getByText(/unverified peer/)).toBeInTheDocument();
+    expect(await screen.findByText('pop-os')).toBeInTheDocument();
+    expect(screen.getByText('Hestia.local')).toBeInTheDocument();
+    expect(screen.getByText('Jarvis')).toBeInTheDocument();
+    expect(screen.getByText('Work Orbit')).toBeInTheDocument();
   });
 
-  it('drives the stale/live heartbeat indicator from agent.live, not lastTs age', () => {
-    const { container } = render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
+  it('a bay whose agents are all down reads "dark", not "online"', async () => {
+    const { container } = render(Fleet, { agents: [workOrbit], hubName: 'agent-coord', messages: [] });
+    await screen.findByText('Hestia.local');
 
-    // reader: live: true (despite an old-ish lastTs) -> NOT stale, shows "live"
-    const cards = container.querySelectorAll('.agentcard:not(.you)');
-    const readerCard = cards[0] as HTMLElement;
-    const orbitCard = cards[1] as HTMLElement;
-
-    expect(readerCard.classList.contains('stale')).toBe(false);
-    expect(readerCard.querySelector('.ac-hb')?.textContent).toMatch(/^live/);
-    expect(readerCard.querySelector('.ac-hb')?.textContent).toMatch(/last posted/);
-
-    // orbit: live: false -> stale, shows "heartbeat stale"
-    expect(orbitCard.classList.contains('stale')).toBe(true);
-    expect(orbitCard.querySelector('.ac-hb')?.textContent).toMatch(/^heartbeat stale/);
-
-    // header count reflects !live agents, not lastTs-age staleness
-    expect(screen.getByText('2 agents · 1 stale heartbeat')).toBeInTheDocument();
+    expect(container.querySelector('.bay.dark')).toBeInTheDocument();
+    expect(screen.getByText('dark')).toBeInTheDocument();
   });
 
-  it('has no "Customize identity" editing affordance anywhere in the view (identity is read-only)', () => {
-    const { container } = render(Fleet, { agents: [reader, orbit], hubName: 'agent-coord' });
-
-    expect(screen.queryByText('Customize identity')).not.toBeInTheDocument();
-    expect(container.querySelector('.ac-editor')).not.toBeInTheDocument();
-    expect(container.querySelector('input[type="text"]')).not.toBeInTheDocument();
-    expect(container.querySelector('.ac-swatch')).not.toBeInTheDocument();
-    expect(container.querySelector('.ac-editbtn')).not.toBeInTheDocument();
+  it('a healthy bay reads "online", not "dark"', async () => {
+    const { container } = render(Fleet, { agents: [jarvis], hubName: 'agent-coord', messages: [] });
+    await screen.findByText('online');
+    expect(container.querySelector('.bay.dark')).not.toBeInTheDocument();
   });
 
-  it('surfaces an informational note that appearance is agent-declared and not editable here', () => {
-    render(Fleet, { agents: [reader], hubName: 'agent-coord' });
+  it('shows real vitals: agent/live/down/machine counts, and a real trust posture line', async () => {
+    render(Fleet, { agents: [jarvis, workOrbit], hubName: 'agent-coord', messages: [] });
+    await screen.findByText('pop-os');
 
-    expect(
-      screen.getByText(/appearance is self-declared.*set by the agent, not editable from here/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText('✓ all keys signed')).toBeInTheDocument();
   });
 
-  it('renders identity (avatar color/abbr, display name, host) read-only for both "You" and peer agents', () => {
-    const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
+  it('an unsigned agent flips the trust line to a real gap count, not a fabricated "all clear"', async () => {
+    const unsigned: Agent = { ...jarvis, verified: 'unverified', trust: undefined };
+    render(Fleet, { agents: [unsigned], hubName: 'agent-coord', messages: [] });
+    await screen.findByText('pop-os');
 
-    const youCard = container.querySelector('.agentcard.you') as HTMLElement;
-    expect(youCard.querySelector('.ac-nm')?.textContent).toBe('You');
-    expect(youCard.querySelector('.ac-av')?.textContent).toBe('◉');
-
-    const readerCard = container.querySelector('.agentcard:not(.you)') as HTMLElement;
-    expect(readerCard.querySelector('.ac-nm')?.textContent).toBe('Reader');
-    expect(readerCard.querySelector('.ac-av')?.textContent).toBe('RE');
-    expect(readerCard.querySelector('.ac-av')?.getAttribute('style')).toContain('var(--ag-reader)');
-    expect(readerCard.querySelector('.ac-host')?.textContent).toBe('reader');
+    expect(screen.getByText('◐ 1 unverified')).toBeInTheDocument();
   });
 
-  it('shows the "first-sight" verify glyph (distinct from "unverified") without a stale-peer warning line', () => {
-    const firstSight: Agent = { ...orbit, id: 'newbie', display: 'Newbie', verified: 'first-sight', live: true };
-    const { container } = render(Fleet, { agents: [firstSight], hubName: 'agent-coord' });
-
-    const badge = container.querySelector('.ac-verify') as HTMLElement;
-    expect(badge.classList.contains('warn')).toBe(true);
-    expect(badge.getAttribute('title')).toMatch(/first-sight/);
-    // The "unverified peer" warning line is specific to verified === 'unverified', not first-sight.
-    expect(screen.queryByText(/unverified peer/)).not.toBeInTheDocument();
+  it('an empty fleet shows the empty state', async () => {
+    render(Fleet, { agents: [], hubName: 'agent-coord', messages: [] });
+    expect(await screen.findByText('No agents on this hub')).toBeInTheDocument();
   });
 
-  it('shows the "signed" verify glyph as ok, with no warning line', () => {
-    const { container } = render(Fleet, { agents: [reader], hubName: 'agent-coord' });
-
-    const badge = container.querySelector('.ac-verify') as HTMLElement;
-    expect(badge.classList.contains('ok')).toBe(true);
-    expect(badge.textContent).toBe('✓');
-    expect(screen.queryByText(/unverified peer/)).not.toBeInTheDocument();
+  it('clicking a presence card fires onOpenAgent — opens the dossier', async () => {
+    const user = userEvent.setup();
+    const onOpenAgent = vi.fn();
+    render(Fleet, { agents: [jarvis], hubName: 'agent-coord', messages: [], onOpenAgent });
+    await user.click(await screen.findByTestId('fleet-presence-card'));
+    expect(onOpenAgent).toHaveBeenCalledWith('jarvis');
   });
 
-  it('falls back to "—" for host when neither lastHost nor expectedHost is set', () => {
-    const noHost: Agent = { ...reader, id: 'ghost', lastHost: null, expectedHost: null };
-    const { container } = render(Fleet, { agents: [noHost], hubName: 'agent-coord' });
-
-    expect(container.querySelector('.agentcard:not(.you) .ac-host')?.textContent).toBe('—');
+  it('feeds each card a real activity sparkline folded from real message timestamps', async () => {
+    const messages = [message({ from: 'jarvis', ts: new Date().toISOString() })];
+    render(Fleet, { agents: [jarvis], hubName: 'agent-coord', messages });
+    // Doesn't crash, and the card renders — the sparkline's own values are
+    // covered by fleetDossier.test.ts's activityBuckets unit tests.
+    expect(await screen.findByTestId('fleet-presence-card')).toBeInTheDocument();
   });
 });

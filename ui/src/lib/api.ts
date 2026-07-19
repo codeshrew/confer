@@ -147,11 +147,23 @@ const httpApi: ConferApi = {
 export const api: ConferApi = useMock() ? mockApi : httpApi;
 
 /**
+ * design/47 §5 Phase 1 — the cross-hub fan-out every cross-hub view needs:
+ * one `getHubs()` call, then one `getOverview()` per hub. Shared by
+ * `getAttention()` below (folds it into the ranked lanes) and piece 8's
+ * `AgentDossier` (folds it into per-hub agent PRESENCE — same raw data,
+ * a different fold, so the fetch itself is written once).
+ */
+export async function fetchHubOverviews(): Promise<{ hub: Hub; overview: Overview }[]> {
+  const hubs = await api.getHubs();
+  return Promise.all(hubs.map(async (hub) => ({ hub, overview: await api.getOverview(hub.id) })));
+}
+
+/**
  * design/47 §5 Phase 1 — the Overview view's cross-hub data, fanned out
  * client-side over the SAME `api` singleton every other view already uses
- * (so it transparently follows mock/live routing, no separate wiring): one
- * `getHubs()` call, then one `getOverview()` per hub, folded by
- * `aggregateAttention` into the three ranked lanes + ambient metrics.
+ * (so it transparently follows mock/live routing, no separate wiring):
+ * `fetchHubOverviews()` above, folded by `aggregateAttention` into the
+ * three ranked lanes + ambient metrics.
  *
  * Phase 2 repoints this at a real `GET /api/attention` aggregating endpoint
  * (design/47 §4.2 item 1) — callers (Overview.svelte) only depend on this
@@ -159,9 +171,6 @@ export const api: ConferApi = useMock() ? mockApi : httpApi;
  * internal to this function.
  */
 export async function getAttention(): Promise<Attention> {
-  const hubs = await api.getHubs();
-  const hubOverviews = await Promise.all(
-    hubs.map(async (hub) => ({ hub, overview: await api.getOverview(hub.id) }))
-  );
+  const hubOverviews = await fetchHubOverviews();
   return aggregateAttention(hubOverviews);
 }

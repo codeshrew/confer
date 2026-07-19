@@ -10,9 +10,15 @@
 
   interface Props {
     entries: SeenEntry[];
+    /** Piece 8b — one of the agent dossier's three named entry points
+     * ("wire at least: Fleet deck, Overview node, seen-by roster"). Each
+     * real roster row (never the synthesized "You" row, which has no
+     * dossier) opens the SAME reusable popover clicking anywhere else an
+     * agent appears does. */
+    onOpenAgent?: (id: string) => void;
   }
 
-  let { entries }: Props = $props();
+  let { entries, onOpenAgent }: Props = $props();
 
   const allSeen = $derived(entries.length > 0 && entries.every((e) => !e.unseen));
   const seenCount = $derived(entries.filter((e) => !e.unseen && !e.isYou).length);
@@ -55,13 +61,23 @@
   <span class="roster" role="dialog" aria-label="Seen by">
     <span class="rt">{rosterTitle}</span>
     {#each entries.filter((e) => !e.isYou) as entry (entry.id)}
-      <span class="rr" class:un={entry.unseen}>
+      <button
+        type="button"
+        class="rr rr-btn"
+        class:un={entry.unseen}
+        onclick={(e) => {
+          e.stopPropagation();
+          onOpenAgent?.(entry.id);
+        }}
+        title={`Open ${entry.name}'s dossier`}
+        aria-label={`Open ${entry.name}'s dossier`}
+      >
         <span class="ra" style={entry.unseen ? '' : `color:${entry.color};background:color-mix(in srgb, ${entry.color} 18%, transparent)`}
           >{entry.unseen ? '' : entry.name.slice(0, 2).toUpperCase()}</span
         >
         <span class="rn">{entry.name}</span>
         <span class="rtime">{entry.unseen ? 'unseen' : entry.ts}</span>
-      </span>
+      </button>
     {/each}
     {#if youEntry}
       <span class="rr" class:un={youEntry.unseen}>
@@ -165,6 +181,20 @@
     align-items: center;
     gap: 8px;
     padding: 3px 0;
+  }
+  .roster .rr-btn {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 5px;
+  }
+  .roster .rr-btn:hover,
+  .roster .rr-btn:focus-visible {
+    background: var(--panel-2);
   }
   .roster .ra {
     width: 19px;

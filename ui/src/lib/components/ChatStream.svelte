@@ -60,6 +60,8 @@
     /** Piece 6 — the mouse path for opening the enriched note popover,
      * passed straight through to each Message row (notes only). */
     onOpenNote?: (id: string) => void;
+    /** Piece 8b — opens the agent dossier from a message's seen-by roster. */
+    onOpenAgent?: (id: string) => void;
     onOpenRefs?: (ref: CodeRef, hits: RefHit[]) => void;
     /** design/41 Phase 0 item 4 — the shared scroll-to + highlight-pulse
      * primitive that meta-thread-node clicks and lifecycle-trail-row clicks
@@ -87,6 +89,7 @@
     onSelectTicket,
     onOpenFocus,
     onOpenNote,
+    onOpenAgent,
     onOpenRefs,
     scrollToMessageId = null,
     scrollToken = 0,
@@ -458,6 +461,7 @@
           onSelectTicket={onSelectTicket}
           {onOpenFocus}
           {onOpenNote}
+          {onOpenAgent}
           {onOpenRefs}
         />
       {/each}

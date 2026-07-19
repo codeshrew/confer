@@ -46,6 +46,8 @@
      * here would just be two "expand" buttons pointed at different places
      * for the same row. */
     onOpenNote?: (id: string) => void;
+    /** Piece 8b — opens the agent dossier from the seen-by roster. */
+    onOpenAgent?: (id: string) => void;
   }
 
   let {
@@ -64,6 +66,7 @@
     onOpenRefs,
     onOpenFocus,
     onOpenNote,
+    onOpenAgent,
   }: Props = $props();
 
   const SYSLINE_TYPES = new Set(['claim', 'done', 'error', 'defer', 'supersede']);
@@ -252,7 +255,7 @@
             <Icon name="maximize" size={12} />
           </button>
         {/if}
-        <SeenIndicator entries={seenEntries} />
+        <SeenIndicator entries={seenEntries} {onOpenAgent} />
       </div>
 
       {#if isTicket && request}

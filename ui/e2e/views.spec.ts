@@ -59,7 +59,7 @@ test('Board is a triage cockpit — real stats, workload, throughput, grouped wo
   await expect(boardView.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
 });
 
-test('Fleet shows agent identity cards', async ({ page }) => {
+test('Fleet is the crew deck — real machine bays holding living presence cards', async ({ page }) => {
   await page.getByRole('tab', { name: 'Fleet', exact: true }).click();
   // Scoped to the Fleet pane itself — the left rail's own fleet roster also
   // lists agent names, which would otherwise make these matches ambiguous.
@@ -68,9 +68,17 @@ test('Fleet shows agent identity cards', async ({ page }) => {
   await expect(fleetView.getByText('Herald', { exact: true })).toBeVisible();
   await expect(fleetView.getByText('Reader', { exact: true })).toBeVisible();
   await expect(fleetView.getByText('Pipeline', { exact: true })).toBeVisible();
-  await expect(fleetView.getByText('Current WIP').first()).toBeVisible();
-  // The dashboard viewer gets a first-class, non-claiming "You" card.
-  await expect(fleetView.getByText('viewing this dashboard')).toBeVisible();
+  // Real vitals — agent/live/machine counts, a real trust posture line.
+  await expect(fleetView.getByText(/agents/)).toBeVisible();
+  await expect(fleetView.getByText(/live/).first()).toBeVisible();
+
+  // Clicking a presence card opens the reusable agent dossier.
+  await fleetView.getByTestId('fleet-presence-card').first().click();
+  const dossier = page.getByTestId('agent-dossier');
+  await expect(dossier).toBeVisible();
+  await expect(page.getByTestId('agent-dossier-backdrop')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dossier).not.toBeVisible();
 });
 
 test('Code shows the file tree (design/43 Phase B — left rail) and a code view', async ({ page }) => {

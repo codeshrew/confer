@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
@@ -71,5 +71,29 @@ describe('SeenIndicator', () => {
 
       expect(screen.getByText('all seen')).toBeInTheDocument();
     });
+  });
+});
+
+describe('piece 8b — the roster is an agent-dossier entry point', () => {
+  it('clicking a real roster row fires onOpenAgent with that agent\'s id, not the toggle', async () => {
+    const user = userEvent.setup();
+    const onOpenAgent = vi.fn();
+    const entries: SeenEntry[] = [{ id: 'pipeline', name: 'Pipeline', color: 'var(--ag-pipeline)', ts: '14:21' }];
+    render(SeenIndicator, { entries, onOpenAgent });
+
+    await user.click(screen.getByRole('button', { name: /seen roster/i }));
+    await user.click(screen.getByRole('button', { name: /open pipeline's dossier/i }));
+
+    expect(onOpenAgent).toHaveBeenCalledWith('pipeline');
+  });
+
+  it('the synthesized "You" row has no dossier — it never fires onOpenAgent', async () => {
+    const user = userEvent.setup();
+    const onOpenAgent = vi.fn();
+    const entries: SeenEntry[] = [{ id: 'you', name: 'You', ts: '14:40', isYou: true }];
+    render(SeenIndicator, { entries, onOpenAgent });
+
+    await user.click(screen.getByRole('button', { name: /seen roster/i }));
+    expect(screen.queryByRole('button', { name: /open you's dossier/i })).not.toBeInTheDocument();
   });
 });

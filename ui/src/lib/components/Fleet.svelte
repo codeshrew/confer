@@ -1,272 +1,209 @@
 <script lang="ts">
-  // Fleet / agent-identity view. Ports `.fleetgrid`/`.agentcard`/`.ac-*` from
-  // design/serve-dashboard-v2-mockup.html: identity cards (color/host/
-  // heartbeat/verification) and a "You · viewing" card.
-  //
-  // Identity (display name / abbreviation / color) is READ-ONLY here: it's
-  // self-declared in the agent's signed role card and synced across the hub.
-  // There's no editor in this view — appearance is set by the agent via the
-  // CLI (not yet built), not by clicking around a dashboard.
-  import type { Agent } from '../types';
-  import { formatAge } from '../format';
+  // Fleet — piece 8a, the crew deck (ui/REDESIGN.md, `08-fleet-crew-
+  // deck.html` + `08-fleet-BRIEF.md`): "agents are processes that live on
+  // machines... grouping by machine is the honest topology." Replaces the
+  // old flat `.fleetgrid` with machine bays (fleetBays.ts) holding living
+  // presence cards (FleetPresenceCard.svelte, extending AgentNode's own
+  // appearance-encoding). Clicking a card opens the reusable agent dossier
+  // (piece 8b, AgentDossier.svelte) — wired one level up in App.svelte,
+  // since the dossier is reachable from more than just this page.
+  import type { Agent, Message } from '../types';
+  import { fetchHubOverviews } from '../api';
+  import { agentPresence, type AgentHubPresence } from '../attention';
+  import { buildBays, fleetVitals } from '../fleetBays';
+  import { activityBuckets } from '../fleetDossier';
+  import FleetPresenceCard from './FleetPresenceCard.svelte';
+  import EmptyState from './EmptyState.svelte';
+  import Skeleton from './Skeleton.svelte';
 
   interface Props {
     agents: Agent[];
     hubName: string;
+    /** For each card's real activity sparkline — same message data the
+     * dossier's own (bigger) activity chart buckets. */
+    messages: Message[];
+    onOpenAgent?: (id: string) => void;
   }
 
-  let { agents, hubName }: Props = $props();
+  let { agents, hubName, messages, onOpenAgent }: Props = $props();
 
-  const staleCount = $derived(agents.filter((a) => !a.live).length);
+  const SPARK_HOURS = 7;
+  function sparklineFor(agentId: string): number[] {
+    return activityBuckets(agentId, messages, SPARK_HOURS).map((b) => b.count);
+  }
 
-  const you = { display: 'You', abbr: '◉', color: 'var(--accent)' };
+  // Cross-hub presence (the hub-membership dots) — fetched once per hub
+  // visit, not eagerly re-polled like HubRail's own health dots; the deck
+  // doesn't need second-by-second freshness on "which hubs is this agent
+  // on," just an honest real answer.
+  let presenceLoading = $state(true);
+  let presenceByAgent = $state<Map<string, AgentHubPresence[]>>(new Map());
+  let loadedForHub = $state<string | null>(null);
 
-  const VERIFY_GLYPH: Record<Agent['verified'], { g: string; cls: string; title: string }> = {
-    signed: { g: '✓', cls: 'ok', title: 'verified — key matches the role card' },
-    'first-sight': { g: '⚠', cls: 'warn', title: 'first-sight — no history to verify against yet' },
-    unverified: { g: '⚠', cls: 'warn', title: 'unverified — heads up before trusting claims' },
-  };
+  async function loadPresence(hub: string) {
+    presenceLoading = true;
+    try {
+      const hubOverviews = await fetchHubOverviews();
+      const map = new Map<string, AgentHubPresence[]>();
+      for (const agent of agents) map.set(agent.id, agentPresence(hubOverviews, agent.id));
+      presenceByAgent = map;
+      loadedForHub = hub;
+    } catch (err) {
+      console.error('confer serve: failed to load fleet presence', hub, err);
+      presenceByAgent = new Map();
+      loadedForHub = hub;
+    } finally {
+      presenceLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (hubName && (hubName !== loadedForHub || agents)) void loadPresence(hubName);
+  });
+
+  const bays = $derived(buildBays(agents));
+  const vitals = $derived(fleetVitals(agents, bays));
+  const trustLine = $derived(vitals.unsignedCount === 0 ? '✓ all keys signed' : `◐ ${vitals.unsignedCount} unverified`);
 </script>
 
 <div class="fleet-wrap" data-testid="fleet-view">
-  <div class="board-head">
-    <div class="board-topline">
-      <h2>Fleet · {hubName}</h2>
-      <span class="flabel" style="margin-left:auto">{agents.length} agents · {staleCount} stale heartbeat{staleCount === 1 ? '' : 's'}</span>
-    </div>
-  </div>
-
-  <p class="ac-note fleet-note">
-    Appearance is self-declared in each agent's role card and synced across the hub — set by the agent, not editable
-    from here.
-  </p>
-
-  <div class="fleetgrid">
-    <!-- "You" — the dashboard viewer, a first-class but non-claiming peer -->
-    <div class="agentcard you">
-      <div class="ac-top">
-        <span class="ac-av" style="color:{you.color};background:color-mix(in srgb, {you.color} 18%, transparent)">{you.abbr}</span>
-        <div class="ac-id">
-          <div class="ac-nm">{you.display}</div>
-          <div class="ac-host">viewing this dashboard</div>
-        </div>
-      </div>
-      <div class="ac-hb">watching · not a claiming peer</div>
+  {#if agents.length === 0}
+    <EmptyState glyph="◇" title="No agents on this hub" body="Agents post to this hub's confer log — none have shown up yet." />
+  {:else}
+    <div class="vitals">
+      <h2>fleet · {hubName}</h2>
+      <span class="v mono"><b>{vitals.agentCount}</b> agents</span>
+      <span class="v mono live"><b>{vitals.liveCount}</b> live</span>
+      {#if vitals.downCount > 0}<span class="v mono down"><b>{vitals.downCount}</b> down</span>{/if}
+      <span class="v mono"><b>{vitals.machineCount}</b> machine{vitals.machineCount === 1 ? '' : 's'}</span>
+      <span class="you mono" title="You're viewing this dashboard — not a claiming peer">◉ you're watching</span>
+      <span class="trust" class:warn={vitals.unsignedCount > 0}>{trustLine}</span>
     </div>
 
-    {#each agents as agent (agent.id)}
-      {@const stale = !agent.live}
-      {@const vm = VERIFY_GLYPH[agent.verified]}
-      <div class="agentcard" class:stale>
-        <div class="ac-top">
-          <span class="ac-av" style="color:{agent.color};background:color-mix(in srgb, {agent.color} 18%, transparent)">{agent.abbr}</span>
-          <div class="ac-id">
-            <div class="ac-nm">{agent.display}</div>
-            <div class="ac-host">{agent.lastHost ?? agent.expectedHost ?? '—'}</div>
+    {#if presenceLoading}
+      <Skeleton rows={3} />
+    {:else}
+      <div class="bays">
+        {#each bays as bay (bay.host)}
+          <div class="bay" class:dark={bay.dark}>
+            <div class="bay-h">
+              <span class="host mono">{bay.host}</span>
+              <span class="pw mono"><span class="pip"></span>{bay.dark ? 'dark' : 'online'}</span>
+            </div>
+            <div class="bay-agents">
+              {#each bay.agents as agent (agent.id)}
+                <FleetPresenceCard {agent} sparkline={sparklineFor(agent.id)} hubs={presenceByAgent.get(agent.id) ?? []} onOpen={onOpenAgent} />
+              {/each}
+            </div>
           </div>
-          <span class="ac-verify {vm.cls}" title={vm.title}>{vm.g}</span>
-        </div>
-        <div class="ac-hb">{stale ? 'heartbeat stale' : 'live'} · last posted {formatAge(agent.lastTs)} ago</div>
-        {#if agent.verified === 'unverified'}
-          <div class="ac-warnline">⚠ unverified peer — if this hub's remote allows anonymous read, verify the key before trusting claims</div>
-        {/if}
-        <div class="ac-wip">
-          <div class="ac-wiplab">Current WIP</div>
-          {#if agent.wip.length === 0}
-            <div class="ac-idle">no active claims</div>
-          {:else}
-            {#each agent.wip as w (w.id)}
-              <div class="ac-wipitem">
-                <span class="pill p-{w.status.toLowerCase()}">{w.status}</span>
-                <span>{w.summary}</span>
-                <span class="mono">{w.id}</span>
-              </div>
-            {/each}
-          {/if}
-        </div>
+        {/each}
       </div>
-    {/each}
-  </div>
+    {/if}
+  {/if}
 </div>
 
 <style>
   .fleet-wrap {
     overflow: auto;
     flex: 1;
-    padding: 16px 20px;
+    padding: 16px 20px 40px;
   }
-  .board-head {
-    margin-bottom: 6px;
-  }
-  .board-topline {
+
+  .vitals {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
   }
-  .board-topline h2 {
+  .vitals h2 {
     margin: 0;
     font-size: 14px;
     font-weight: 650;
   }
-  .flabel {
-    font: 600 10px/1 var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--faint);
-  }
-  .fleetgrid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 14px;
-  }
-  .agentcard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 15px;
-    display: flex;
-    flex-direction: column;
-    gap: 11px;
-  }
-  .agentcard.you {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  }
-  .ac-top {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .ac-av {
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-    display: grid;
-    place-items: center;
-    font: 700 13px/1 var(--mono);
-    flex: 0 0 auto;
-  }
-  .ac-id {
-    min-width: 0;
-    flex: 1;
-  }
-  .ac-nm {
-    font-weight: 650;
-    font-size: 13.5px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .ac-host {
-    font: 500 10.5px/1 var(--mono);
-    color: var(--faint);
-    margin-top: 2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ac-verify {
-    font-size: 13px;
-    flex: 0 0 auto;
-  }
-  .ac-verify.ok {
-    color: var(--done);
-  }
-  .ac-verify.warn {
-    color: var(--blocked);
-  }
-  .ac-verify.unk {
-    color: var(--faint);
-  }
-  .ac-hb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font: 500 11px/1 var(--mono);
+  .vitals .v {
+    font-size: 11px;
     color: var(--muted);
   }
-  .ac-hb::before {
-    content: '';
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--done);
-  }
-  .agentcard.stale .ac-hb {
-    color: var(--blocked);
-  }
-  .agentcard.stale .ac-hb::before {
-    background: var(--blocked);
-  }
-  .ac-wip {
-    border-top: 1px solid var(--border);
-    padding-top: 9px;
-  }
-  .ac-wiplab {
-    font: 700 9px/1 var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--faint);
-    margin-bottom: 6px;
-  }
-  .ac-wipitem {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 12px;
+  .vitals .v b {
+    font-size: 13px;
     color: var(--text);
-    padding: 2px 0;
   }
-  .ac-wipitem .mono {
+  .vitals .v.live b {
+    color: var(--state-flight);
+  }
+  .vitals .v.down b {
+    color: var(--state-stuck);
+  }
+  .vitals .you {
+    font-size: 10px;
     color: var(--faint);
-    font-size: 10.5px;
   }
-  .ac-wipitem .pill {
-    font: 700 8.5px/1 var(--mono);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    padding: 2px 5px;
-    border-radius: 5px;
+  .vitals .trust {
+    margin-left: auto;
+    font: 600 11px/1 var(--mono);
+    color: var(--state-flight);
   }
-  .p-open {
-    color: var(--open);
-    background: color-mix(in srgb, var(--open) 16%, transparent);
+  .vitals .trust.warn {
+    color: var(--state-unowned);
   }
-  .p-claimed {
-    color: var(--claimed);
-    background: color-mix(in srgb, var(--claimed) 16%, transparent);
+
+  .bays {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
   }
-  .p-blocked {
-    color: var(--blocked);
-    background: color-mix(in srgb, var(--blocked) 16%, transparent);
+  .bay {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 11px;
   }
-  .p-done {
-    color: var(--done);
-    background: color-mix(in srgb, var(--done) 16%, transparent);
+  .bay.dark {
+    opacity: 0.72;
   }
-  .p-error {
-    color: var(--error);
-    background: color-mix(in srgb, var(--error) 16%, transparent);
-  }
-  .ac-idle {
-    font-size: 12px;
-    color: var(--faint);
-    font-style: italic;
-  }
-  .ac-warnline {
+  .bay-h {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-top: 2px;
-    font-size: 11px;
-    color: var(--blocked);
+    gap: 8px;
+    padding: 2px 4px 9px;
   }
-  .ac-note {
-    font-size: 11px;
-    color: var(--faint);
-    margin: 0;
+  .bay-h .host {
+    font-size: 12.5px;
+    font-weight: 640;
+    color: var(--text);
   }
-  .fleet-note {
-    margin: 0 0 12px;
+  .bay-h .pw {
+    margin-left: auto;
+    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--state-flight);
+  }
+  .bay-h .pw .pip {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--state-flight);
+    box-shadow: 0 0 6px var(--state-flight);
+  }
+  .bay.dark .bay-h .pw {
+    color: var(--state-stuck);
+  }
+  .bay.dark .bay-h .pw .pip {
+    background: var(--state-stuck);
+    box-shadow: none;
+  }
+  .bay-agents {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  @media (max-width: 767.98px) {
+    .bays {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

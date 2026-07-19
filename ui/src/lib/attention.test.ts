@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateAttention, deriveLiveness, deriveTrust, hubHealthReason } from './attention';
+import { aggregateAttention, agentPresence, deriveLiveness, deriveTrust, hubHealthReason } from './attention';
 import type { Agent, Hub, Overview, RequestRow } from './types';
 
 function hub(id: string, label = id, overrides: Partial<Hub> = {}): Hub {
@@ -326,5 +326,26 @@ describe('domains — real per-hub tier/sync carried through unchanged, health c
     const [domain] = aggregateAttention([{ hub: h, overview: ov }]).domains;
     expect(domain!.health).toBe('ok');
     expect(hubHealthReason(domain!)).toBe('healthy');
+  });
+});
+
+describe('agentPresence — per-hub last-seen for the piece-8 dossier', () => {
+  it('lists every hub an agent identity occurs on, each with that hub\'s OWN lastTs (not collapsed)', () => {
+    const hubA = hub('lab', 'Lab', { tier: 'own' });
+    const hubB = hub('orbit', 'Orbit', { tier: 'foreign' });
+    const hubOverviews = [
+      { hub: hubA, overview: overview([agent({ id: 'jarvis', lastTs: '2026-07-18T10:00:00Z' })], [], hubA) },
+      { hub: hubB, overview: overview([agent({ id: 'jarvis', lastTs: '2026-07-18T09:00:00Z' })], [], hubB) },
+    ];
+    expect(agentPresence(hubOverviews, 'jarvis')).toEqual([
+      { hub: 'lab', tier: 'own', lastTs: '2026-07-18T10:00:00Z' },
+      { hub: 'orbit', tier: 'foreign', lastTs: '2026-07-18T09:00:00Z' },
+    ]);
+  });
+
+  it('an agent not present on a hub is simply absent from that hub\'s row — never a fabricated entry', () => {
+    const hubA = hub('lab');
+    const hubOverviews = [{ hub: hubA, overview: overview([agent({ id: 'jarvis' })], [], hubA) }];
+    expect(agentPresence(hubOverviews, 'herald')).toEqual([]);
   });
 });

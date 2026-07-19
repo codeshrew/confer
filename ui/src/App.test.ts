@@ -484,3 +484,38 @@ describe('App — right-rail context mode', () => {
     expect(screen.getByText('Meta-thread')).toBeInTheDocument();
   });
 });
+
+describe('App — piece 8b: the agent dossier, reachable from multiple entry points', () => {
+  it('clicking an Overview AgentNode opens the dossier WITHOUT navigating away — esc returns to the exact same place', async () => {
+    appState.drawer = 'none';
+    appState.view = 'overview';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    const nodes = await screen.findAllByTestId('agent-node');
+    await user.click(nodes[0]!);
+
+    expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+    // Never navigated — still on Overview, not forced into the Fleet tab.
+    expect(appState.view).toBe('overview');
+    expect(screen.getByTestId('overview-view')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('agent-dossier')).not.toBeInTheDocument();
+    expect(appState.view).toBe('overview');
+  });
+
+  it('the Fleet deck also opens the dossier — a second real entry point for the same popover', async () => {
+    appState.drawer = 'none';
+    appState.view = 'fleet';
+    appState.hub = '';
+    const user = userEvent.setup();
+    render(App);
+
+    const cards = await screen.findAllByTestId('fleet-presence-card');
+    await user.click(cards[0]!);
+
+    expect(await screen.findByTestId('agent-dossier')).toBeInTheDocument();
+  });
+});
