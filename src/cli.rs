@@ -426,6 +426,14 @@ pub(crate) enum Cmd {
         /// normal | high. Lower-priority items still land — seen via `poll`.
         #[arg(long = "min-priority", default_value = "low")]
         min_priority: String,
+        /// only wake on events at/above this intrinsic wake-rung: alert (act-now
+        /// only) | notice (default — mutes only board mechanics: claim/ack/defer)
+        /// | all (today's behavior — every event addressed to you) | verbose (the
+        /// WHOLE board, every rung — implies --all scope; the overseer firehose).
+        /// Below-threshold events still land — seen via `poll`/`inbox`. A sender's
+        /// `--priority high` always breaks through and wakes regardless of this floor.
+        #[arg(long = "wake-on", default_value = "notice")]
+        wake_on: String,
         /// don't emit the one-shot "a newer confer is on this hub — update" wake (it's on by
         /// default; version drift is otherwise only seen at watch startup / `confer status`).
         #[arg(long = "no-version-notice")]

@@ -3191,12 +3191,19 @@ fn e2e_filtered_poll_does_not_advance_read_frontier() {
 /// Spawn a role's watch, let it run briefly, then kill it and return its stdout.
 /// The watch EMITS (delivery) but must never advance the READ frontier.
 fn watch_briefly(c: &Clone, secs: u64) -> String {
+    watch_briefly_args(c, secs, &[])
+}
+
+/// Like `watch_briefly`, but with extra CLI args (e.g. `--wake-on alert`).
+fn watch_briefly_args(c: &Clone, secs: u64, extra: &[&str]) -> String {
     use std::io::Read;
+    let mut args = vec!["watch", "--role", &c.role, "--poll", "1", "--no-advance"];
+    args.extend_from_slice(extra);
     let mut child = Command::new(BIN)
         .env("HOME", &c.home)
         .env("CONFER_HUB", &c.dir)
         .env("CONFER_ROLE", &c.role)
-        .args(["watch", "--role", &c.role, "--poll", "1", "--no-advance"])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -3238,6 +3245,106 @@ fn e2e_watch_emit_does_not_mark_read() {
         b.unread_count(),
         1,
         "a watch emit must NOT advance the read frontier"
+    );
+}
+
+/// design/51 — the wake-class severity gate. Default `--wake-on notice` mutes ONLY the
+/// transactional trio (claim/ack/defer): a `claim` addressed to me doesn't wake, but a `note` to
+/// me and a `done` on MY OWN request do. Muted events still land unread (poll/inbox), same
+/// delivery-vs-wake split `--min-priority` already uses — never advances the read frontier.
+#[test]
+fn e2e_wake_on_default_notice_mutes_transactional() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // alpha opens a request that beta will claim — the claim auto-addresses back to alpha
+    // (the requester), so it lands directly in alpha's inbox. beta's clone predates the
+    // request (cloned before alpha sent it), so pull first — its own auto-addressing reads
+    // the LOCAL tree, and a stale one would resolve `of` without finding the request's author.
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "please claim me", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claim");
+    // beta also sends alpha a plain note (should wake at the default) and resolves the request
+    // with `done` (a resolution on ALPHA's OWN request — also should wake at the default).
+    b.send(&["--type", "note", "--to", "alpha", "--summary", "a substantive note", "--text", "n"]);
+    assert!(ok(&b.confer(&["done", "--of", &r])), "beta done");
+
+    let w = watch_briefly(&a, 3); // default --wake-on notice
+    assert!(!w.contains("claiming"), "the claim (transactional) must NOT wake at the default: {w}");
+    assert!(w.contains("substantive note"), "a note to me must wake at the default: {w}");
+    assert!(
+        w.contains("done") || w.contains("watch me") || w.contains("please claim me"),
+        "a done on MY OWN request must wake at the default: {w}"
+    );
+
+    // Muted (and woken) events alike are DELIVERY, never consumption — none of them advanced
+    // alpha's read frontier. alpha has 3 direct messages: the claim, the note, and the done.
+    assert_eq!(
+        a.unread_count(),
+        3,
+        "watch — muted or not — must never advance the read frontier"
+    );
+}
+
+/// `--wake-on alert` mutes `notice` too: a `done` on MY OWN request no longer wakes, but a
+/// `request` addressed to me and an `error` on MY OWN request still do (they're `alert`).
+#[test]
+fn e2e_wake_on_alert_mutes_notice_but_not_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+
+    // A request alpha authors, resolved by beta with `done` — notice, muted at --wake-on alert.
+    // beta's clone predates the request, so pull first (see the notice-floor test above).
+    let r1 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "resolve me quietly", "--text", "b",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r1])), "beta claim r1");
+    assert!(ok(&b.confer(&["done", "--of", &r1])), "beta done r1");
+
+    // A second request alpha authors, that beta errors out on — alert, must still wake.
+    let r2 = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "this one breaks", "--text", "b",
+    ]);
+    assert!(ok(&b.confer(&["claim", "--of", &r2])), "beta claim r2");
+    assert!(ok(&b.confer(&["error", "--of", &r2])), "beta error r2");
+
+    // A brand-new request FROM beta TO alpha — alert (request addressed to me).
+    b.send(&[
+        "--type", "request", "--to", "alpha", "--summary", "please handle this", "--text", "b",
+    ]);
+
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        !w.contains("DONE "),
+        "done on MY request must NOT wake at --wake-on alert: {w}"
+    );
+    assert!(w.contains("please handle this"), "a request addressed to me must wake at --wake-on alert: {w}");
+    assert!(w.contains("failed"), "an error on MY request must wake at --wake-on alert: {w}");
+}
+
+/// `--priority high` breaks through even the strictest floor: a `claim` (normally
+/// transactional) sent at high priority wakes even under `--wake-on alert`.
+#[test]
+fn e2e_priority_high_breaks_through_wake_on_alert() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "urgent claim test", "--text", "b",
+    ]);
+    b.pull(); // beta's clone predates the request (see the notice-floor test above)
+    b.send(&[
+        "--type", "claim", "--of", &r, "--priority", "high", "--summary", "claiming",
+    ]);
+    let w = watch_briefly_args(&a, 3, &["--wake-on", "alert"]);
+    assert!(
+        w.contains("claiming") || w.contains("urgent claim test"),
+        "a high-priority claim must break through --wake-on alert: {w}"
     );
 }
 

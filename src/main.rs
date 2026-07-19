@@ -1032,6 +1032,7 @@ fn run() -> Result<()> {
             replace,
             all,
             min_priority,
+            wake_on,
             no_version_notice,
             delivery,
             ..
@@ -1046,6 +1047,18 @@ fn run() -> Result<()> {
                     ))
                 }
             };
+            let (wake_on, all) = match wake_on.as_str() {
+                "alert" => (watch::WakeRung::Alert, all),
+                "notice" => (watch::WakeRung::Notice, all),
+                "all" => (watch::WakeRung::Transactional, all),
+                // verbose is sugar for "lowest floor + whole-board scope" (design/51 §4).
+                "verbose" => (watch::WakeRung::Transactional, true),
+                other => {
+                    return Err(anyhow!(
+                        "invalid --wake-on '{other}': expected alert | notice | all | verbose"
+                    ))
+                }
+            };
             watch::run(watch::WatchOpts {
                 topic,
                 role,
@@ -1055,6 +1068,7 @@ fn run() -> Result<()> {
                 replace,
                 all,
                 min_priority,
+                wake_on,
                 no_version_notice,
                 delivery,
             })

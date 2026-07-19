@@ -74,6 +74,7 @@ pub fn run(role: Option<String>) -> Result<()> {
         replace: true,
         all: false,
         min_priority: 0,
+        wake_on: watch::WakeRung::Notice,
         no_version_notice: false,
         delivery: Some("monitor".to_string()),
     })
