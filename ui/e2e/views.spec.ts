@@ -55,7 +55,7 @@ test('Board is a triage cockpit — real stats, workload, throughput, grouped wo
 
   // A stat card filters the work lists down to just that state.
   await page.getByTestId('board-stat-stuck').click();
-  await expect(boardView.getByTestId('board-filter-note')).toBeVisible();
+  await expect(boardView.getByTestId('board-filter-chips')).toBeVisible();
   await expect(boardView.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
 });
 
@@ -130,4 +130,25 @@ test('Board cockpit renders correctly in both themes', async ({ page }) => {
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(boardView.getByTestId('board-stat-open')).toBeVisible();
   await expect(boardView.getByText('closure throughput')).toBeVisible();
+});
+
+test('Board\'s left rail is a Fleet-as-filter (not the chat channel list) — click an agent to filter', async ({ page }) => {
+  await page.getByRole('tab', { name: 'Board', exact: true }).click();
+  const boardView = page.getByTestId('board-view');
+  const fleetRail = page.getByTestId('board-fleet-rail');
+
+  await expect(fleetRail).toBeVisible();
+  await expect(fleetRail.getByText('Compositor')).toBeVisible();
+  // Not the chat topic list — no "#" topic entries here.
+  await expect(fleetRail.getByText(/^#/)).toHaveCount(0);
+
+  await fleetRail.getByText('Compositor').click();
+  await expect(boardView.getByTestId('board-filter-chips')).toContainText('Compositor');
+  // Compositor is the claimant on the "Freeze the CSL schema" ticket.
+  await expect(boardView.getByText('Freeze the CSL schema — needs a decision from Herald')).toBeVisible();
+
+  // Collapsing hides the agent list without losing the active filter.
+  await page.getByRole('button', { name: /collapse fleet filter/i }).click();
+  await expect(fleetRail.getByText('Compositor')).not.toBeVisible();
+  await expect(boardView.getByTestId('board-filter-chips')).toContainText('Compositor');
 });

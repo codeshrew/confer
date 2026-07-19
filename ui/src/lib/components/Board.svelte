@@ -10,15 +10,17 @@
   // old flat groupBy('status'|'topic'|'claimant') swimlanes did.
   //
   // All the math lives in boardStats.ts (pure, unit-tested) — this file is
-  // template + the local state-filter/done-fold UI state piece 5b itself
-  // owns. Piece 5c adds the Fleet-as-filter rail replacing the left column,
-  // wires the workload bars as a second (agent) filter dimension, and
-  // layers the combined active-filter chip row + clear-all on top of the
-  // single-state filter this piece already ships.
+  // template + the local done-fold UI state. The two filter DIMENSIONS
+  // (state, from a stat card — piece 5b; agent, from a workload-bar row OR
+  // the Fleet-filter rail — piece 5c) live in the shared `boardFilter`
+  // singleton (boardFilter.svelte.ts) so BoardFleetRail.svelte, this
+  // component's sibling in App.svelte's template, can toggle the SAME
+  // agent filter without App.svelte threading state between them.
   import type { Agent, HubTier, Message, RequestRow } from '../types';
   import { paneFocus } from '../paneFocus.svelte';
-  import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, summarizeThroughput, verdictParts } from '../boardStats';
-  import { ticketStateOf, type TicketState } from '../ticketState';
+  import { boardFilter } from '../boardFilter.svelte';
+  import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, filterRequests, summarizeThroughput, verdictParts } from '../boardStats';
+  import { type TicketState } from '../ticketState';
   import TicketRow from './TicketRow.svelte';
   import EmptyState from './EmptyState.svelte';
 
@@ -65,16 +67,18 @@
   const maxAsking = $derived(Math.max(1, ...asking.map((r) => r.count)));
   const maxDayCount = $derived(Math.max(1, ...throughputDays.map((d) => Math.max(d.opened, d.closed))));
 
-  let stateFilter = $state<TicketState | null>(null);
   let doneOpen = $state(false);
 
-  function ticketsIn(state: TicketState): RequestRow[] {
-    return requests.filter((r) => ticketStateOf(r) === state).sort((a, b) => b.ageSecs - a.ageSecs);
+  /** Both filter dimensions apply here — the agent filter narrows WHAT'S
+   * inside each group; the state filter (below, in `groups`) picks WHICH
+   * groups show at all. */
+  function itemsFor(state: TicketState): RequestRow[] {
+    return filterRequests(requests, state, boardFilter.agentFilter).sort((a, b) => b.ageSecs - a.ageSecs);
   }
-  const needsOwnerList = $derived(ticketsIn('unowned'));
-  const inFlightList = $derived(ticketsIn('flight'));
-  const stuckList = $derived(ticketsIn('stuck'));
-  const doneList = $derived(ticketsIn('done'));
+  const needsOwnerList = $derived(itemsFor('unowned'));
+  const inFlightList = $derived(itemsFor('flight'));
+  const stuckList = $derived(itemsFor('stuck'));
+  const doneList = $derived(itemsFor('done'));
 
   interface Group {
     key: TicketState;
@@ -90,14 +94,7 @@
       { key: 'stuck', label: 'blocked / stale', cls: 'stuck', glyph: '▲', items: stuckList },
     ]
   );
-  const groups = $derived(stateFilter ? allGroups.filter((g) => g.key === stateFilter) : allGroups);
-
-  /** Clicking "Open" (the total-live stat, not a disjoint bucket) clears
-   * whatever filter is active — matches its own "active work" meaning:
-   * there's no narrower group it could drill to. */
-  function toggleStat(state: TicketState | 'activeWork') {
-    stateFilter = state === 'activeWork' ? null : stateFilter === state ? null : state;
-  }
+  const groups = $derived(boardFilter.stateFilter ? allGroups.filter((g) => g.key === boardFilter.stateFilter) : allGroups);
 
   function pct(count: number, max: number): number {
     return Math.min(100, (count / max) * 100);
@@ -138,22 +135,28 @@
     </div>
 
     <div class="stats">
-      <button type="button" class="stat s-open" class:on={stateFilter === null} onclick={() => toggleStat('activeWork')} data-testid="board-stat-open">
+      <button type="button" class="stat s-open" class:on={boardFilter.stateFilter === null} onclick={() => boardFilter.toggleState('activeWork')} data-testid="board-stat-open">
         <div class="n">{stats.activeWork}</div>
         <div class="k">Open</div>
         <div class="sub">active work</div>
       </button>
-      <button type="button" class="stat s-flight" class:on={stateFilter === 'flight'} onclick={() => toggleStat('flight')} data-testid="board-stat-flight">
+      <button type="button" class="stat s-flight" class:on={boardFilter.stateFilter === 'flight'} onclick={() => boardFilter.toggleState('flight')} data-testid="board-stat-flight">
         <div class="n">{stats.inFlight}</div>
         <div class="k">In flight</div>
         <div class="sub">claimed · being worked</div>
       </button>
-      <button type="button" class="stat s-stuck" class:on={stateFilter === 'stuck'} onclick={() => toggleStat('stuck')} data-testid="board-stat-stuck">
+      <button type="button" class="stat s-stuck" class:on={boardFilter.stateFilter === 'stuck'} onclick={() => boardFilter.toggleState('stuck')} data-testid="board-stat-stuck">
         <div class="n">{stats.stuck}</div>
         <div class="k">Stuck</div>
         <div class="sub">blocked or stale</div>
       </button>
-      <button type="button" class="stat s-unowned" class:on={stateFilter === 'unowned'} onclick={() => toggleStat('unowned')} data-testid="board-stat-unowned">
+      <button
+        type="button"
+        class="stat s-unowned"
+        class:on={boardFilter.stateFilter === 'unowned'}
+        onclick={() => boardFilter.toggleState('unowned')}
+        data-testid="board-stat-unowned"
+      >
         <div class="n">{stats.needsOwner}</div>
         <div class="k">Need an owner</div>
         <div class="sub">open · no claimant</div>
@@ -179,11 +182,11 @@
         <span class="lab">carrying <span class="dim">· who's doing the work</span></span>
         <div class="load">
           {#each carrying as row (row.agentId)}
-            <div class="lrow">
+            <button type="button" class="lrow" class:active={boardFilter.agentFilter === row.agentId} onclick={() => boardFilter.toggleAgent(row.agentId)} data-testid="board-load-row">
               <span class="who"><span class="av" style="background:{avatarColor(row.agentId)}">{avatar(row.agentId)}</span>{display(row.agentId)}</span>
               <div class="track"><div class="fill" style="width:{pct(row.count, maxCarrying)}%;background:var(--state-flight)"></div></div>
               <span class="cnt mono">{row.count}</span>
-            </div>
+            </button>
           {:else}
             <p class="empty-note">nobody's carrying anything right now</p>
           {/each}
@@ -192,7 +195,7 @@
         <div class="load">
           {#each asking as row (row.agentId)}
             {@const unownedFrac = row.count ? (row.unownedCount ?? 0) / row.count : 0}
-            <div class="lrow">
+            <button type="button" class="lrow" class:active={boardFilter.agentFilter === row.agentId} onclick={() => boardFilter.toggleAgent(row.agentId)} data-testid="board-load-row">
               <span class="who"><span class="av" style="background:{avatarColor(row.agentId)}">{avatar(row.agentId)}</span>{display(row.agentId)}</span>
               <div class="track">
                 <div class="fill fill-ask" style="width:{pct(row.count, maxAsking)}%">
@@ -200,7 +203,7 @@
                 </div>
               </div>
               <span class="cnt mono">{row.count}</span>
-            </div>
+            </button>
           {:else}
             <p class="empty-note">nobody's waiting on anything right now</p>
           {/each}
@@ -232,10 +235,22 @@
       </div>
     </div>
 
-    {#if stateFilter}
-      <div class="filter-note" data-testid="board-filter-note">
-        <span>showing only: {groups[0]?.label}</span>
-        <button type="button" onclick={() => (stateFilter = null)}>show all ↺</button>
+    {#if boardFilter.active}
+      <div class="filter-chips" data-testid="board-filter-chips">
+        {#if boardFilter.stateFilter}
+          {@const activeGroup = allGroups.find((g) => g.key === boardFilter.stateFilter)}
+          <span class="chip">
+            {activeGroup?.label}
+            <button type="button" onclick={() => boardFilter.toggleState(boardFilter.stateFilter!)} aria-label="Clear state filter">✕</button>
+          </span>
+        {/if}
+        {#if boardFilter.agentFilter}
+          <span class="chip">
+            {display(boardFilter.agentFilter)}
+            <button type="button" onclick={() => boardFilter.toggleAgent(boardFilter.agentFilter!)} aria-label="Clear agent filter">✕</button>
+          </span>
+        {/if}
+        <button type="button" class="clear-all" onclick={() => boardFilter.clearAll()}>clear all ↺</button>
       </div>
     {/if}
 
@@ -254,9 +269,9 @@
       {/if}
     {/each}
 
-    {#if !stateFilter && stats.done > 0}
+    {#if !boardFilter.stateFilter && doneList.length > 0}
       <button type="button" class="done-fold" onclick={() => (doneOpen = !doneOpen)} aria-expanded={doneOpen} data-testid="board-done-fold">
-        <span>✓</span> <span class="n">{stats.done} closed</span> — the arc that's already resolved
+        <span>✓</span> <span class="n">{doneList.length} closed</span> — the arc that's already resolved
         <span class="chev">{doneOpen ? 'hide ︿' : 'show ⌄'}</span>
       </button>
       {#if doneOpen}
@@ -460,6 +475,22 @@
     grid-template-columns: 5.5rem 1fr auto;
     align-items: center;
     gap: 9px;
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 3px 5px;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .lrow:hover {
+    background: var(--panel-3, var(--panel));
+  }
+  .lrow.active {
+    border-color: var(--accent);
+    background: var(--panel-3, var(--panel));
   }
   .lrow .who {
     display: flex;
@@ -546,21 +577,42 @@
     font-size: 13px;
   }
 
-  .filter-note {
+  .filter-chips {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 12px;
-    color: var(--muted);
+    flex-wrap: wrap;
+    gap: 8px;
     margin-bottom: 8px;
   }
-  .filter-note button {
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 11px/1 var(--mono);
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
+    padding: 4px 6px 4px 10px;
+  }
+  .chip button {
+    color: var(--faint);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    padding: 0 2px;
+  }
+  .chip button:hover {
+    color: var(--text);
+  }
+  .clear-all {
     font: 600 11px/1 var(--mono);
     color: var(--accent);
     background: transparent;
     border: 1px solid var(--border-2);
     border-radius: 6px;
-    padding: 3px 8px;
+    padding: 4px 8px;
     cursor: pointer;
   }
 

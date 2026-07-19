@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import Board from './Board.svelte';
+import { boardFilter } from '../boardFilter.svelte';
 import type { Agent, Message, RequestRow } from '../types';
+
+// `boardFilter` is a module singleton (piece 5c) — reset between tests so
+// one test's stat/workload clicks can't leak into the next (same gotcha
+// readState.svelte.ts's tests guard against).
+beforeEach(() => {
+  boardFilter.clearAll();
+});
 
 const reader: Agent = {
   id: 'reader',
@@ -89,13 +97,13 @@ describe('Board — workload (carrying / asking)', () => {
     render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
     expect(screen.getByText('carrying')).toBeInTheDocument();
     // Reader is carrying (wip has one CLAIMED entry); Pipeline is not.
-    const carryingSection = screen.getByText('carrying').closest('.card')!;
+    const carryingSection = screen.getByText('carrying').closest('.card')! as HTMLElement;
     expect(carryingSection).toHaveTextContent('Reader');
   });
 
   it('asking groups live requests by requester, and the unowned key is present when relevant', () => {
     render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
-    const askingSection = screen.getByText('asking').closest('.card')!;
+    const askingSection = screen.getByText('asking').closest('.card')! as HTMLElement;
     // pipeline filed 2 live requests here (alignment pass is claimant reader
     // but from pipeline is not set on it — check the fixture's `from`).
     expect(askingSection).toHaveTextContent('Pipeline');
@@ -149,20 +157,20 @@ describe('Board — stat click-to-filter', () => {
     expect(screen.getByText('stuck on review')).toBeInTheDocument();
     expect(screen.queryByText('needs a home')).not.toBeInTheDocument();
     expect(screen.queryByText('alignment pass')).not.toBeInTheDocument();
-    expect(screen.getByTestId('board-filter-note')).toHaveTextContent('blocked / stale');
+    expect(screen.getByTestId('board-filter-chips')).toHaveTextContent('blocked / stale');
   });
 
-  it('"show all" clears the filter', async () => {
+  it('"clear all" clears the filter', async () => {
     const user = userEvent.setup();
     render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
 
     await user.click(screen.getByTestId('board-stat-stuck'));
-    await user.click(screen.getByRole('button', { name: /show all/ }));
+    await user.click(screen.getByRole('button', { name: /clear all/ }));
 
     expect(screen.getByText('needs a home')).toBeInTheDocument();
     expect(screen.getByText('alignment pass')).toBeInTheDocument();
     expect(screen.getByText('stuck on review')).toBeInTheDocument();
-    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('board-filter-chips')).not.toBeInTheDocument();
   });
 
   it('clicking a second stat swaps the filter; clicking the SAME stat again clears it', async () => {
@@ -175,7 +183,7 @@ describe('Board — stat click-to-filter', () => {
     expect(screen.queryByText('stuck on review')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('board-stat-unowned'));
-    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('board-filter-chips')).not.toBeInTheDocument();
   });
 
   it('clicking "Open" (the total, not a disjoint bucket) clears any active filter', async () => {
@@ -184,7 +192,7 @@ describe('Board — stat click-to-filter', () => {
 
     await user.click(screen.getByTestId('board-stat-stuck'));
     await user.click(screen.getByTestId('board-stat-open'));
-    expect(screen.queryByTestId('board-filter-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('board-filter-chips')).not.toBeInTheDocument();
   });
 });
 
@@ -216,5 +224,81 @@ describe('Board — closure throughput', () => {
 
     expect(screen.getByText('closure throughput')).toBeInTheDocument();
     expect(screen.getByText('1', { selector: '.chart-meta b' })).toBeInTheDocument();
+  });
+});
+
+describe('Board — agent filter (workload rows) + combined filters', () => {
+  it('clicking a workload row (carrying) filters the work lists to that agent\'s work', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    const carryingSection = screen.getByText('carrying').closest('.card')! as HTMLElement;
+    const readerRow = within(carryingSection).getByText('Reader').closest('button')! as HTMLElement;
+    await user.click(readerRow);
+
+    // Reader carries "alignment pass" (claimant) — visible. "needs a home"
+    // (from pipeline, unclaimed) and "stuck on review" (pipeline's) are not.
+    expect(screen.getByText('alignment pass')).toBeInTheDocument();
+    expect(screen.queryByText('needs a home')).not.toBeInTheDocument();
+    expect(screen.queryByText('stuck on review')).not.toBeInTheDocument();
+    expect(screen.getByTestId('board-filter-chips')).toHaveTextContent('Reader');
+  });
+
+  it('clicking the SAME workload row again clears the agent filter', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    const carryingSection = screen.getByText('carrying').closest('.card')! as HTMLElement;
+    const readerRow = within(carryingSection).getByText('Reader').closest('button')! as HTMLElement;
+    await user.click(readerRow);
+    await user.click(readerRow);
+
+    expect(screen.queryByTestId('board-filter-chips')).not.toBeInTheDocument();
+    expect(screen.getByText('needs a home')).toBeInTheDocument();
+  });
+
+  it('state + agent filters combine with AND, both shown as separate chips', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+    const carryingSection = screen.getByText('carrying').closest('.card')! as HTMLElement;
+    // Pipeline isn't in the "carrying" list (no CLAIMED wip), so use the
+    // asking section instead, where pipeline does appear.
+    const askingSection = screen.getByText('asking').closest('.card')! as HTMLElement;
+    const pipelineRow = within(askingSection).getByText('Pipeline').closest('button')! as HTMLElement;
+    await user.click(pipelineRow);
+
+    const chips = screen.getByTestId('board-filter-chips');
+    expect(chips).toHaveTextContent('blocked / stale');
+    expect(chips).toHaveTextContent('Pipeline');
+    // "stuck on review" is BLOCKED and pipeline is its claimant — matches both.
+    expect(screen.getByText('stuck on review')).toBeInTheDocument();
+    void carryingSection;
+  });
+
+  it('"clear all" resets both dimensions at once', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    await user.click(screen.getByTestId('board-stat-stuck'));
+    const askingSection = screen.getByText('asking').closest('.card')! as HTMLElement;
+    await user.click(within(askingSection).getByText('Pipeline').closest('button')! as HTMLElement);
+    await user.click(screen.getByRole('button', { name: /clear all/ }));
+
+    expect(screen.queryByTestId('board-filter-chips')).not.toBeInTheDocument();
+    expect(screen.getByText('needs a home')).toBeInTheDocument();
+    expect(screen.getByText('alignment pass')).toBeInTheDocument();
+  });
+
+  it('the done fold\'s own count respects the active agent filter', async () => {
+    const user = userEvent.setup();
+    render(Board, { requests, agents, messages: [], hubName: 'agent-coord' });
+
+    const carryingSection = screen.getByText('carrying').closest('.card')! as HTMLElement;
+    await user.click(within(carryingSection).getByText('Reader').closest('button')! as HTMLElement);
+
+    // Reader is the claimant on the one DONE ticket too.
+    expect(screen.getByTestId('board-done-fold')).toHaveTextContent('1 closed');
   });
 });

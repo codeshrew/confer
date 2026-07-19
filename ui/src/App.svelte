@@ -6,6 +6,7 @@
   import WhichKeyOverlay from './lib/components/WhichKeyOverlay.svelte';
   import FocusReader from './lib/components/FocusReader.svelte';
   import LeftRail from './lib/components/LeftRail.svelte';
+  import BoardFleetRail from './lib/components/BoardFleetRail.svelte';
   // Aliased — this file also imports the `Overview` TYPE (the /api/overview
   // JSON shape) from ./lib/types, and the two names would collide.
   import OverviewView from './lib/components/Overview.svelte';
@@ -855,6 +856,12 @@
              becomes the mobile left drawer's content for free, since this
              wrapper's drawer CSS doesn't care what's inside it). -->
         <CodeTree hub={appState.hub} onActivate={onCodeFileActivate} onActivateRepo={onCodeRepoActivate} />
+      {:else if appState.view === 'board'}
+        <!-- piece 5c: Board's navigator is a Fleet-as-filter rail, NOT the
+             chat channel list — clicking an agent filters the board to
+             their work (same slot-swap precedent as Code's CodeTree
+             above). -->
+        <BoardFleetRail agents={overview?.fleet ?? []} />
       {:else}
         <LeftRail
           hubName={appState.hub}

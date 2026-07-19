@@ -12,7 +12,7 @@
 // synthetic "closed at" field. No fabricated bars, no backend gap filed.
 import type { Agent, Message, RequestRow } from './types';
 import { formatIsoDate } from './format';
-import { ticketStateOf } from './ticketState';
+import { ticketStateOf, type TicketState } from './ticketState';
 
 export interface BoardStats {
   /** The mockup's "Open" stat — sub-labeled "active work": every request
@@ -172,4 +172,20 @@ export function verdictParts(stats: BoardStats, throughput: ThroughputSummary): 
     stuck: stats.stuck > 0 ? `${stats.stuck} stuck` : null,
     trend: throughput.net > 0 ? 'closing faster than opening ↗' : throughput.net < 0 ? 'opening faster than closing ↘' : 'holding steady →',
   };
+}
+
+/** Piece 5c's combined filter — a request matches when it satisfies BOTH
+ * dimensions that are actually set (a `null` dimension always matches,
+ * "no opinion"). `agentFilter` reads as "this agent is involved" — either
+ * the requester (`from`) or the current claimant — the broadest honest
+ * reading of "filter the board to their work" that doesn't force a
+ * separate carrying-vs-asking choice onto the filter itself (the
+ * workload visuals already show that distinction; the filter just
+ * narrows which tickets are in view). */
+export function filterRequests(requests: RequestRow[], stateFilter: TicketState | null, agentFilter: string | null): RequestRow[] {
+  return requests.filter((r) => {
+    if (stateFilter && ticketStateOf(r) !== stateFilter) return false;
+    if (agentFilter && r.from !== agentFilter && !r.claimants.includes(agentFilter)) return false;
+    return true;
+  });
 }

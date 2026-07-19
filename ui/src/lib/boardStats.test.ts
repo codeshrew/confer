@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, summarizeThroughput, verdictParts } from './boardStats';
+import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, filterRequests, summarizeThroughput, verdictParts } from './boardStats';
 import type { Agent, Message, RequestRow } from './types';
 
 function request(overrides: Partial<RequestRow> = {}): RequestRow {
@@ -172,5 +172,28 @@ describe('verdictParts', () => {
     const stats = computeBoardStats([]);
     expect(verdictParts(stats, { closed: 5, opened: 2, net: 3 }).trend).toBe('closing faster than opening ↗');
     expect(verdictParts(stats, { closed: 2, opened: 5, net: -3 }).trend).toBe('opening faster than closing ↘');
+  });
+});
+
+describe('filterRequests', () => {
+  const a = request({ id: 'a', from: 'jarvis', status: 'OPEN', claimants: [] }); // unowned, jarvis asking
+  const b = request({ id: 'b', from: 'herald', status: 'CLAIMED', claimants: ['jarvis'] }); // flight, jarvis carrying
+  const c = request({ id: 'c', from: 'herald', status: 'BLOCKED', claimants: ['herald'] }); // stuck, herald
+
+  it('a null dimension matches everything ("no opinion")', () => {
+    expect(filterRequests([a, b, c], null, null)).toEqual([a, b, c]);
+  });
+
+  it('state alone narrows to that state', () => {
+    expect(filterRequests([a, b, c], 'stuck', null)).toEqual([c]);
+  });
+
+  it('agent alone matches either the requester OR the claimant — "their work"', () => {
+    expect(filterRequests([a, b, c], null, 'jarvis')).toEqual([a, b]);
+  });
+
+  it('both dimensions combine with AND', () => {
+    expect(filterRequests([a, b, c], 'flight', 'jarvis')).toEqual([b]);
+    expect(filterRequests([a, b, c], 'unowned', 'herald')).toEqual([]);
   });
 });
