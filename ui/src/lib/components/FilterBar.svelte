@@ -16,9 +16,15 @@
     onToggleNotes?: () => void;
     onToggleReqs?: () => void;
     onChatDensityChange?: (density: 'summary' | 'full') => void;
+    /** piece 4, item 2 — the explicit "catch up" escape hatch for the
+     * real per-(hub,topic) watermark: moves it to now on demand, so a
+     * long absence from a topic is never a trap the operator has to
+     * scroll their way out of. Omitted (undefined) hides the button —
+     * only Chat wires it, matching `chatDensity`'s own Chat-only gate. */
+    onMarkAllRead?: () => void;
   }
 
-  let { notesOn, reqsOn, chatDensity, onToggleNotes, onToggleReqs, onChatDensityChange }: Props = $props();
+  let { notesOn, reqsOn, chatDensity, onToggleNotes, onToggleReqs, onChatDensityChange, onMarkAllRead }: Props = $props();
 </script>
 
 <div class="filterbar">
@@ -49,6 +55,13 @@
         Full
       </button>
     </div>
+  {/if}
+
+  {#if onMarkAllRead}
+    <span class="spacer"></span>
+    <button type="button" class="markread" onclick={() => onMarkAllRead?.()} data-testid="mark-all-read">
+      ✓ mark all read
+    </button>
   {/if}
 </div>
 
@@ -124,5 +137,21 @@
   }
   .segbtn:hover:not(.on) {
     color: var(--text);
+  }
+  .spacer {
+    flex: 1;
+  }
+  .markread {
+    white-space: nowrap;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-2);
+    background: var(--panel-2);
+    color: var(--muted);
+    font: 550 12px/1 inherit;
+  }
+  .markread:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
 </style>

@@ -22,6 +22,7 @@ function message(overrides: Partial<Message> = {}): Message {
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [],
     ...overrides,
   };
 }

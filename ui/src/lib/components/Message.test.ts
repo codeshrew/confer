@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import Message from './Message.svelte';
+import { readState } from '../readState.svelte';
 import type { Agent, Message as MessageT } from '../types';
 
 const herald: Agent = {
@@ -33,6 +34,7 @@ const noteMessage: MessageT = {
   replyTo: null,
   supersedes: null,
   refs: [],
+  seenBy: [],
 };
 
 const claimMessage: MessageT = {
@@ -297,6 +299,23 @@ describe('Message', () => {
       const { container } = render(Message, { message: claimMessage, fromAgent: herald, seenEntries: [], highlight: true });
       expect(container.querySelector('.sysline.pulse')).toBeInTheDocument();
       expect(container.querySelector('[data-msg-id="msg_01JQa10"]')).toBeInTheDocument();
+    });
+  });
+
+  describe('piece 4, item 2 — the "detail-viewed" glyph is neutral by absence', () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it('shows nothing when the message has never been opened in the focus reader', () => {
+      render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [] });
+      expect(screen.queryByTitle('Opened in the focus reader')).not.toBeInTheDocument();
+    });
+
+    it('shows a subtle ✓ once readState records it as detail-viewed', () => {
+      readState.markDetailViewed(noteMessage.id);
+      render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [] });
+      expect(screen.getByTitle('Opened in the focus reader')).toBeInTheDocument();
     });
   });
 });

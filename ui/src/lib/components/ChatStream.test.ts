@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ChatStream from './ChatStream.svelte';
-import type { Agent, Message, RequestRow } from '../types';
+import { readState } from '../readState.svelte';
+import type { Agent, Message, RequestRow, SeenBy } from '../types';
 
 const reader: Agent = {
   id: 'reader',
@@ -17,7 +18,7 @@ const reader: Agent = {
   wip: [],
 };
 
-function msg(id: string, ts: string, summary: string): Message {
+function msg(id: string, ts: string, summary: string, seenBy: SeenBy[] = []): Message {
   return {
     id,
     from: 'reader',
@@ -33,6 +34,7 @@ function msg(id: string, ts: string, summary: string): Message {
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy,
   };
 }
 
@@ -213,14 +215,12 @@ describe('ChatStream — scrollToMessageId + highlight pulse (design/41 Phase 0)
   });
 });
 
-describe('ChatStream — seen roster vs. an offline recipient (#58)', () => {
-  const jarvisOffline: Agent = {
+describe('ChatStream — real seen-by (piece 4, item 2 — retires CONTRACT GAP #58\'s synthesized filler)', () => {
+  const jarvis: Agent = {
     id: 'jarvis',
     display: 'Jarvis',
     desc: null,
     expectedHost: null,
-    // Last active 3 days before the note below was posted — cannot possibly
-    // have seen it.
     lastTs: '2026-07-14T09:00:00Z',
     lastHost: null,
     live: false,
@@ -230,15 +230,16 @@ describe('ChatStream — seen roster vs. an offline recipient (#58)', () => {
     wip: [],
   };
 
-  it('does not mark an offline recipient "seen" for a note posted after they went offline', () => {
-    // This ts is BEFORE ChatStream's demo NEW_CUTOFF, i.e. exactly the
-    // "already old, must be all-seen-by-now" branch that previously
-    // stamped every other agent as seen unconditionally.
+  it('a recipient absent from message.seenBy is unseen — regardless of Agent.live/lastTs (the old, now-retired heuristic)', () => {
+    // jarvis is offline (live:false, stale lastTs) AND absent from seenBy —
+    // the real signal (seenBy) is what must decide this now, not the old
+    // online/offline guess. reader is ALSO absent from seenBy here, so
+    // both are pending; the roster below asserts on jarvis specifically.
     const messages = [msg('m1', '2026-07-17T14:00:00Z', 'code-ref note')];
     const { container } = render(ChatStream, {
       messages,
       requests,
-      agents: [reader, jarvisOffline],
+      agents: [reader, jarvis],
       topic: 'general',
       hub: 'agent-coord',
       notesOn: true,
@@ -247,20 +248,20 @@ describe('ChatStream — seen roster vs. an offline recipient (#58)', () => {
 
     const seen = container.querySelector('.seen');
     expect(seen).toBeInTheDocument();
-    // Not "✓ all seen" — an offline, not-yet-back recipient is still pending.
     expect(seen?.className).not.toMatch(/done/);
     const jarvisRow = Array.from(container.querySelectorAll('.roster .rr')).find((el) => el.textContent?.includes('Jarvis'));
     expect(jarvisRow?.className).toMatch(/un/);
     expect(jarvisRow?.textContent).toContain('unseen');
   });
 
-  it('still marks a recipient seen if they were active again after the message posted', () => {
-    const jarvisBackOnline: Agent = { ...jarvisOffline, lastTs: '2026-07-17T15:00:00Z' };
-    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'code-ref note')];
+  it('a recipient IN message.seenBy is seen, with the REAL confirmed timestamp — even while offline by Agent.live/lastTs (real data overrides the old heuristic entirely)', () => {
+    const messages = [
+      msg('m1', '2026-07-17T14:00:00Z', 'code-ref note', [{ role: 'jarvis', ts: '2026-07-17T14:05:00Z' }]),
+    ];
     const { container } = render(ChatStream, {
       messages,
       requests,
-      agents: [reader, jarvisBackOnline],
+      agents: [jarvis],
       topic: 'general',
       hub: 'agent-coord',
       notesOn: true,
@@ -269,6 +270,107 @@ describe('ChatStream — seen roster vs. an offline recipient (#58)', () => {
 
     const seen = container.querySelector('.seen');
     expect(seen?.className).toMatch(/done/);
+    const jarvisRow = Array.from(container.querySelectorAll('.roster .rr')).find((el) => el.textContent?.includes('Jarvis'));
+    expect(jarvisRow?.textContent).not.toContain('unseen');
+  });
+});
+
+describe('ChatStream — the real "since you last looked" watermark (piece 4, item 2)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('a never-visited (hub, topic) shows NO "NEW" divider — nothing is flagged new on a first-ever visit', () => {
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first'), msg('m2', '2026-07-17T14:05:00Z', 'second')];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'never-visited',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    expect(container.querySelector('.newmark')).not.toBeInTheDocument();
+  });
+
+  it('an existing watermark flags every message after it as NEW, and none before it', () => {
+    readState.setWatermark('agent-coord', 'general', new Date('2026-07-17T14:02:00Z').getTime());
+    const messages = [
+      msg('m1', '2026-07-17T14:00:00Z', 'before the watermark'),
+      msg('m2', '2026-07-17T14:05:00Z', 'after the watermark'),
+    ];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    const newmark = container.querySelector('.newmark');
+    expect(newmark).toBeInTheDocument();
+    // The divider sits immediately before the first message past the
+    // watermark, not the first message overall.
+    expect(newmark?.nextElementSibling?.textContent).toContain('after the watermark');
+  });
+
+  it('leaving the topic (unmount) advances the watermark to now', () => {
+    // A topic name unique to this test — readState is a real module
+    // singleton shared across every test in this file (localStorage.clear()
+    // in beforeEach wipes the persisted copy, but not whatever's already
+    // in the singleton's own in-memory $state from an earlier test in this
+    // same file), so reusing 'general'/'agent-coord' here would race
+    // against the "existing watermark" test above.
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first')];
+    const before = Date.now();
+    const { unmount } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'leave-test-topic',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    expect(readState.getWatermark('agent-coord', 'leave-test-topic')).toBeNull();
+    unmount();
+    const after = Date.now();
+
+    const wm = readState.getWatermark('agent-coord', 'leave-test-topic');
+    expect(wm).not.toBeNull();
+    expect(wm as number).toBeGreaterThanOrEqual(before);
+    expect(wm as number).toBeLessThanOrEqual(after);
+  });
+
+  it('switching topics (prop change, same mount) advances the OLD topic\'s watermark, not the new one\'s', async () => {
+    const messages = [msg('m1', '2026-07-17T14:00:00Z', 'first')];
+    const { rerender } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'topic-a',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    await rerender({
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'topic-b',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    expect(readState.getWatermark('agent-coord', 'topic-a')).not.toBeNull();
+    expect(readState.getWatermark('agent-coord', 'topic-b')).toBeNull();
   });
 });
 

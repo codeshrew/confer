@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import FocusReader from './FocusReader.svelte';
+import { readState } from '../readState.svelte';
 import type { Agent, Message, ThreadNode } from '../types';
 
 vi.mock('../api', () => ({
@@ -38,6 +39,7 @@ function message(overrides: Partial<Message> & { id: string; from: string }): Me
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [],
     ...overrides,
   };
 }
@@ -246,6 +248,117 @@ describe('FocusReader', () => {
       await user.keyboard('y');
       expect(writeText).not.toHaveBeenCalled();
       input.remove();
+    });
+  });
+
+  describe('piece 4, item 2 — "detail-viewed", completionist-safe: marks READ, never flags unread', () => {
+    beforeEach(() => {
+      localStorage.clear();
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Each test below uses its OWN unique message id — readState is a real
+    // module singleton shared across every test in this file, and
+    // localStorage.clear() only wipes the persisted copy, not whatever's
+    // already in the singleton's in-memory $state from an earlier test
+    // (same pitfall as ChatStream.test.ts's watermark tests).
+
+    it('does NOT mark detail-viewed the instant the reader opens — a dwell is required', () => {
+      const messages = [message({ id: 'm-instant', from: 'reader' })];
+      render(FocusReader, { open: true, msgId: 'm-instant', messages, agents: [reader], thread: [node('m-instant', 'reader')], hub: 'lab' });
+
+      expect(readState.isDetailViewed('m-instant')).toBe(false);
+    });
+
+    it('marks detail-viewed after the dwell threshold (~2.5s) elapses', () => {
+      const messages = [message({ id: 'm-dwell', from: 'reader' })];
+      render(FocusReader, { open: true, msgId: 'm-dwell', messages, agents: [reader], thread: [node('m-dwell', 'reader')], hub: 'lab' });
+
+      vi.advanceTimersByTime(2500);
+      expect(readState.isDetailViewed('m-dwell')).toBe(true);
+    });
+
+    it('an accidental open-then-close within the dwell window records nothing — the whole point of completionist-safety', async () => {
+      const messages = [message({ id: 'm-accidental', from: 'reader' })];
+      const onClose = vi.fn();
+      const { rerender } = render(FocusReader, {
+        open: true,
+        msgId: 'm-accidental',
+        messages,
+        agents: [reader],
+        thread: [node('m-accidental', 'reader')],
+        hub: 'lab',
+        onClose,
+      });
+
+      vi.advanceTimersByTime(500); // well under the dwell threshold
+      await rerender({
+        open: false,
+        msgId: 'm-accidental',
+        messages,
+        agents: [reader],
+        thread: [node('m-accidental', 'reader')],
+        hub: 'lab',
+        onClose,
+      });
+      vi.advanceTimersByTime(5000); // even if time keeps passing after close
+
+      expect(readState.isDetailViewed('m-accidental')).toBe(false);
+    });
+
+    it('scrolling the body marks detail-viewed IMMEDIATELY, bypassing the dwell — a deliberate stronger signal', () => {
+      const messages = [message({ id: 'm-scroll', from: 'reader' })];
+      render(FocusReader, { open: true, msgId: 'm-scroll', messages, agents: [reader], thread: [node('m-scroll', 'reader')], hub: 'lab' });
+
+      expect(readState.isDetailViewed('m-scroll')).toBe(false);
+      const body = document.querySelector('.fr-body') as HTMLElement;
+      fireEvent.scroll(body);
+
+      expect(readState.isDetailViewed('m-scroll')).toBe(true);
+    });
+
+    it('j/k to a different message resets the dwell — moving away before it elapses never marks the ABANDONED message', async () => {
+      const messages = [message({ id: 'root', from: 'reader' }), message({ id: 'next', from: 'reader' })];
+      const thread = [node('root', 'reader'), node('next', 'reader')];
+      const onNavigate = vi.fn();
+      const { rerender } = render(FocusReader, { open: true, msgId: 'root', messages, agents: [reader], thread, hub: 'lab', onNavigate });
+
+      vi.advanceTimersByTime(500); // under the dwell threshold for 'root'
+      await rerender({ open: true, msgId: 'next', messages, agents: [reader], thread, hub: 'lab', onNavigate });
+      vi.advanceTimersByTime(5000); // 'root' never gets its own remaining time back
+
+      expect(readState.isDetailViewed('root')).toBe(false);
+      expect(readState.isDetailViewed('next')).toBe(true); // 'next' got its own full dwell
+    });
+
+    it('the gutter shows real seen-by entries, and an honest "not yet" when the array is empty', async () => {
+      const seenMsg = message({ id: 'seen1', from: 'reader', seenBy: [{ role: 'pipeline', ts: '2026-07-17T14:05:00Z' }] });
+      const unseenMsg = message({ id: 'unseen1', from: 'reader', seenBy: [] });
+      const pipeline = agent('pipeline', 'Pipeline');
+      const { rerender } = render(FocusReader, {
+        open: true,
+        msgId: 'seen1',
+        messages: [seenMsg, unseenMsg],
+        agents: [reader, pipeline],
+        thread: [node('seen1', 'reader'), node('unseen1', 'reader')],
+        hub: 'lab',
+      });
+
+      expect(screen.getByText(/Pipeline/)).toBeInTheDocument();
+      expect(screen.queryByText('not yet')).not.toBeInTheDocument();
+
+      await rerender({
+        open: true,
+        msgId: 'unseen1',
+        messages: [seenMsg, unseenMsg],
+        agents: [reader, pipeline],
+        thread: [node('seen1', 'reader'), node('unseen1', 'reader')],
+        hub: 'lab',
+      });
+      expect(screen.getByText('not yet')).toBeInTheDocument();
     });
   });
 });

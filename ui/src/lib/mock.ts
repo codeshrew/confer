@@ -247,6 +247,11 @@ export const mockMessages: Message[] = [
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [
+      { role: 'reader', ts: '2026-07-17T14:03:10Z' },
+      { role: 'pipeline', ts: '2026-07-17T14:04:00Z' },
+      { role: 'compositor', ts: '2026-07-17T14:10:00Z' },
+    ],
   },
   {
     id: 'msg_01JQ8f2',
@@ -263,6 +268,7 @@ export const mockMessages: Message[] = [
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [{ role: 'reader', ts: '2026-07-17T14:09:00Z' }],
   },
   {
     id: 'msg_01JQa10',
@@ -279,6 +285,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQ8f2',
     supersedes: null,
     refs: [],
+    seenBy: [{ role: 'pipeline', ts: '2026-07-17T14:12:00Z' }],
   },
   {
     id: 'msg_01JQc4a',
@@ -295,6 +302,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQ8f2',
     supersedes: null,
     refs: [],
+    seenBy: [{ role: 'pipeline', ts: '2026-07-17T14:21:00Z' }],
   },
   {
     id: 'msg_01JQd55',
@@ -311,6 +319,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQc4a',
     supersedes: null,
     refs: [],
+    seenBy: [{ role: 'reader', ts: '2026-07-17T14:32:00Z' }],
   },
   {
     id: 'msg_01JQd60',
@@ -327,6 +336,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQd55',
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
   {
     id: 'msg_01JQe73',
@@ -343,6 +353,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQd55',
     supersedes: null,
     refs: [plateBundleRef],
+    seenBy: [],
   },
   {
     id: 'msg_01JQf01',
@@ -359,6 +370,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQe73',
     supersedes: null,
     refs: [restoreChainRef],
+    seenBy: [],
   },
   {
     id: 'msg_01JQe80',
@@ -375,6 +387,7 @@ export const mockMessages: Message[] = [
     replyTo: 'msg_01JQe73',
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
   {
     id: 'msg_01JQg44',
@@ -391,6 +404,7 @@ export const mockMessages: Message[] = [
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
 ];
 

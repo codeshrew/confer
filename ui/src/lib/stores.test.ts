@@ -156,6 +156,7 @@ describe('chatWindowCache', () => {
       replyTo: null,
       supersedes: null,
       refs: [],
+      seenBy: [],
     };
   }
 

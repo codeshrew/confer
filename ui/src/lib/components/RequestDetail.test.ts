@@ -69,6 +69,7 @@ const messages: Message[] = [
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
   {
     id: 'msg_01JQa10',
@@ -85,6 +86,7 @@ const messages: Message[] = [
     replyTo: 'msg_01JQ8f2',
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
   {
     id: 'msg_01JQc4a',
@@ -101,6 +103,7 @@ const messages: Message[] = [
     replyTo: 'msg_01JQ8f2',
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
   {
     id: 'msg_01JQe80',
@@ -117,6 +120,7 @@ const messages: Message[] = [
     replyTo: 'msg_01JQe73',
     supersedes: null,
     refs: [],
+    seenBy: [],
   },
 ];
 

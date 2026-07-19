@@ -52,4 +52,20 @@ describe('FilterBar', () => {
     await user.click(screen.getByText('Full'));
     expect(onChatDensityChange).toHaveBeenCalledWith('full');
   });
+
+  describe('piece 4, item 2 — "mark all read" (the watermark catch-up escape hatch)', () => {
+    it('is hidden when onMarkAllRead is not wired', () => {
+      render(FilterBar, { notesOn: true, reqsOn: true });
+      expect(screen.queryByTestId('mark-all-read')).not.toBeInTheDocument();
+    });
+
+    it('fires onMarkAllRead when clicked', async () => {
+      const user = userEvent.setup();
+      const onMarkAllRead = vi.fn();
+      render(FilterBar, { notesOn: true, reqsOn: true, onMarkAllRead });
+
+      await user.click(screen.getByTestId('mark-all-read'));
+      expect(onMarkAllRead).toHaveBeenCalledOnce();
+    });
+  });
 });

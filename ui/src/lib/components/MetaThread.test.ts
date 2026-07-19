@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import MetaThread from './MetaThread.svelte';
 import { paneFocus } from '../paneFocus.svelte';
+import { readState } from '../readState.svelte';
 import type { Agent, Message, ThreadNode } from '../types';
 
 function agent(id: string, display: string, color: string): Agent {
@@ -39,6 +40,7 @@ function message(overrides: Partial<Message> & { id: string; from: string }): Me
     replyTo: null,
     supersedes: null,
     refs: [],
+    seenBy: [],
     ...overrides,
   };
 }
@@ -331,6 +333,27 @@ describe('MetaThread — the minimap (piece 4, item 1)', () => {
 
     expect(screen.queryByTestId('peek-node')).not.toBeInTheDocument();
     expect(screen.getByText(/0 msgs/)).toBeInTheDocument();
+  });
+
+  describe('piece 4, item 2 — the "detail-viewed" glyph is neutral by absence', () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it('shows nothing for a node never opened in the focus reader', () => {
+      const thread = [node('m-never-viewed', 'reader', 'reader')];
+      render(MetaThread, { thread, agents: [reader], focusedMsgId: 'm-never-viewed' });
+
+      expect(screen.queryByTitle('Opened in the focus reader')).not.toBeInTheDocument();
+    });
+
+    it('shows a subtle ✓ on the node once readState records it as detail-viewed', () => {
+      readState.markDetailViewed('m-was-viewed');
+      const thread = [node('m-was-viewed', 'reader', 'reader')];
+      render(MetaThread, { thread, agents: [reader], focusedMsgId: 'm-was-viewed' });
+
+      expect(screen.getByTitle('Opened in the focus reader')).toBeInTheDocument();
+    });
   });
 });
 

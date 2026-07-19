@@ -4,11 +4,19 @@
   // syslines in order, a "NEW · since you last looked" divider, and an
   // empty-state for topics with nothing filed yet.
   //
-  // CONTRACT GAP: `Message` carries no read-receipt / seen-by data, so the
-  // per-message "seen" roster and the unseen/NEW cutoff are synthesized here
-  // deterministically (see buildSeenEntries/NEW_CUTOFF) rather than sourced
-  // from real state. If confer serve's backend grows a real seen-by
-  // projection, this is the seam to wire it in.
+  // READ-STATE (ui/REDESIGN.md piece 4, item 2 — 2026-07-19): both halves
+  // of CONTRACT GAP #58 are now retired.
+  //   - "seen by" was entirely synthesized (a fake per-agent clock).
+  //     Herald shipped a REAL per-message read-receipt index (src/seen.rs,
+  //     signed presence cursors, honest-by-omission) — `message.seenBy`.
+  //     `buildSeenEntries` below now reads that directly; no more filler.
+  //   - the "since you last looked" cutoff was a hardcoded demo constant
+  //     (`NEW_CUTOFF`). It's now a REAL per-(hub,topic) watermark in the
+  //     operator's own localStorage (readState.svelte.ts) — genuinely
+  //     "since YOU last looked," not a fixed demo date.
+  // "You" have seen a message the same way everyone else has "seen" is
+  // defined here: your own local watermark for this (hub, topic) having
+  // passed the message's timestamp — see `isUnseenByYou`.
   //
   // PAGINATION: `messages` is App.svelte's windowed per-(hub,topic) page —
   // most-recent CHAT_PAGE_SIZE on load, grown backward as the reader scrolls
@@ -20,6 +28,7 @@
   import { tick } from 'svelte';
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import { paneFocus } from '../paneFocus.svelte';
+  import { readState } from '../readState.svelte';
   import MessageComponent from './Message.svelte';
   import type { SeenEntry } from './SeenIndicator.svelte';
   import { formatClock, formatDayDivider, groupByDay } from '../format';
@@ -99,66 +108,67 @@
 
   const dayGroups = $derived(groupByDay(topicMessages));
 
-  // Demo "since you last looked" cutoff — see the CONTRACT GAP note above.
-  const NEW_CUTOFF = new Date('2026-07-17T14:53:00Z').getTime();
+  // "Since you last looked" — a REAL per-(hub,topic) watermark (see the
+  // header note), not a hardcoded demo date. `null` means this (hub,
+  // topic) has never been visited before — readState.svelte.ts's own note
+  // explains why that means "nothing flagged new," not "everything is
+  // new."
+  const watermark = $derived(topic ? readState.getWatermark(hub, topic) : null);
 
   function isUnseenByYou(message: MessageT): boolean {
-    return new Date(message.ts).getTime() > NEW_CUTOFF;
+    if (watermark === null) return false;
+    return new Date(message.ts).getTime() > watermark;
   }
 
-  // CONTRACT GAP (#58): `Message` carries no real per-recipient read
-  // receipt at all — the "seen" timestamps below (bar this one check) are
-  // synthesized filler, not sourced from the backend (see the CONTRACT GAP
-  // note atop this file). That's fine for demo polish on ONLINE agents, but
-  // it produced a real, reported bug: a recipient who is OFFLINE and has not
-  // been active since before this message was even posted is being
-  // unconditionally stamped "seen" anyway (confer-lab #code-refs showing
-  // "✓ all seen" while Jarvis, last seen 3d ago, plainly cannot have read
-  // it). That specific case IS decidable from data we already have —
-  // `Agent.live` / `Agent.lastTs` — so it's fixed here: an agent is only
-  // ever synthesized as "seen" if they were live, or demonstrably active
-  // (lastTs) at or after the message's own timestamp. Anyone who fails that
-  // check is marked `unseen` (rendered "pending <name>") regardless of the
-  // demo NEW_CUTOFF below. A real fix still needs the backend to project an
-  // actual per-message seen-by roster; until then this is the ceiling of
-  // what the frontend can honestly claim.
-  function couldHaveSeen(agent: Agent, messageTs: string): boolean {
-    if (agent.live) return true;
-    if (!agent.lastTs) return false;
-    return new Date(agent.lastTs).getTime() >= new Date(messageTs).getTime();
-  }
-
+  // Real seen-by (Herald's src/seen.rs, merged) — a role appears in
+  // `message.seenBy` ONLY once their signed presence cursor has actually
+  // consumed past this message; honest by omission, so "not in the array"
+  // already means exactly "unseen (or unconfirmable)," no heuristic
+  // needed. "You" — the local operator, not a confer role with a presence
+  // beat — is derived from the SAME watermark that drives the NEW divider
+  // above: you've seen a message once your watermark has passed it.
   function buildSeenEntries(message: MessageT): SeenEntry[] {
+    const seenByRole = new Map(message.seenBy.map((s) => [s.role, s.ts]));
     const others = agents.filter((a) => a.id !== message.from);
-    const baseMs = new Date(message.ts).getTime();
-    if (!isUnseenByYou(message)) {
-      return [
-        ...others.map((a, i) =>
-          couldHaveSeen(a, message.ts)
-            ? {
-                id: a.id,
-                name: a.display,
-                color: a.color,
-                ts: formatClock(new Date(baseMs + (i + 1) * 90_000).toISOString()),
-              }
-            : { id: a.id, name: a.display, color: a.color, ts: null, unseen: true }
-        ),
-        {
-          id: 'you',
-          name: 'You',
-          ts: formatClock(new Date(baseMs + (others.length + 1) * 90_000).toISOString()),
-          isYou: true,
-        },
-      ];
-    }
-    return others.map((a, i) =>
-      i === 0 && couldHaveSeen(a, message.ts)
-        ? { id: a.id, name: a.display, color: a.color, ts: formatClock(message.ts) }
-        : { id: a.id, name: a.display, color: a.color, ts: null, unseen: true }
+    const entries: SeenEntry[] = others.map((a) => {
+      const ts = seenByRole.get(a.id);
+      return ts
+        ? { id: a.id, name: a.display, color: a.color, ts: formatClock(ts) }
+        : { id: a.id, name: a.display, color: a.color, ts: null, unseen: true };
+    });
+    entries.push(
+      isUnseenByYou(message)
+        ? { id: 'you', name: 'You', ts: null, isYou: true, unseen: true }
+        : {
+            id: 'you',
+            name: 'You',
+            // Bounded, not exact — the watermark is when this (hub,topic)
+            // was last marked caught-up, so it's a real upper bound on
+            // when you saw this message, not a fabricated per-message
+            // instant (the old synthesized filler's actual bug).
+            ts: watermark !== null ? formatClock(new Date(watermark).toISOString()) : null,
+            isYou: true,
+          }
     );
+    return entries;
   }
 
   const firstUnseenId = $derived(topicMessages.find((m) => isUnseenByYou(m))?.id ?? null);
+
+  // "advance it when the view is seen" — moves the watermark to now when
+  // the operator LEAVES this (hub, topic), so a later visit only flags
+  // what arrived after this one. Runs on topic/hub change AND on unmount
+  // (component destroy is also "leaving"). The explicit "mark all read"
+  // control (FilterBar) does the same update on demand, for a long
+  // absence the operator wants to catch up on immediately rather than by
+  // scrolling through it.
+  $effect(() => {
+    const h = hub;
+    const t = topic;
+    return () => {
+      if (t) readState.setWatermark(h, t, Date.now());
+    };
+  });
 
   // --- scroll behavior -------------------------------------------------
   let streamEl: HTMLDivElement | undefined = $state();

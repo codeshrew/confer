@@ -111,7 +111,7 @@ Named by the operator (2026-07-18), in priority order:
 | 1 | **Foundation + Overview** | The Tokyo Night token layer + appearance-encoding vocabulary as shared CSS/components; the fleet-map Overview (laws #1–3). Reference: `redesign-mockups/01-overview.html`. | ✅ done |
 | 2 | **Hub navigation & scale (P1)** | Replace the tab-row with a persistent, trust-tiered rail (Home/Shared/Foreign/Unclassified, real health dots) + workspace tint; first slice of the keyboard-first layer (⌘K palette, rail j/k/gg/G, g+number views, ? which-key). Reference: `redesign-mockups/02-hub-nav.html`. | ✅ done |
 | 3 | **Thread / meta-thread nav + focus reader (P2)** | SETTLED affordance = **side-peek** (stream stays the anchor, never a page-swap) + a REAL breadcrumb trail (from `Message.of`/`replyTo`, walked with h/l/j/k) + the meta-thread drawn as a legible reference-graph trail (cross-topic hops marked). Plus a **focus reader** (`f`, from anywhere) for deep single-message reading. Reference: `redesign-mockups/03-thread-nav.html`. | ✅ done |
-| 4 | **Chat** | Real read-state: client-side "since you last looked" watermark (localStorage) + real seen-by projected from agents' `ack` read-frontiers (kill the synthesized filler). Inline refs anchored to prose. | ○ queued |
+| 4 | **Chat + meta-thread** | Item 0 (pane-focus leak bug, fixed) + item 1 (meta-thread minimap, `redesign-mockups/04-metathread-minimap.html`) done. Item 2 (real read-state: watermark + real seenBy + completionist-safe detail-viewed) done — see the CONTRACT GAP #58 note above. Item 3 (sticky day header, true summary density, inline refs, `redesign-mockups/04-chat-glance.html`) queued. | ◐ in progress |
 | 5 | **Board** | Claim / WIP / lifecycle made spatial and honest; the ack-story + claim-norm surfaced (design/48/49). | ○ queued |
 | 6 | **Code** | The ref/patch view under the shared language; density gutter, reverse index. | ○ queued |
 | 7 | **Fleet** | Per-agent detail as the drill target of an Overview node. | ○ queued |
@@ -171,14 +171,14 @@ comments in `MetaThread.svelte`/`FocusReader.svelte`.
   real: cross-TOPIC hops (one hub, many topics) — those are the actual legibility win the mockup was
   reaching for, and they're fully wired (`↗ thread crosses into #topic` / `↩ resolves back in
   #topic`). Revisit foreign-tint only if cross-hub reply-threading ever becomes a real capability.
-- **The focus reader's "seen" line — deferred to piece 4 by design, not blocked.** The mockup's
-  gutter shows `seen ✓ all`. Real per-message `seenBy` now EXISTS — Herald shipped it (`b776c94`,
-  design/48 #62, "real per-message seen-by on /api/messages from the published read-frontier") — so
-  this isn't the CONTRACT GAP #58 synthesized-filler problem it looked like when piece 3 started.
-  It's simply not wired here: read-state (the reader's "seen" line, Chat's synthesized filler, any
-  "since you last looked" watermark) belongs together in piece 4, done holistically, not scattered
-  as a one-off in piece 3. The gutter keeps author + refs (both real); "seen" lands for free once
-  piece 4 wires the real projection app-wide.
+- **The focus reader's "seen" line — RESOLVED, piece 4 item 2 (2026-07-19).** Real per-message
+  `seenBy` (Herald, `b776c94`, design/48 #62) is now wired everywhere: the reader's own gutter shows
+  it directly; ChatStream's `buildSeenEntries` reads it instead of synthesizing — CONTRACT GAP #58
+  is retired. The "since you last looked" cutoff is now a real per-(hub,topic) localStorage
+  watermark (`readState.svelte.ts`), not a hardcoded demo date, with an explicit "mark all read"
+  catch-up. A completionist-safe "detail-viewed" marker (dwell/scroll in the focus reader → a
+  subtle, absence-is-neutral ✓ on the stream row and the minimap node) rounds out the read-state
+  layer — see `readState.svelte.ts`'s own header comment for the full design.
 
 Piece 3's breadcrumb/h-l-j-k navigation, by contrast, needed NO new backend work: `Message.of`/
 `replyTo` (already served) plus the fact that `/api/thread` already returns the WHOLE connected

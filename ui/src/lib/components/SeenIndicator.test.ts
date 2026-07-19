@@ -45,4 +45,31 @@ describe('SeenIndicator', () => {
     expect(screen.getByText('Compositor')).toBeInTheDocument();
     expect(screen.getByText('unseen')).toBeInTheDocument();
   });
+
+  describe('the "you" entry (piece 4, item 2 — read-state)', () => {
+    it('an unseen "you" is NOT rendered as "all seen", and shows "unseen" in the roster like anyone else', async () => {
+      const user = userEvent.setup();
+      const entries: SeenEntry[] = [
+        { id: 'pipeline', name: 'Pipeline', color: 'var(--ag-pipeline)', ts: '14:21' },
+        { id: 'you', name: 'You', ts: null, isYou: true, unseen: true },
+      ];
+      render(SeenIndicator, { entries });
+
+      expect(screen.queryByText('all seen')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /seen roster/i }));
+      expect(screen.getByText('You')).toBeInTheDocument();
+      expect(screen.getByText('unseen')).toBeInTheDocument();
+    });
+
+    it('a seen "you" still collapses to "all seen" alongside other real seen entries', () => {
+      const entries: SeenEntry[] = [
+        { id: 'pipeline', name: 'Pipeline', color: 'var(--ag-pipeline)', ts: '14:21' },
+        { id: 'you', name: 'You', ts: '14:40', isYou: true },
+      ];
+      render(SeenIndicator, { entries });
+
+      expect(screen.getByText('all seen')).toBeInTheDocument();
+    });
+  });
 });

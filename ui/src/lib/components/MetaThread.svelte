@@ -27,6 +27,7 @@
   import { buildTrail, childrenOf, trailRoot, type TrailNode } from '../thread';
   import { copyToClipboard } from '../clipboard';
   import { paneFocus } from '../paneFocus.svelte';
+  import { readState } from '../readState.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import CopiedToast from './CopiedToast.svelte';
   import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
@@ -344,6 +345,11 @@
             <span class="kd">{KIND_TAG[row.node.type]}</span>
             <span class="nm">{agent?.display ?? row.node.from}</span>
             {#if isHere}<span class="here-tag">here</span>{/if}
+            {#if readState.isDetailViewed(row.node.msgId)}
+              <!-- Completionist-safe (piece 4, item 2) — same neutral-by-
+                   absence glyph as the stream's own Message.svelte. -->
+              <span class="detail-viewed" title="Opened in the focus reader" aria-label="Opened in the focus reader">✓</span>
+            {/if}
           </span>
           <span class="meta mono">
             <CopyIdButton id={row.node.msgId} class="node-copy-id" />
@@ -522,6 +528,15 @@
   .node .here-tag {
     font: 700 9px/1 var(--mono);
     color: var(--accent);
+    flex: 0 0 auto;
+  }
+  /* Subtle, positive-only — same convention as Message.svelte's own
+     detail-viewed glyph (never a colored/urgent badge; absence is
+     neutral, not a debt). */
+  .node .detail-viewed {
+    font: 700 9px/1 var(--mono);
+    color: var(--done);
+    opacity: 0.75;
     flex: 0 0 auto;
   }
   .node .meta {

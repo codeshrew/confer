@@ -14,21 +14,27 @@
   // renderer) — "code blocks render in the code view" means the same Shiki
   // tokenizer, not a bespoke one.
   //
-  // DEFERRED TO PIECE 4 BY DESIGN (piece 3, logged in ui/REDESIGN.md — not
-  // blocked): the mockup's gutter shows a "seen" line. Real per-message
-  // `seenBy` now EXISTS (Herald shipped it, b776c94, design/48 #62, from the
-  // published read-frontier) — so this isn't ChatStream's old CONTRACT GAP
-  // #58 synthesized-filler problem. It's simply not wired HERE: read-state
-  // (this line, Chat's synthesis, any "since you last looked" watermark)
-  // belongs together in piece 4, done holistically rather than scattered as
-  // a one-off. The gutter keeps author + refs (both real); "seen" lands for
-  // free once piece 4 wires the real projection app-wide.
+  // READ-STATE (ui/REDESIGN.md piece 4, item 2 — 2026-07-19): the gutter
+  // now shows a real "seen by" line straight from `message.seenBy`
+  // (Herald's src/seen.rs) — the piece-3 deferral above is resolved.
+  //
+  // This is ALSO where "detail-viewed" gets recorded (Stefan's
+  // completionist-safe framing, load-bearing): opening the reader on a
+  // message and staying past a short DWELL (~2.5s) — or scrolling the
+  // body, a stronger deliberate-engagement signal that fires immediately —
+  // marks the message "opened" in the operator's own localStorage
+  // (readState.svelte.ts). This is a mark-READ action, never a mark-
+  // UNREAD one: absence from that set is neutral everywhere it's read
+  // (Message.svelte's row, the minimap's node) — no counter, no badge, no
+  // "N unread" pressure. An accidental f-then-Esc within the dwell window
+  // records nothing.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { formatClock, formatIso8601, formatLocalDateTime } from '../format';
   import { buildTrail, type TrailNode } from '../thread';
   import { isTypingTarget } from '../keys';
   import { api } from '../api';
   import { copyToClipboard } from '../clipboard';
+  import { readState } from '../readState.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import CopiedToast from './CopiedToast.svelte';
   import type { Agent, CodeRef, Message as MessageT, RefHit, ThreadNode } from '../types';
@@ -67,6 +73,24 @@
     void renderedBody;
     if (bodyEl) void highlightRenderedCodeBlocks(bodyEl);
   });
+
+  // "detail-viewed" — completionist-safe (see the header note): a dwell
+  // timer per message, reset whenever `message` changes (j/k moving to a
+  // different one within the same open session must restart the clock,
+  // not carry over "already dwelled" from the last message). A scroll is
+  // a stronger deliberate-engagement signal and marks it immediately,
+  // bypassing the dwell.
+  const DETAIL_VIEW_DWELL_MS = 2500;
+  $effect(() => {
+    if (!open || !message) return;
+    const id = message.id;
+    const timer = setTimeout(() => readState.markDetailViewed(id), DETAIL_VIEW_DWELL_MS);
+    return () => clearTimeout(timer);
+  });
+
+  function handleBodyScroll() {
+    if (message) readState.markDetailViewed(message.id);
+  }
 
   function shortId(id: string): string {
     return id.length > 10 ? `${id.slice(0, 8)}…` : id;
@@ -165,7 +189,7 @@
         <button type="button" class="fr-close" aria-label="Close focus reader" onclick={onClose}>✕</button>
       </div>
 
-      <div class="fr-body">
+      <div class="fr-body" onscroll={handleBodyScroll}>
         <aside class="fr-gutter">
           <div class="glab">from</div>
           <div class="who">{agent?.display ?? message.from}</div>
@@ -184,6 +208,17 @@
                instant is the unambiguous wire-format fact underneath it. -->
           <div class="whosub">{formatLocalDateTime(message.ts)}</div>
           <div class="whosub mono dim">{formatIso8601(message.ts)}</div>
+          <!-- Real seen-by (src/seen.rs) — piece 4 resolves the piece-3
+               deferral. Honest by omission: an empty seenBy renders as
+               "not yet", never a fabricated roster. -->
+          <div class="glab">seen</div>
+          {#if message.seenBy.length}
+            {#each message.seenBy as s (s.role)}
+              <div class="whosub">{agentsById.get(s.role)?.display ?? s.role} · {formatClock(s.ts)}</div>
+            {/each}
+          {:else}
+            <div class="whosub dim">not yet</div>
+          {/if}
         </aside>
         <article class="fr-reading prose md" bind:this={bodyEl}>
           {#if renderedBody}

@@ -2,6 +2,7 @@
   import type { Agent, CodeRef, Message as MessageT, RefHit, RequestRow } from '../types';
   import { formatClock, formatIso8601 } from '../format';
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
+  import { readState } from '../readState.svelte';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
@@ -127,6 +128,14 @@
         <span class="who" style="color:{fromColor}">{fromDisplay}</span>
         {#if message.host}<span class="role">{message.host}</span>{/if}
         <span class="ts" title={formatIso8601(message.ts)}>{formatClock(message.ts)}</span>
+        {#if readState.isDetailViewed(message.id)}
+          <!-- Completionist-safe (piece 4, item 2): marks what you HAVE
+               deep-read (opened in the focus reader past the dwell/
+               scroll threshold) — its ABSENCE is neutral everywhere,
+               never an unread flag. No counter, no badge for the
+               opposite state. -->
+          <span class="detail-viewed" title="Opened in the focus reader" aria-label="Opened in the focus reader">✓</span>
+        {/if}
         <CopyIdButton id={message.id} class="msg-copy-id" />
         {#if onOpenFocus}
           <button
@@ -383,6 +392,13 @@
   .ts {
     font: 500 11px/1 var(--mono);
     color: var(--faint);
+  }
+  /* Subtle, positive-only — never a colored/urgent badge, since its
+     absence must read as neutral, not a debt (piece 4, item 2). */
+  .detail-viewed {
+    font: 700 10px/1 var(--mono);
+    color: var(--done);
+    opacity: 0.75;
   }
   .summary-line {
     display: flex;

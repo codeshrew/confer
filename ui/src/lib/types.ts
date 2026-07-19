@@ -84,6 +84,16 @@ export interface CodeRef extends RefTemporalFields {
   contentHash: string | null;
 }
 
+/** One real, cryptographically-confirmed read-receipt (src/seen.rs) — a
+ * role appears here ONLY once their signed presence cursor has actually
+ * consumed past this message. Honest by omission: a role who hasn't
+ * confirmed (or can't be confirmed — unsigned beat, unresolvable cursor)
+ * is simply ABSENT from the array, never present with a null/guessed `ts`. */
+export interface SeenBy {
+  role: string;
+  ts: string;
+}
+
 export interface Message {
   id: string;
   from: string;
@@ -99,6 +109,7 @@ export interface Message {
   replyTo: string | null;
   supersedes: string | null;
   refs: CodeRef[];
+  seenBy: SeenBy[];
 }
 
 export interface RequestRow {

@@ -46,7 +46,7 @@
           <span class="sd" class:un={entry.unseen} style={entry.unseen ? '' : `background:${entry.color}`}></span>
         {/each}
         {#if youEntry}
-          <span class="sd you"></span>
+          <span class="sd you" class:un={youEntry.unseen}></span>
         {/if}
       </span>
     </button>
@@ -64,10 +64,10 @@
       </span>
     {/each}
     {#if youEntry}
-      <span class="rr">
+      <span class="rr" class:un={youEntry.unseen}>
         <span class="ra eye">◉</span>
         <span class="rn">You</span>
-        <span class="rtime">{youEntry.ts}</span>
+        <span class="rtime">{youEntry.unseen ? 'unseen' : youEntry.ts}</span>
       </span>
     {/if}
   </span>
@@ -119,6 +119,14 @@
   }
   .seen .sd.you {
     background: var(--accent) !important;
+  }
+  /* Higher specificity than either single-class rule above (needed since
+     both use !important) — an unseen "you" dot must render hollow like
+     every other unseen dot, not filled accent just because it's also
+     .you. */
+  .seen .sd.you.un {
+    background: transparent !important;
+    box-shadow: inset 0 0 0 1.5px var(--faint);
   }
   .seen .chk {
     color: var(--done);

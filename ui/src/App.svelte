@@ -36,6 +36,7 @@
   import type { CodeRef, Hub, HubTier, Message, Overview, RefHit, ThreadNode } from './lib/types';
   import { isTypingTarget, viewForCmdNumber } from './lib/keys';
   import { paneFocus } from './lib/paneFocus.svelte';
+  import { readState } from './lib/readState.svelte';
   import FocusChip from './lib/components/FocusChip.svelte';
 
   let hubs = $state<Hub[]>([]);
@@ -797,6 +798,9 @@
       onToggleNotes={() => (notesOn = !notesOn)}
       onToggleReqs={() => (reqsOn = !reqsOn)}
       onChatDensityChange={(d) => (appState.chatDensity = d)}
+      onMarkAllRead={() => {
+        if (appState.topic) readState.markAllRead(appState.hub, appState.topic);
+      }}
     />
   {/if}
 
