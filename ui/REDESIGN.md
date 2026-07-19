@@ -28,6 +28,18 @@ Design system: **Tokyo Night** palette (matches the operator's whole environment
 PHI-scaled spacing, a shared appearance-encoding vocabulary (see `ui/redesign-mockups/01-overview.html`
 for the canonical reference — tokens, agent-node states, trust framing, attention overlay).
 
+**Cross-cutting: keyboard-first (operator directive, 2026-07-18).** The operator lives in vim, modern
+tmux, and macOS — the dashboard must be operable end-to-end from the keyboard, designed in from each
+piece, never retrofitted. The model (build up across pieces, discoverable via a `?` / which-key overlay):
+- **`⌘K` command palette** — fuzzy jump to any hub / thread / action (fzf-like), the macOS-native entry point.
+- **vim motions wherever there's a list** — `j`/`k` move selection, `g g`/`G` top/bottom, `/` filter-in-place,
+  `Enter` or `l` open/drill, `Esc` or `h` back/up-a-level. (Rail hubs, chat messages, board rows, code refs.)
+- **`g`-prefix / leader for view + actions** (avoids browser-shortcut clashes) — e.g. `g` then a mnemonic to
+  switch view (Overview/Chat/Board/Fleet/Code), plus action keys (claim/done) where they apply.
+- **`?`** opens a which-key-style overlay of available keys, so nothing has to be memorized blind.
+- Every affordance reachable without a mouse — this composes with the `:focus-visible` work already in place.
+Full binding table to be settled with the operator; land the first slice (rail `j`/`k` + `⌘K`) in piece 2.
+
 ---
 
 ## The human-experience problems this must solve
