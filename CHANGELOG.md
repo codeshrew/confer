@@ -1,7 +1,20 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0
 
+*The web dashboard release — a complete `confer serve` UI — plus coordination hardening.*
+
+- **A real web dashboard — `confer serve`, redesigned end to end.** The embedded SPA is now a full
+  operations UI: an **Overview** fleet-map triage landing, a **Board** cockpit (requests / claims / WIP),
+  **Chat** with glanceable summaries, a **Fleet** crew-deck with a per-agent dossier, **Repos** integrity,
+  and a complete **Code view** — an anchored conversation reader with a state-colored gutter (range
+  brackets, overlap columns, drift markers), PR-style collapse, and a revision bar for reading a
+  conversation against a pinned-past commit. Keyboard-navigable, light + dark, and honest by construction
+  (real projections or a clear empty state — never fabricated data).
+- **Serve-API projections behind it.** Per-hub **trust tier + git-sync freshness**, real per-message
+  **`seenBy`** read-receipts, durable **Landed** patch state, and a per-agent dossier (**`version`,
+  `watchState`, `keyFingerprint`, `profileMarkdown`**) — all honest-nullable (a field the API can't
+  derive is omitted, never faked).
 - **Leaner, unified skill set.** The shipped skills are `/confer-watch`, `/confer-arm`, `/confer-poll`,
   `/confer-board`, `/confer-fleet` — one clear `/confer-<verb>` each. `/confer-watch` is trimmed ~60%
   (it teaches the *workflow*; `confer <cmd> --help` is the source of truth for flags), and arming lives
