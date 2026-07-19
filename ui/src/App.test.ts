@@ -680,3 +680,37 @@ describe('App — piece 11 Phase 4: the revision orientation chip', () => {
     expect(screen.queryByTestId('compare-to-head')).not.toBeInTheDocument();
   });
 });
+
+describe('App — piece 11 Phase 5: the sidebar timeline composes with Phase 4 (align updates the rev chip)', () => {
+  it('a real HEAD-sha hit in the whole-file scope reads "older" against the pinned view — aligning to it flips the rev chip to green HEAD, live', async () => {
+    appState.drawer = 'none';
+    appState.view = 'code';
+    appState.hub = '';
+    render(App);
+
+    // Default load settles pinned (amber) — Phase 4's own state, unrelated
+    // fixture confirms it's real, not this test's setup.
+    await screen.findByTestId('rev-chip');
+    await waitFor(() => expect(screen.getByTestId('rev-chip')).toHaveClass('pinned'));
+
+    // File load auto-opens the whole-file scope in the reverse index panel
+    // (App.svelte's own onCodeFileRefs) — the real fixture has SEVERAL
+    // hits on this path (ranged + whole-file), so the timeline shows
+    // several nodes; among them mock.ts's pre-44 legacy note (`sha:
+    // 'HEAD'`) genuinely doesn't match the currently-pinned view — no
+    // synthetic fixture needed for this composition to be real.
+    const nodes = await screen.findAllByTestId('timeline-node');
+    expect(nodes.length).toBeGreaterThan(1);
+    const headNode = nodes.find((n) => n.textContent?.includes('HEAD'))!;
+    expect(headNode).toBeTruthy();
+    expect(headNode).toHaveClass('old');
+
+    const user = userEvent.setup();
+    await user.click(within(headNode).getByTestId('align-to-revision'));
+
+    // The align action re-pins codeState.codeSha — Phase 4's rev chip reads
+    // that SAME store directly, so it must flip live, no extra wiring.
+    await waitFor(() => expect(screen.getByTestId('rev-chip')).toHaveClass('head'));
+    expect(screen.getByTestId('rev-chip')).toHaveTextContent('HEAD');
+  });
+});

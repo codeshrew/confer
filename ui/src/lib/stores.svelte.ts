@@ -137,6 +137,13 @@ export interface CodeFileState {
   viewMode: 'file' | 'repo';
   /** The repo selected as a rollup target — set alongside `viewMode: 'repo'`. */
   activeRepo: string | null;
+  /** Piece 11 Phase 5 — the sidebar timeline's "↳ align code to this
+   * version" action, opt-in only. `null` (the default) means CodeLens picks
+   * automatically (the newest hit's sha, `codeSha` above); a real sha here
+   * OVERRIDES that pick and re-renders the code at exactly that revision.
+   * Reset to `null` on every file switch (see CodeLens's `loadFile`) — an
+   * alignment never silently carries over to a different file. */
+  pinnedSha: string | null;
 }
 
 function createCodeFileState(): CodeFileState {
@@ -151,6 +158,7 @@ function createCodeFileState(): CodeFileState {
     pendingReveal: null,
     viewMode: 'file',
     activeRepo: null,
+    pinnedSha: null,
   };
 }
 

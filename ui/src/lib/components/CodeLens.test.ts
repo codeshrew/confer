@@ -870,3 +870,57 @@ describe('CodeLens — piece 11 Phase 3: PR-style collapse', () => {
     expect(screen.queryByTestId('collapse-toggle')).not.toBeInTheDocument();
   });
 });
+
+describe('CodeLens — piece 11 Phase 5: align to revision (codeState.pinnedSha)', () => {
+  it("setting pinnedSha (the timeline's align action) re-fetches getCode at that sha, without re-fetching getRefs", async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44), hitOn(45)]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
+    expect(api.getRefs).toHaveBeenCalledTimes(1);
+
+    codeState.forHub('agent-coord').pinnedSha = 'deadbeef01';
+
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(2));
+    expect(api.getCode).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'Sources/Reader/PlateBundle.swift', 'deadbeef01');
+    // The ref list itself hasn't changed — only which historical content is
+    // displayed — so getRefs must NOT have been called again.
+    expect(api.getRefs).toHaveBeenCalledTimes(1);
+    // This is what drives Phase 4's rev chip (App.svelte reads codeSha
+    // straight off this same store) — confirms the linkage without needing
+    // App.svelte in this test.
+    expect(codeState.forHub('agent-coord').codeSha).toBe('deadbeef01');
+  });
+
+  it('switching files resets pinnedSha — an alignment never carries over to a DIFFERENT file', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
+
+    codeState.forHub('agent-coord').pinnedSha = 'deadbeef01';
+    await waitFor(() => expect(codeState.forHub('agent-coord').codeSha).toBe('deadbeef01'));
+
+    codeState.forHub('agent-coord').activeKey = fileKey(threeFiles[1]!); // pipeline/plates.py — no hits in this fixture
+    await waitFor(() => expect(api.getCode).toHaveBeenLastCalledWith('agent-coord', 'wealdlore', 'pipeline/plates.py', 'HEAD'));
+    expect(codeState.forHub('agent-coord').pinnedSha).toBeNull();
+  });
+
+  it('setting pinnedSha to the sha already rendering is a no-op — no extra fetch', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    vi.mocked(api.getRefs).mockResolvedValue([hitOn(44)]);
+
+    render(CodeLens, { hub: 'agent-coord' });
+    await waitFor(() => expect(api.getCode).toHaveBeenCalledTimes(1));
+    const currentSha = codeState.forHub('agent-coord').codeSha;
+
+    codeState.forHub('agent-coord').pinnedSha = currentSha;
+    await waitFor(() => expect(codeState.forHub('agent-coord').pinnedSha).toBe(currentSha));
+    expect(api.getCode).toHaveBeenCalledTimes(1);
+  });
+});

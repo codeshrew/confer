@@ -377,15 +377,35 @@
     return [...hits].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))[0]!.sha;
   }
 
+  // Piece 11 Phase 5 — plain (non-reactive) bookkeeping: which file's key
+  // was loaded LAST time `loadFile` actually ran. Deliberately NOT `$state`
+  // — it exists purely so `loadFile` itself can tell "this run is a genuine
+  // file switch" from "this run is just `pinnedSha` changing on the SAME
+  // file" without a second `$effect` racing this one (two effects both
+  // watching `active` can't be relied on to see `pinnedSha`'s reset in a
+  // guaranteed order — this sidesteps that entirely by making ONE effect,
+  // ONE function, decide synchronously).
+  let lastLoadedKey: string | null = null;
+
   async function loadFile() {
-    // Piece 11 Phase 3 — a new file starts fresh: default "referenced"
-    // collapse, no carried-over partial reveals from whatever the operator
-    // was just looking at (a gap key coinciding across two different files
-    // by pure line-number chance would otherwise silently reuse the wrong
-    // reveal state).
-    showAll = false;
-    reveal = new Map();
     const f = active;
+    const currentKey = f ? fileKey(f) : null;
+    const isFileSwitch = currentKey !== lastLoadedKey;
+    lastLoadedKey = currentKey;
+
+    if (isFileSwitch) {
+      // Piece 11 Phase 3 — a new file starts fresh: default "referenced"
+      // collapse, no carried-over partial reveals from whatever the
+      // operator was just looking at (a gap key coinciding across two
+      // different files by pure line-number chance would otherwise
+      // silently reuse the wrong reveal state).
+      showAll = false;
+      reveal = new Map();
+      // Piece 11 Phase 5 — same reasoning: an "align to this version" pin
+      // never silently carries over to a DIFFERENT file.
+      s.pinnedSha = null;
+    }
+
     if (!f || !f.mapped) {
       lines = [];
       fileRefs = [];
@@ -393,6 +413,27 @@
       loading = false;
       return;
     }
+
+    if (!isFileSwitch) {
+      // Piece 11 Phase 5 — this run was triggered by `pinnedSha` changing
+      // (the timeline's "align to this version" action) on the SAME file
+      // already loaded — the ref list hasn't changed, only which
+      // historical content is displayed, so re-fetch just the code.
+      const sha = s.pinnedSha ?? pickSha(fileRefs);
+      if (sha === s.codeSha) return; // nothing actually changed
+      loading = true;
+      try {
+        s.codeSha = sha;
+        const snippet = await api.getCode(hub, f.repo, f.path, sha);
+        lines = snippet.lines;
+        lang = snippet.lang;
+        highlighted = lines.length ? await highlightSnippetLines(lines, resolveLang(lang)) : [];
+      } finally {
+        loading = false;
+      }
+      return;
+    }
+
     loading = true;
     try {
       // Refs first — the sha `getCode` renders at (the newest hit's pinned
@@ -416,6 +457,10 @@
   $effect(() => {
     void active;
     void hub;
+    // Piece 11 Phase 5 — also react to the timeline's "align to this
+    // version" action (`loadFile` itself tells a genuine file switch apart
+    // from a same-file pin change — see `lastLoadedKey` above).
+    void s.pinnedSha;
     // design/44 §6 item 2.4 — a repo rollup is selected (not a single file):
     // skip the per-file fetch entirely, even though `active` may still be
     // set (codeState auto-activates the first file on load regardless of

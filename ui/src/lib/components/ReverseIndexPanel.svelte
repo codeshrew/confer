@@ -57,6 +57,16 @@
      * `openHitInChat` Chat's own ref-chip flow already uses; it's just no
      * longer fired by a bare row click when anchored. */
     onOpenThread?: (hit: RefHit) => void;
+    /** Piece 11 Phase 5 (11-code-view-BUILD-BRIEF.md) — the sha the code
+     * pane is CURRENTLY rendering (`codeState.codeSha`, App.svelte's own
+     * `codeCrumb.sha`/Phase 4's rev chip source) — drives the timeline's
+     * per-node `this`/`older` state. `null` outside Code view, where the
+     * timeline never renders anyway. */
+    viewedSha?: string | null;
+    /** Piece 11 Phase 5 — "↳ align code to this version": re-pins the code
+     * pane to an OLDER node's exact sha. Opt-in only — never fired by
+     * focusing/reading a node, only this explicit action. */
+    onAlignToRevision?: (sha: string) => void;
   }
 
   let {
@@ -72,6 +82,8 @@
     anchored = false,
     agents = [],
     onOpenThread,
+    viewedSha = null,
+    onAlignToRevision,
   }: Props = $props();
 
   const hubCount = $derived(new Set(hits.map((h) => h.hub)).size);
@@ -79,6 +91,18 @@
   /** design/44 §6 item 2.4 — repo scope: a repo without a path. */
   const repoMode = $derived(!!repo && !path);
   const fileGroups = $derived(repoMode ? groupRefHitsByFile(hits) : []);
+
+  // Piece 11 Phase 5 — the sidebar conversation timeline (the range
+  // biography MVP): the SAME scope's hits, laid oldest→newest, each pinned
+  // to a real version. Law #3 — real `ts`, real `sha`; never a fabricated
+  // node. Keeps the hit's ORIGINAL index into `hits` (not the sorted
+  // position) so clicking a node can reuse `focusHit` below unchanged.
+  const timelineNodes = $derived.by(() =>
+    hits
+      .map((hit, originalIndex) => ({ hit, originalIndex }))
+      .sort((a, b) => (a.hit.ts < b.hit.ts ? -1 : a.hit.ts > b.hit.ts ? 1 : 0))
+  );
+  const timelineVersionCount = $derived(new Set(hits.map((h) => h.sha)).size);
 
   function cap(s: string): string {
     return s.length ? s[0]!.toUpperCase() + s.slice(1) : s;
@@ -219,6 +243,48 @@
       <Icon name="corner-down-left" size={12} />
       <span>whole file</span>
     </button>
+  {/if}
+
+  {#if anchored && !repoMode && hits.length > 0}
+    <!-- Piece 11 Phase 5 — the sidebar timeline: this scope's real
+         conversations, oldest→newest, each pinned to a real version. The
+         range-biography (mock 13) MVP this later expands from. Reading/
+         focusing a node is just that — focusing; only the explicit
+         "↳ align" action on an OLDER node ever moves the code. -->
+    <div class="timeline" data-testid="conversation-timeline">
+      <div class="tl-h">
+        this {range ? 'range' : 'file'}, over time — {hits.length} conversation{hits.length === 1 ? '' : 's'} across {timelineVersionCount}
+        version{timelineVersionCount === 1 ? '' : 's'}
+      </div>
+      <div class="spine">
+        {#each timelineNodes as { hit, originalIndex } (hit.msgId)}
+          {@const agent = resolveAgent(hit.from)}
+          {@const isCurrent = viewedSha !== null && hit.sha === viewedSha}
+          <div class="node" class:cur={isCurrent} class:old={!isCurrent} data-testid="timeline-node">
+            <span class="dot"></span>
+            <button type="button" class="node-main" onclick={() => focusHit(originalIndex)} data-testid="timeline-node-focus">
+              <span class="who">{agent?.display ?? cap(hit.from)}</span>
+              <span class="kind">{hit.msgType}</span>
+              <span class="rev-chip" class:cur={isCurrent}>
+                {#if isCurrent}
+                  <span class="glyph">●</span><span class="lbl">{hit.sha.slice(0, 10)} · this</span>
+                {:else}
+                  <span class="glyph">◷</span><span class="lbl"
+                    >{hit.sha.slice(0, 10)}{hit.commitDate ? ` · ${formatIsoDate(hit.commitDate)}` : ''}</span
+                  >
+                {/if}
+              </span>
+            </button>
+            <div class="snip">{hit.summary}</div>
+            {#if !isCurrent}
+              <button type="button" class="align" onclick={() => onAlignToRevision?.(hit.sha)} data-testid="align-to-revision"
+                >↳ align code to this version</button
+              >
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </div>
   {/if}
 
   {#if loading}
@@ -604,5 +670,112 @@
   .aolder:hover {
     color: var(--text);
     border-color: var(--accent);
+  }
+
+  /* Piece 11 Phase 5 — the sidebar conversation timeline (mock 12's `.tl`/
+     `.spine`/`.node`). `cur`/`old` reuse the SAME `--state-flight`/
+     `--state-unowned` tokens Phase 4's rev chip uses for head/pinned — one
+     "what version is this" palette everywhere it shows up, not a second one. */
+  .timeline {
+    margin-bottom: 14px;
+  }
+  .tl-h {
+    font: 600 10px/1 var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 10px;
+  }
+  .spine {
+    position: relative;
+    padding-left: 16px;
+  }
+  .spine::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--border-2);
+  }
+  .node {
+    position: relative;
+    margin-bottom: 10px;
+  }
+  .node .dot {
+    position: absolute;
+    left: -16px;
+    top: 3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--panel);
+    background: var(--muted);
+  }
+  .node.cur .dot {
+    background: var(--state-flight);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--state-flight) 25%, transparent);
+  }
+  .node.old .dot {
+    background: var(--state-unowned);
+  }
+  .node-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .node-main .who {
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .node-main .kind {
+    font: 700 9px/1 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--faint);
+  }
+  .node-main .rev-chip {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font: 600 10px/1 var(--mono);
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    color: var(--state-unowned);
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .node-main .rev-chip.cur {
+    color: var(--state-flight);
+    border-color: color-mix(in srgb, var(--state-flight) 40%, transparent);
+  }
+  .node .snip {
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.45;
+    margin-top: 2px;
+  }
+  .node .align {
+    font: 600 10.5px/1 var(--mono);
+    color: var(--state-unowned);
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin-top: 4px;
+    cursor: pointer;
+  }
+  .node .align:hover {
+    text-decoration: underline;
   }
 </style>

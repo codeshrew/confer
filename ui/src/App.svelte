@@ -1198,6 +1198,8 @@
             onWholeFile={backToWholeFile}
             onWidenToRepo={() => refContext?.repo && widenToRepo(refContext.repo)}
             onSelectFile={selectFileFromRepoMode}
+            viewedSha={codeState.forHub(appState.hub).codeSha}
+            onAlignToRevision={(sha) => (codeState.forHub(appState.hub).pinnedSha = sha)}
           />
         {:else if appState.selectedMessage}
           <MetaThread

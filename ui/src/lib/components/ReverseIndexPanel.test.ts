@@ -265,10 +265,14 @@ describe('ReverseIndexPanel — piece 11 Phase 1: the anchored reader (anchored=
     expect(within(expanded).getByText('plate-bundle endpoint — the request these lines shipped for')).toBeInTheDocument();
     expect(screen.getAllByTestId('anchored-conv')).toHaveLength(1);
     // Both OTHER hits are real, visible rows — not folded behind a count
-    // (only 6+ hits trigger the "‹ N older" overflow, see below).
-    expect(screen.getAllByTestId('anchored-row')).toHaveLength(2);
-    expect(screen.getByText('why not stream the regions?')).toBeInTheDocument();
-    expect(screen.getByText('can the size guard be configurable?')).toBeInTheDocument();
+    // (only 6+ hits trigger the "‹ N older" overflow, see below). Scoped to
+    // the rows themselves (piece 11 Phase 5's own timeline reuses the SAME
+    // summary text in its `.snip`, so a bare `screen.getByText` would now
+    // be ambiguous).
+    const rows = screen.getAllByTestId('anchored-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('why not stream the regions?');
+    expect(rows[1]).toHaveTextContent('can the size guard be configurable?');
     expect(screen.queryByTestId('anchored-older')).not.toBeInTheDocument();
   });
 
@@ -284,8 +288,9 @@ describe('ReverseIndexPanel — piece 11 Phase 1: the anchored reader (anchored=
     // teaser text is still visible (rows are scannable, not hidden), just
     // no longer inside the expanded `.aconv` card.
     expect(within(expanded).queryByText('plate-bundle endpoint — the request these lines shipped for')).not.toBeInTheDocument();
-    expect(screen.getByText('plate-bundle endpoint — the request these lines shipped for')).toBeInTheDocument();
-    expect(screen.getAllByTestId('anchored-row')).toHaveLength(2);
+    const rows = screen.getAllByTestId('anchored-row');
+    expect(rows).toHaveLength(2);
+    expect(rows.some((r) => r.textContent?.includes('plate-bundle endpoint — the request these lines shipped for'))).toBe(true);
   });
 
   it('6+ hits: only the visible cap renders as rows, the rest fold behind "‹ N older" — clicking it reveals them all', async () => {
@@ -370,16 +375,20 @@ describe('ReverseIndexPanel — piece 11 Phase 1: the anchored reader (anchored=
       agents: [reader],
     });
 
-    // hits[0] is from 'reader', who IS in `agents` — real display name + color.
-    expect(screen.getByText('Reader')).toBeInTheDocument();
+    // hits[0] is from 'reader', who IS in `agents` — real display name +
+    // color, in the expanded card specifically (piece 11 Phase 5's own
+    // timeline also names 'Reader' once, in its own `.who` — scope to the
+    // accordion's avatar to avoid that ambiguity).
+    expect(within(screen.getByTestId('anchored-conv')).getByText('Reader')).toBeInTheDocument();
     expect(container.querySelector('.aav')?.getAttribute('style')).toContain('var(--ag-reader)');
   });
 
   it('falls back to a generic id-based treatment when the hit author is NOT in `agents` (no agents passed at all)', () => {
     render(ReverseIndexPanel, { hits: threeHits, repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: [44, 49], anchored: true });
     // No real Agent for 'reader' here — falls back to the same cap()
-    // treatment the non-anchored row form already uses.
-    expect(screen.getByText('Reader')).toBeInTheDocument();
+    // treatment the non-anchored row form already uses. Scoped to the
+    // expanded card — the timeline names 'Reader' too (its own `.who`).
+    expect(within(screen.getByTestId('anchored-conv')).getByText('Reader')).toBeInTheDocument();
   });
 
   it('a scope with only ONE conversation shows no rows and no overflow at all', () => {
@@ -415,5 +424,131 @@ describe('ReverseIndexPanel — piece 11 Phase 1: the anchored reader (anchored=
     expect(screen.queryByTestId('anchored-conv')).not.toBeInTheDocument();
     expect(screen.queryByTestId('anchor-scope')).not.toBeInTheDocument();
     expect(screen.queryByTestId('anchored-row')).not.toBeInTheDocument();
+  });
+});
+
+describe('ReverseIndexPanel — piece 11 Phase 5: the sidebar conversation timeline', () => {
+  // hits[0] (reader, Jul 17) / hits[1] (compositor, Jul 10) / thirdHit
+  // (compositor, Jul 12) all share ONE sha in the base fixtures — clone
+  // thirdHit onto a genuinely OLDER sha so `viewedSha` comparisons and
+  // "align" actually have something real to distinguish.
+  const olderHit: RefHit = { ...thirdHit, msgId: 'msg_older', sha: 'deadbeef01', commitDate: '2026-06-01T08:00:00Z', ts: '2026-06-01T08:00:00Z' };
+  const timelineHits = [hits[0]!, hits[1]!, olderHit]; // deliberately NOT chronological order
+
+  it('orders nodes oldest→newest by real ts, not by the order `hits` was given in', () => {
+    render(ReverseIndexPanel, {
+      hits: timelineHits,
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+    });
+
+    const nodes = screen.getAllByTestId('timeline-node');
+    expect(nodes).toHaveLength(3);
+    // Real chronological order: olderHit (Jun 1) -> hits[1] (Jul 10) ->
+    // hits[0] (Jul 17) — NOT the `[hits[0], hits[1], olderHit]` order the
+    // `hits` prop was actually given in.
+    expect(nodes[0]).toHaveTextContent('can the size guard be configurable?'); // olderHit
+    expect(nodes[1]).toHaveTextContent('why not stream the regions?'); // hits[1]
+    expect(nodes[2]).toHaveTextContent('plate-bundle endpoint — the request these lines shipped for'); // hits[0]
+  });
+
+  it('the node matching `viewedSha` reads "this" (green), every other real sha reads "older" (amber)', () => {
+    render(ReverseIndexPanel, {
+      hits: timelineHits,
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+    });
+
+    const nodes = screen.getAllByTestId('timeline-node');
+    const cur = nodes.filter((n) => n.classList.contains('cur'));
+    const old = nodes.filter((n) => n.classList.contains('old'));
+    // Two real hits share the viewed sha 'a3f1c9' (hits[0] and hits[1]) —
+    // both read "this"; only the genuinely older-sha'd node reads "older".
+    expect(cur).toHaveLength(2);
+    expect(old).toHaveLength(1);
+    expect(cur.every((n) => n.textContent?.includes('this'))).toBe(true);
+    expect(old[0]).toHaveTextContent('deadbeef01');
+  });
+
+  it('an OLDER node offers "↳ align code to this version" with its REAL sha; a "this" node offers no align button at all', async () => {
+    const onAlignToRevision = vi.fn();
+    render(ReverseIndexPanel, {
+      hits: timelineHits,
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+      onAlignToRevision,
+    });
+
+    expect(screen.getAllByTestId('align-to-revision')).toHaveLength(1); // only the older-sha'd node
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('align-to-revision'));
+    expect(onAlignToRevision).toHaveBeenCalledWith('deadbeef01');
+  });
+
+  it('reading/focusing a node is NOT the align action — clicking the node body only moves accordion focus, never calls onAlignToRevision', async () => {
+    const onAlignToRevision = vi.fn();
+    render(ReverseIndexPanel, {
+      hits: timelineHits,
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+      onAlignToRevision,
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByTestId('timeline-node-focus')[0]!);
+
+    expect(onAlignToRevision).not.toHaveBeenCalled();
+    // It DID move accordion focus — a real, visible effect of reading.
+    expect(screen.getByTestId('anchored-conv')).toBeInTheDocument();
+  });
+
+  it('the header names real counts: N conversations across M distinct versions', () => {
+    render(ReverseIndexPanel, {
+      hits: timelineHits,
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+    });
+    expect(screen.getByText(/3 conversations across 2 versions/)).toBeInTheDocument();
+  });
+
+  it('law #3 — honest fallback when an older node genuinely has no commitDate, never a fabricated one', () => {
+    const undated: RefHit = { ...olderHit, msgId: 'msg_undated', commitDate: null };
+    render(ReverseIndexPanel, {
+      hits: [hits[0]!, undated],
+      repo: 'wealdlore',
+      path: 'Sources/Reader/PlateBundle.swift',
+      range: [44, 49],
+      anchored: true,
+      viewedSha: 'a3f1c9',
+    });
+    const node = screen.getAllByTestId('timeline-node').find((n) => n.classList.contains('old'))!;
+    expect(node).toHaveTextContent('deadbeef01');
+    // No date rendered for it — not even an empty/undefined string leaking through.
+    expect(node.textContent).not.toMatch(/undefined|NaN|null/);
+  });
+
+  it('no timeline at all in repo-mode, or when the scope has zero hits', () => {
+    render(ReverseIndexPanel, { hits: [], repo: 'wealdlore', path: null, anchored: true }); // repo-mode
+    expect(screen.queryByTestId('conversation-timeline')).not.toBeInTheDocument();
+  });
+
+  it('no timeline when anchored is false — the plain row list has no version concept', () => {
+    render(ReverseIndexPanel, { hits: timelineHits, repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', range: [44, 49] });
+    expect(screen.queryByTestId('conversation-timeline')).not.toBeInTheDocument();
   });
 });
