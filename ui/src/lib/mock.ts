@@ -835,6 +835,11 @@ export const mockCodeFiles: CodeFile[] = [
   { repo: 'wealdlore', path: 'Sources/Reader/PlateBundle.swift', refCount: 2, mapped: true, lastTs: '2026-07-17T14:46:00Z' },
   { repo: 'wealdlore', path: 'pipeline/plates.py', refCount: 1, mapped: true, lastTs: '2026-07-17T14:52:00Z' },
   { repo: 'wealdlore', path: 'studio-markup/citations.py', refCount: 1, mapped: false, lastTs: '2026-07-10T09:00:00Z' },
+  // piece 7 (ui/REDESIGN.md) — a genuine SHADOW repo: --ref'd by real
+  // messages but never registered in this hub's inventory (mockRepos has
+  // no 'openjarvis' entry). Closes the loop on the Board's own
+  // "Shadow-repo surfacing" ticket fixture (req_01JQb22).
+  { repo: 'openjarvis', path: 'internal/brain/router.go', refCount: 2, mapped: false, lastTs: '2026-07-16T10:00:00Z' },
 ];
 
 function delay<T>(value: T, ms = 40): Promise<T> {

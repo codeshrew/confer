@@ -671,6 +671,23 @@
     cs.viewMode = 'file';
   }
 
+  /** Piece 7's Repos → Code drill-in ("open in code view", a hot-file row)
+   * — switches to the Code view AND routes through the SAME shared
+   * `codeState` the tree/rollup machinery already reads (`widenToRepo`/
+   * `selectFileFromRepoMode` above do the identical thing from WITHIN the
+   * Code view; this is the one entry point that also switches views). */
+  function openInCodeView(repo: string, path?: string) {
+    const cs = codeState.forHub(appState.hub);
+    if (path) {
+      cs.activeKey = fileKey({ repo, path });
+      cs.viewMode = 'file';
+    } else {
+      cs.activeRepo = repo;
+      cs.viewMode = 'repo';
+    }
+    appState.view = 'code';
+  }
+
   // The keyboard-architecture pass (ui/REDESIGN.md, 2026-07-19) — the
   // three-layer model. `?` (help) and Layer 3 (`Cmd`+number, app-wide,
   // "works regardless of focused pane") live here, App-wide; Layer 1
@@ -1020,7 +1037,7 @@
       </div>
       <div class="view-pane" class:active={appState.view === 'repos'}>
         {#if reposMounted}
-          <Repos hub={appState.hub} />
+          <Repos hub={appState.hub} onOpenCode={openInCodeView} />
         {/if}
       </div>
     </div>

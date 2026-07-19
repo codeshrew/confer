@@ -1,35 +1,45 @@
 <script lang="ts">
-  // Repos view — the hub's repo inventory (each hub's `repos/*.md`:
-  // role/url/access/docs/owner) plus which of those repos are actually
-  // cloned/mapped on THIS machine. `--ref <slug>:…` points into this
-  // inventory, but until now there was nowhere in the dashboard to see it.
-  //
-  // Card grid mirrors Fleet.svelte's `.fleetgrid`/`.agentcard` language
-  // (same panel/border/radius tokens) rather than inventing a new visual
-  // vocabulary for "yet another list of things."
-  import type { Repo } from '../types';
+  // Repos — piece 7 (ui/REDESIGN.md, `redesign-mockups/07-repos-integrity-
+  // gravity.html`): not a flat inventory list, a map of two real questions
+  // a list never answered. INTEGRITY — is every repo `--ref` points into
+  // actually registered AND cloned, so refs resolve? GRAVITY — which repos
+  // does the fleet's work actually center on? The tiered grouping (tracked /
+  // registered-not-local / shadow) + per-repo reference density both fold
+  // from real data already served (`getRepos` + `getCodeFiles`) — see
+  // repoIndex.ts's own header note for why SHADOW detection needs no new
+  // fetch, just a diff of two lists already on hand.
+  import type { Repo, CodeFile } from '../types';
   import { api } from '../api';
+  import { buildRepoIndex, repoHealth, type RepoIndexEntry } from '../repoIndex';
   import EmptyState from './EmptyState.svelte';
   import Skeleton from './Skeleton.svelte';
+  import RepoDetailPopover from './RepoDetailPopover.svelte';
 
   interface Props {
     hub: string;
+    /** Drill-in's "open in code view" — jumps to the Code view, either a
+     * specific hot file or the whole repo's rollup. */
+    onOpenCode?: (repo: string, path?: string) => void;
   }
 
-  let { hub }: Props = $props();
+  let { hub, onOpenCode }: Props = $props();
 
   let loading = $state(true);
   let repos = $state<Repo[]>([]);
+  let codeFiles = $state<CodeFile[]>([]);
   let loadedForHub = $state<string | null>(null);
 
   async function load(hubId: string) {
     loading = true;
     try {
-      repos = await api.getRepos(hubId);
+      const [repoList, fileList] = await Promise.all([api.getRepos(hubId), api.getCodeFiles(hubId)]);
+      repos = repoList;
+      codeFiles = fileList;
       loadedForHub = hubId;
     } catch (err) {
-      console.error('confer serve: failed to load repos', hubId, err);
+      console.error('confer serve: failed to load the repo index', hubId, err);
       repos = [];
+      codeFiles = [];
       loadedForHub = hubId;
     } finally {
       loading = false;
@@ -37,244 +47,308 @@
   }
 
   $effect(() => {
-    // Re-fetch whenever the selected hub changes — including the very
-    // first mount, since loadedForHub starts null.
     if (hub && hub !== loadedForHub) void load(hub);
   });
 
-  const clonedCount = $derived(repos.filter((r) => r.cloned).length);
+  const index = $derived(buildRepoIndex(repos, codeFiles));
+  const health = $derived(repoHealth(index));
+  const tracked = $derived(index.filter((e) => e.tier === 'tracked'));
+  const notLocal = $derived(index.filter((e) => e.tier === 'notlocal'));
+  const shadow = $derived(index.filter((e) => e.tier === 'shadow'));
 
-  const ROLE_LABEL: Record<string, string> = {
-    hub: 'hub',
-    code: 'code',
-    docs: 'docs',
-    tooling: 'tooling',
+  const healthLine = $derived.by((): string | null => {
+    const parts: string[] = [];
+    if (health.shadowCount > 0) parts.push(`${health.shadowCount} not registered`);
+    if (health.notLocalCount > 0) parts.push(`${health.notLocalCount} not cloned`);
+    return parts.length ? parts.join(' · ') : null;
+  });
+
+  const CLONE_LABEL: Record<RepoIndexEntry['tier'], (e: RepoIndexEntry) => string> = {
+    tracked: () => '✓ cloned',
+    notlocal: () => '◑ not cloned',
+    shadow: () => '◇ shadow',
   };
 
-  function roleLabel(role: string): string {
-    return ROLE_LABEL[role] ?? role;
+  let selected = $state<RepoIndexEntry | null>(null);
+  let detailOpen = $state(false);
+
+  function openDetail(entry: RepoIndexEntry) {
+    selected = entry;
+    detailOpen = true;
   }
 
-  function accessLabel(access: string[]): string {
-    return access.length === 0 ? 'all' : access.join(', ');
+  function maxDensity(entries: RepoIndexEntry[]): number {
+    return Math.max(1, ...entries.flatMap((e) => e.topFileCounts));
   }
 </script>
 
 <div class="repos-wrap" data-testid="repos-view">
-  <div class="board-head">
-    <div class="board-topline">
-      <h2>Repos · {hub}</h2>
-      {#if !loading}
-        <span class="flabel" style="margin-left:auto">{repos.length} repos · {clonedCount} cloned here</span>
-      {/if}
-    </div>
-  </div>
-
   {#if loading}
     <Skeleton rows={4} />
-  {:else if repos.length === 0}
+  {:else if index.length === 0}
     <EmptyState
       glyph="◇"
       title="No repos registered"
       body="This hub hasn't registered any repos yet — add a repos/*.md card to the hub to make one show up here."
     />
   {:else}
-    <div class="reposgrid">
-      {#each repos as repo (repo.slug)}
-        <div class="repocard" class:notcloned={!repo.cloned} data-testid="repo-card-{repo.slug}">
-          <div class="rc-top">
-            <span class="rc-slug">{repo.slug}</span>
-            <span class="rc-role">{roleLabel(repo.role)}</span>
+    <div class="rhead">
+      <h2>repos</h2>
+      <span class="v mono"><b>{health.registeredCount}</b> registered</span>
+      <span class="v mono"><b>{health.trackedCount}</b> cloned here</span>
+      {#if health.shadowCount > 0}<span class="v mono"><b>{health.shadowCount}</b> shadow</span>{/if}
+      {#if healthLine}
+        <span class="health warn">◑ {healthLine}</span>
+      {:else}
+        <span class="health ok">✓ all mapped</span>
+      {/if}
+    </div>
+
+    {#each [{ tier: 'tracked' as const, entries: tracked, label: '✓ tracked', desc: 'registered + cloned — refs resolve to real code' }, { tier: 'notlocal' as const, entries: notLocal, label: '◑ registered · not on this machine', desc: 'refs stay pointer-only until a clone is mapped' }, { tier: 'shadow' as const, entries: shadow, label: '◇ shadow · referenced, not registered', desc: 'a peer --refs it but the hub inventory doesn\'t know' }] as group (group.tier)}
+      {#if group.entries.length}
+        {@const max = maxDensity(group.entries)}
+        <div class="grp">
+          <div class="grp-h {group.tier}">
+            <span class="h">{group.label}</span>
+            <span class="c mono">{group.entries.length}</span>
+            <span class="desc">{group.desc}</span>
+            <span class="ln"></span>
           </div>
-          {#if repo.url}
-            <div class="rc-url mono">{repo.url}</div>
-          {/if}
-          <div class="rc-meta">
-            <div class="rc-metaitem">
-              <span class="rc-metalab">access</span>
-              <span>{accessLabel(repo.access)}</span>
-            </div>
-            {#if repo.docs}
-              <div class="rc-metaitem">
-                <span class="rc-metalab">docs</span>
-                <span class="mono">{repo.docs}</span>
-              </div>
-            {/if}
-            {#if repo.owner}
-              <div class="rc-metaitem">
-                <span class="rc-metalab">owner</span>
-                <span>{repo.owner}</span>
-              </div>
-            {/if}
-          </div>
-          <div class="rc-clone">
-            {#if repo.cloned}
-              <div class="rc-clonestatus ok" data-testid="clone-status-{repo.slug}">
-                <span class="rc-dot"></span>
-                <span>✓ cloned</span>
-                {#if repo.rootSha}
-                  <span class="rc-sha mono">{repo.rootSha.slice(0, 7)}</span>
-                {/if}
-              </div>
-              {#if repo.clonePath}
-                <div class="rc-path mono">{repo.clonePath}</div>
-              {/if}
-            {:else}
-              <div class="rc-clonestatus muted" data-testid="clone-status-{repo.slug}">
-                <span class="rc-dot off"></span>
-                <span>not cloned here</span>
-              </div>
-              <div class="rc-hint mono">confer repos map {repo.slug} &lt;path&gt;</div>
-            {/if}
+          <div class="repos">
+            {#each group.entries as entry (entry.slug)}
+              <button type="button" class="repo {entry.tier}" onclick={() => openDetail(entry)} data-testid="repo-row-{entry.slug}">
+                <div class="rl">
+                  <div class="slug">
+                    {entry.slug}
+                    {#if entry.role}<span class="role">{entry.role}</span>{/if}
+                  </div>
+                  <div class="meta mono">
+                    {#if entry.tier === 'tracked'}{entry.url ?? 'local-only · no remote'} · {entry.clonePath}
+                    {:else if entry.tier === 'notlocal'}{entry.url ?? 'no remote'} · no local clone
+                    {:else}referenced by {entry.refCount} ref{entry.refCount === 1 ? '' : 's'} · no inventory card{/if}
+                  </div>
+                </div>
+                <div class="dens">
+                  <span class="clone">{CLONE_LABEL[entry.tier](entry)}</span>
+                  <span class="n mono"><b>{entry.refCount}</b> refs</span>
+                  {#if entry.topFileCounts.length}
+                    <span class="densbar" aria-hidden="true">
+                      {#each entry.topFileCounts as c, i (i)}<i style="height:{Math.max(2, (c / max) * 16)}px"></i>{/each}
+                    </span>
+                  {/if}
+                </div>
+              </button>
+            {/each}
           </div>
         </div>
-      {/each}
-    </div>
+      {/if}
+    {/each}
   {/if}
 </div>
+
+<RepoDetailPopover
+  open={detailOpen}
+  entry={selected}
+  {hub}
+  onOpenCode={(repo, path) => {
+    detailOpen = false;
+    onOpenCode?.(repo, path);
+  }}
+  onClose={() => (detailOpen = false)}
+/>
 
 <style>
   .repos-wrap {
     overflow: auto;
     flex: 1;
-    padding: 16px 20px;
+    padding: 16px 20px 40px;
   }
-  .board-head {
-    margin-bottom: 6px;
-  }
-  .board-topline {
+
+  .rhead {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
   }
-  .board-topline h2 {
+  .rhead h2 {
     margin: 0;
     font-size: 14px;
     font-weight: 650;
   }
-  .flabel {
-    font: 600 10px/1 var(--mono);
+  .rhead .v {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .rhead .v b {
+    color: var(--text);
+  }
+  .rhead .health {
+    margin-left: auto;
+    font: 600 11px/1 var(--mono);
+  }
+  .rhead .health.ok {
+    color: var(--state-flight);
+  }
+  .rhead .health.warn {
+    color: var(--state-unowned);
+  }
+
+  .grp {
+    margin-top: 20px;
+  }
+  .grp-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .grp-h .h {
+    font: 700 10.5px/1 var(--mono);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.09em;
+  }
+  .grp-h.tracked .h {
+    color: var(--state-flight);
+  }
+  .grp-h.notlocal .h {
+    color: var(--state-unowned);
+  }
+  .grp-h.shadow .h {
+    color: var(--blue, var(--accent));
+  }
+  .grp-h .c {
+    font-size: 10px;
     color: var(--faint);
   }
-  .reposgrid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 14px;
+  .grp-h .desc {
+    font-size: 11px;
+    color: var(--muted);
   }
-  .repocard {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 15px;
+  .grp-h .ln {
+    height: 1px;
+    flex: 1;
+    background: var(--border);
+  }
+
+  .repos {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    min-width: 0;
+    gap: 6px;
   }
-  .repocard.notcloned {
+  .repo {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 14px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 13px;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    transition:
+      border-color 0.12s,
+      transform 0.12s;
+    width: 100%;
+  }
+  .repo::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 9px;
+    bottom: 9px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--c);
+  }
+  .repo:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+  }
+  .repo.tracked {
+    --c: var(--state-flight);
+  }
+  .repo.notlocal {
+    --c: var(--state-unowned);
+  }
+  .repo.shadow {
+    --c: var(--blue, var(--accent));
     border-style: dashed;
   }
-  .rc-top {
+  .repo .rl {
+    min-width: 0;
+  }
+  .repo .slug {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    font-weight: 640;
+    color: var(--text);
     display: flex;
     align-items: center;
     gap: 8px;
   }
-  .rc-slug {
-    font-weight: 650;
-    font-size: 14px;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .rc-role {
-    margin-left: auto;
-    flex: 0 0 auto;
-    font: 700 9px/1 var(--mono);
+  .repo .role {
+    font: 700 8.5px/1 var(--mono);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-    border-radius: 5px;
-    padding: 3px 6px;
-  }
-  .rc-url {
-    font-size: 11px;
     color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    padding: 1px 5px;
   }
-  .rc-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 16px;
-    border-top: 1px solid var(--border);
-    padding-top: 9px;
-  }
-  .rc-metaitem {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 12px;
-    color: var(--text);
-    min-width: 0;
-  }
-  .rc-metalab {
-    font: 700 9px/1 var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--faint);
-  }
-  .rc-clone {
-    border-top: 1px solid var(--border);
-    padding-top: 9px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .rc-clonestatus {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font: 600 12px/1 var(--sans);
-  }
-  .rc-clonestatus.ok {
-    color: var(--done);
-  }
-  .rc-clonestatus.muted {
-    color: var(--faint);
-  }
-  .rc-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--done);
-    flex: 0 0 auto;
-  }
-  .rc-dot.off {
-    background: var(--faint);
-  }
-  .rc-sha {
-    margin-left: auto;
+  .repo .meta {
     font-size: 10.5px;
-    color: var(--faint);
-  }
-  .rc-path {
-    font-size: 11px;
     color: var(--muted);
-    overflow-wrap: anywhere;
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .rc-hint {
+  .repo .dens {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+  .repo .dens .n {
     font-size: 11px;
-    color: var(--faint);
-    overflow-wrap: anywhere;
+    color: var(--fg-dim, var(--muted));
   }
-  .mono {
-    font-family: var(--mono);
+  .repo .dens .n b {
+    color: var(--accent);
+  }
+  .repo .dens .clone {
+    font: 500 10px/1 var(--mono);
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    color: var(--c);
+    border-color: color-mix(in srgb, var(--c) 40%, transparent);
+  }
+  .repo .densbar {
+    display: flex;
+    gap: 1.5px;
+    align-items: flex-end;
+    height: 16px;
+  }
+  .repo .densbar i {
+    width: 3px;
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 1px;
+    min-height: 2px;
+  }
+
+  @media (max-width: 720px) {
+    .repo {
+      grid-template-columns: 1fr auto;
+    }
+    .repo .meta {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
   }
 </style>
