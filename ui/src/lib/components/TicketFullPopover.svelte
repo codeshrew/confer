@@ -70,6 +70,24 @@
   const workState = $derived(request ? ticketStateOf(request) : 'open');
   const stateVar = $derived(ticketStateVar(workState));
   const track = $derived(request ? buildLifecycleTrack(request, messages, agents) : null);
+
+  // The connector's colored progress-fill — how far into the 3-node track
+  // (Requested/Claimed/Done) real progress reaches, matching the mockup's
+  // own `.track3 .prog{left:12%;width:38%}` for the in-flight (Claimed
+  // current) case exactly: 12%→50% (a node's center, for a 3-column even
+  // grid) is 38% wide. A stuck ticket's fill stops at the branch point
+  // instead of wherever `stages` alone would say, so the fill visually
+  // agrees with the red branch below it.
+  const progressWidth = $derived.by((): number => {
+    if (!track) return 0;
+    if (track.branch) return track.branch.off === 'Claimed' ? 38 : 0;
+    let reachedIndex = 0;
+    track.stages.forEach((stage, i) => {
+      if (stage.state === 'done' || stage.state === 'current') reachedIndex = i;
+    });
+    return reachedIndex >= 2 ? 76 : reachedIndex === 1 ? 38 : 0;
+  });
+
   const refs = $derived(request ? ticketRefs(request, messages) : []);
   const originMsg = $derived(request ? ticketOriginMessage(request, messages) : null);
   // A 2-line TEASER only — plain text, not rendered markdown, and never the
@@ -174,7 +192,7 @@
         <h3 class="tk-title">{request.summary}</h3>
 
         <div class="track3" class:has-branch={!!track.branch}>
-          <span class="prog" aria-hidden="true"></span>
+          <span class="prog" aria-hidden="true" style="width:{progressWidth}%"></span>
           {#each track.stages as stage (stage.label)}
             {@const cls = stageClass(stage, stage.label)}
             <div class="st st-{cls}">
@@ -326,6 +344,23 @@
     height: 2px;
     background: var(--border-2);
   }
+  /* MUST be `position: absolute` — `.track3` is a 3-column grid (one
+     column per lifecycle stage) and this was previously a plain, unstyled
+     grid CHILD alongside the 3 `.st` stage divs. A 4th item in a 3-column
+     grid wraps: Requested + Claimed filled row 1, and Done dropped to a
+     misaligned row 2 below. Taking `.prog` out of grid flow (absolute,
+     layered via `.track3`'s own `position: relative`) fixes the wrap AND
+     lets it double as the real colored progress-fill (see
+     `progressWidth` in the script) instead of dead, layout-breaking
+     markup. */
+  .track3 .prog {
+    position: absolute;
+    top: 12px;
+    left: 12%;
+    height: 2px;
+    background: var(--c);
+    transition: width 0.2s ease;
+  }
   .st {
     display: flex;
     flex-direction: column;
@@ -333,6 +368,12 @@
     gap: 5px;
     position: relative;
     z-index: 1;
+    /* A grid item's default min-width is `auto` (its content's own
+       min-content size), which can win over the `1fr` track and force a
+       wrap when a stage's actor name is long — 0 lets it actually shrink
+       to the column it's given, matching every other 3-across grid cell
+       in this app (App.svelte's own `.center` has the identical note). */
+    min-width: 0;
   }
   .st .knob {
     width: 25px;

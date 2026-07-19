@@ -115,3 +115,26 @@ test('the ticket Full popover renders correctly in both themes', async ({ page }
   await expect(popover).toBeVisible();
   await expect(popover.getByText(/resolved: endpoint live, tests green/)).toBeVisible();
 });
+
+test('the lifecycle track\'s 3 nodes sit inline on one row — regression for the .prog stray-grid-child wrap bug', async ({ page }) => {
+  // `.track3` is a 3-column grid, one column per stage (Requested/Claimed/
+  // Done). `.prog` (the connector's colored progress-fill) must be
+  // `position: absolute` — as a plain grid child it silently becomes a 4th
+  // item, wrapping the 3rd stage (Done) onto its own misaligned row. Catches
+  // exactly the class of bug a jsdom component test can't see (real layout,
+  // not just DOM structure).
+  await page.getByText('Wire up /plate-bundle/:uid — restored plate + regions JSON for the reader').click();
+  const popover = page.getByTestId('ticket-popover');
+  await expect(popover).toBeVisible();
+
+  const tops = await popover.locator('.track3 .st').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+  expect(tops).toHaveLength(3);
+  expect(tops[0]).toBeCloseTo(tops[1]!, 0);
+  expect(tops[1]).toBeCloseTo(tops[2]!, 0);
+
+  // The 3 nodes are also evenly spread left→right (Requested/Claimed/Done),
+  // not stacked or reordered.
+  const lefts = await popover.locator('.track3 .st').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left));
+  expect(lefts[0]).toBeLessThan(lefts[1]!);
+  expect(lefts[1]).toBeLessThan(lefts[2]!);
+});
