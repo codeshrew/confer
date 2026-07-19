@@ -374,6 +374,58 @@ describe('ChatStream — the real "since you last looked" watermark (piece 4, it
   });
 });
 
+describe('ChatStream — sticky day header (piece 4, item 3)', () => {
+  it('shows a real message count alongside the day label', () => {
+    const messages = [
+      msg('m1', '2026-07-17T14:00:00Z', 'first'),
+      msg('m2', '2026-07-17T15:00:00Z', 'second'),
+      msg('m3', '2026-07-17T16:00:00Z', 'third'),
+    ];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    const daybreak = container.querySelector('.daybreak');
+    expect(daybreak).toBeInTheDocument();
+    expect(daybreak?.textContent).toContain('3 messages');
+  });
+
+  it('one divider per real calendar day, each with its own count', () => {
+    const messages = [
+      msg('m1', '2026-07-17T14:00:00Z', 'first'),
+      msg('m2', '2026-07-18T09:00:00Z', 'second'),
+      msg('m3', '2026-07-18T10:00:00Z', 'third'),
+    ];
+    const { container } = render(ChatStream, {
+      messages,
+      requests,
+      agents: [reader],
+      topic: 'general',
+      hub: 'agent-coord',
+      notesOn: true,
+      reqsOn: true,
+    });
+
+    const dividers = container.querySelectorAll('.daybreak');
+    expect(dividers).toHaveLength(2);
+    expect(dividers[0]?.textContent).toContain('1 message');
+    expect(dividers[0]?.textContent).not.toContain('1 messages');
+    expect(dividers[1]?.textContent).toContain('2 messages');
+  });
+
+  // The actual `position: sticky` pinning is a real-layout/scroll concern
+  // jsdom doesn't reliably resolve scoped component CSS for — verified live
+  // instead, in e2e/read-state.spec.ts-style Playwright coverage (scrolling
+  // the real stream and asserting the header's bounding box stays pinned
+  // at the container's top).
+});
+
 describe('ChatStream — stick-to-bottom vs. an active hover (design/41 copy-id bug)', () => {
   // Bug: a busy topic's live SSE-appended note snaps `scrollTop` to the new
   // bottom via the stick-to-bottom effect. If that snap lands while the

@@ -3,6 +3,7 @@
   import { formatClock, formatIso8601 } from '../format';
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { readState } from '../readState.svelte';
+  import { api } from '../api';
   import SeenIndicator, { type SeenEntry } from './SeenIndicator.svelte';
   import TicketCard from './TicketCard.svelte';
   import CodeRefCard from './CodeRefCard.svelte';
@@ -72,27 +73,100 @@
     return body.length > CLAMP_CHARS || body.split('\n').length > CLAMP_LINES;
   }
   const isLong = $derived(isLongBody(message.body));
-  // Per-message expand state, independent of every other message and of the
-  // global `density` toggle: in 'summary' density it governs whether the
-  // full body is revealed at all; in 'full' density it's the pre-existing
-  // long-body show-more/show-less flag. An individually-expanded message
-  // stays expanded until collapsed, even if the global toggle flips.
+  // piece 4, item 3 — Summary means summary now: it's ALWAYS exactly one
+  // line + chips, with no per-message expand into the full body anymore
+  // (that job belongs to switching density to Full, or the focus reader —
+  // see the mockup's own "Summary is for scanning; Full is for reading in
+  // place; f is for reading one deeply"). `expanded` is therefore now
+  // PURELY the full-mode long-body clamp toggle it always conceptually
+  // was — summary density no longer touches it at all.
   let expanded = $state(false);
-  const showBody = $derived(density === 'full' || expanded);
+  const showBody = $derived(density === 'full');
   const showSummaryLine = $derived(density === 'summary' || isLong);
 
   // renderMarkdown sanitizes with DOMPurify — message bodies are untrusted,
   // peer-authored content (see markdown.ts's own header note) — so this is
   // the only string ever handed to {@html} for a message body.
   const renderedBody = $derived(renderMarkdown(message.body));
+  // Summary's `⟨⟩ N` chip — counts fenced blocks straight off the rendered
+  // HTML (each becomes exactly one `pre.md-fence`), so it can never drift
+  // from what Full mode would actually show.
+  const codeBlockCount = $derived((renderedBody.match(/<pre class="md-fence"/g) ?? []).length);
 
   let bodyEl: HTMLDivElement | undefined = $state();
+
+  // piece 4, item 3 — "inline refs anchored to prose": a ref the author
+  // mentioned inline (authored as `` `--ref repo:path[@sha][#range]` ``,
+  // rendered by markdown.ts as a plain `code.mono` span) gets replaced
+  // with a small clickable chip RIGHT THERE, instead of every ref trailing
+  // in a separate list after the whole message regardless of where it was
+  // actually referenced. Only refs with a REAL match in `message.refs` are
+  // ever anchored (Law #3 — never invent what a bare `--ref`-looking
+  // mention points to); anything left unmatched keeps the old trailing-
+  // card fallback, so a real ref is never silently dropped for want of a
+  // textual anchor.
+  function refKey(ref: CodeRef): string {
+    return `${ref.repo}:${ref.path}@${ref.sha}#${ref.range ? ref.range.join('-') : 'all'}`;
+  }
+
+  function refMatchesInlineText(ref: CodeRef, text: string): boolean {
+    const m = /^--ref\s+([^:\s]+):(\S+?)(?:@(\S+?))?(?:#\S+)?$/.exec(text.trim());
+    if (!m) return false;
+    const [, repo, path, sha] = m;
+    if (repo !== ref.repo || path !== ref.path) return false;
+    if (sha && !ref.sha.startsWith(sha)) return false;
+    return true;
+  }
+
+  async function openAnchoredRef(ref: CodeRef) {
+    const target = `${ref.repo}:${ref.path}${ref.range ? `@${ref.range[0]}-${ref.range[1]}` : ''}`;
+    try {
+      const hits = await api.getRefs(hub, target, true);
+      onOpenRefs?.(ref, hits);
+    } catch (err) {
+      console.error('confer serve: failed to load reverse-index hits', target, err);
+    }
+  }
+
+  let anchoredRefKeys = $state<Set<string>>(new Set());
+
+  function anchorInlineRefs(root: HTMLElement) {
+    if (density !== 'full' || !message.refs.length) {
+      if (anchoredRefKeys.size) anchoredRefKeys = new Set();
+      return;
+    }
+    const matched = new Set<string>();
+    for (const codeEl of Array.from(root.querySelectorAll<HTMLElement>('code.mono'))) {
+      const text = codeEl.textContent ?? '';
+      const ref = message.refs.find((r) => refMatchesInlineText(r, text));
+      if (!ref) continue;
+      matched.add(refKey(ref));
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'inline-ref-chip mono';
+      chip.textContent = `◆ ${ref.path}@${ref.sha.slice(0, 7)}`;
+      chip.title = `${ref.repo}/${ref.path}${ref.range ? ` L${ref.range[0]}-${ref.range[1]}` : ''} — open reverse-index`;
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void openAnchoredRef(ref);
+      });
+      codeEl.replaceWith(chip);
+    }
+    anchoredRefKeys = matched;
+  }
+
   $effect(() => {
     // Re-run whenever the rendered body changes; upgrades fenced code
     // blocks to Shiki's dual-theme tokens once the (async) highlighter is
-    // ready. Falls back to (already-safe) plain text until then.
+    // ready (falls back to already-safe plain text until then), and
+    // anchors any inline `--ref` mentions that match a real message ref.
     void renderedBody;
-    if (bodyEl) void highlightRenderedCodeBlocks(bodyEl);
+    void density;
+    void message.refs;
+    if (bodyEl) {
+      void highlightRenderedCodeBlocks(bodyEl);
+      anchorInlineRefs(bodyEl);
+    }
   });
 
   function selectMessage() {
@@ -159,49 +233,42 @@
         <TicketCard {request} onSelect={onSelectTicket} />
       {:else}
         {#if showSummaryLine}
-          <!-- Intentionally not its own tab stop: the outer `.msg` row (role="button",
-               tabindex, Enter/Space -> selectMessage) already makes this fully keyboard-
-               reachable. This div's onclick is a mouse-only convenience — clicking the
-               summary text also expands the body, matching what `.clickable` promises —
-               layered on TOP of that existing keyboard path, not a replacement for it. -->
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="summary-line"
-            class:clickable={density === 'summary'}
-            onclick={
-              density === 'summary'
-                ? () => {
-                    // No stopPropagation here — this is a DIFFERENT action
-                    // from the chevron's own toggle (which does stop
-                    // propagation, to avoid a double-toggle when the click
-                    // lands on the chevron itself). Letting this bubble to
-                    // the outer `.msg` row means clicking the summary text
-                    // both expands AND selects the message — the row stays
-                    // clickable, exactly as `.clickable` promises.
-                    expanded = !expanded;
-                  }
-                : undefined
-            }
-          >
+          <div class="summary-line">
             <span class="lead">{message.summary}</span>
             {#if density === 'summary'}
-              <button
-                type="button"
-                class="expand-toggle"
-                class:open={showBody}
-                aria-expanded={showBody}
-                aria-label={showBody ? 'Collapse message' : 'Expand message'}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  expanded = !expanded;
-                }}
-              >
-                <span>{showBody ? 'Show less' : 'Show more'}</span>
-                <svg class="chev" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                  <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
+              <!-- piece 4, item 3 — Summary means summary: a one-line lead
+                   plus compact chips carrying the density (◆ refs, ⟨⟩
+                   code) — never the rendered blocks/cards themselves.
+                   Click a chip (or switch to Full / open the focus
+                   reader) to actually see them. -->
+              <span class="chips">
+                {#if message.refs.length}
+                  <button
+                    type="button"
+                    class="chip ref"
+                    title="{message.refs.length} code reference{message.refs.length === 1 ? '' : 's'} — open in focus reader"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      onOpenFocus?.(message.id);
+                    }}
+                  >
+                    ◆ {message.refs.length}
+                  </button>
+                {/if}
+                {#if codeBlockCount}
+                  <button
+                    type="button"
+                    class="chip code"
+                    title="{codeBlockCount} code block{codeBlockCount === 1 ? '' : 's'} — open in focus reader"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      onOpenFocus?.(message.id);
+                    }}
+                  >
+                    ⟨⟩ {codeBlockCount}
+                  </button>
+                {/if}
+              </span>
             {/if}
           </div>
         {/if}
@@ -230,11 +297,15 @@
               </svg>
             </button>
           {/if}
-        {/if}
-        {#if message.refs.length}
-          {#each message.refs as ref, i (ref.repo + ':' + ref.path + '@' + ref.sha + '#' + (ref.range ? ref.range.join('-') : 'all') + '#' + i)}
-            <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
-          {/each}
+          {#if message.refs.length}
+            <!-- Only refs that DIDN'T get anchored inline (see
+                 anchorInlineRefs above) fall back to the trailing card
+                 list — a real ref is never silently dropped for want of a
+                 textual `--ref` mention to anchor it to. -->
+            {#each message.refs.filter((r) => !anchoredRefKeys.has(refKey(r))) as ref, i (refKey(ref) + '#' + i)}
+              <CodeRefCard {ref} {hub} onRevHook={onOpenRefs} />
+            {/each}
+          {/if}
         {/if}
       {/if}
     </div>
@@ -436,8 +507,35 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .summary-line.clickable {
-    cursor: pointer;
+  /* piece 4, item 3 — Summary's density chips (◆ refs, ⟨⟩ code): compact,
+     glanceable evidence the message HAS refs/code without rendering them —
+     click opens the focus reader, the one place that shows the full
+     rendered content. */
+  .chips {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .chip {
+    font: 600 10px/1 var(--mono);
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border-2);
+    color: var(--muted);
+    background: var(--panel-2);
+  }
+  .chip:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .chip.ref {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .chip.code {
+    color: var(--claimed);
+    border-color: color-mix(in srgb, var(--claimed) 35%, transparent);
   }
   /* The expand/collapse control — a real, unmistakably-interactive pill with
      a text label ("Show more"/"Show less") plus a chevron, not a bare

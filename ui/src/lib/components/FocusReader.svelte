@@ -30,7 +30,7 @@
   // records nothing.
   import { renderMarkdown, highlightRenderedCodeBlocks } from '../markdown';
   import { formatClock, formatIso8601, formatLocalDateTime } from '../format';
-  import { buildTrail, type TrailNode } from '../thread';
+  import { buildTrail, KIND_TAG, type TrailNode } from '../thread';
   import { isTypingTarget } from '../keys';
   import { api } from '../api';
   import { copyToClipboard } from '../clipboard';
@@ -176,13 +176,31 @@
         </div>
         <span class="fr-badge">◉ focus read</span>
         <CopiedToast text={toastText} />
+        <!-- piece 4, item 3.4 — prev/next borrows the minimap's own dot +
+             kind vocabulary (piece 4, item 1) instead of a bare id chip:
+             one visual language for "which node, what kind, whose color"
+             across the map and the reader. -->
         <div class="fr-nav mono">
           {#if prevNode}
-            <button type="button" class="fr-hop" onclick={() => goTo(prevNode)} data-testid="reader-prev">◂ {shortId(prevNode.msgId)}</button>
+            <button type="button" class="pn-step" onclick={() => goTo(prevNode)} data-testid="reader-prev">
+              <span class="kn" style="background:{agentsById.get(prevNode.from)?.color ?? 'var(--muted)'}"></span>
+              <span class="kd2">{KIND_TAG[prevNode.type]}</span>
+              {shortId(prevNode.msgId)}
+            </button>
+            <span class="pn-arrow" aria-hidden="true">‹</span>
           {/if}
-          <b>{shortId(message.id)}</b>
+          <span class="pn-step cur">
+            <span class="kn" style="background:{agent?.color ?? 'var(--muted)'}"></span>
+            <span class="kd2">{KIND_TAG[message.type]}</span>
+            {shortId(message.id)}
+          </span>
           {#if nextNode}
-            <button type="button" class="fr-hop" onclick={() => goTo(nextNode)} data-testid="reader-next">{shortId(nextNode.msgId)} ▸</button>
+            <span class="pn-arrow" aria-hidden="true">›</span>
+            <button type="button" class="pn-step" onclick={() => goTo(nextNode)} data-testid="reader-next">
+              <span class="kn" style="background:{agentsById.get(nextNode.from)?.color ?? 'var(--muted)'}"></span>
+              <span class="kd2">{KIND_TAG[nextNode.type]}</span>
+              {shortId(nextNode.msgId)}
+            </button>
           {/if}
           <span class="fr-kk-inline"><span class="kk">j</span><span class="kk">k</span> prev·next</span>
         </div>
@@ -325,24 +343,47 @@
     font-size: 11px;
     color: var(--muted);
   }
-  .fr-nav b {
-    color: var(--text);
-  }
-  .fr-hop {
+  /* piece 4, item 3.4 — minimap-styled prev/current/next "step" pills:
+     author-colored knob + kind tag + short id, matching MetaThread's own
+     node vocabulary exactly (same KIND_TAG import, same knob-dot idea). */
+  .pn-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     border: 1px solid var(--border-2);
     background: var(--panel-2);
     color: var(--muted);
     font: 600 11px/1 var(--mono);
     padding: 4px 8px;
-    border-radius: 6px;
+    border-radius: 999px;
   }
-  .fr-hop:hover {
+  button.pn-step:hover {
     color: var(--text);
     border-color: var(--accent);
   }
-  .fr-hop:focus-visible {
+  button.pn-step:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  .pn-step.cur {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text);
+  }
+  .pn-step .kn {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .pn-step .kd2 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--faint);
+  }
+  .pn-arrow {
+    color: var(--faint);
   }
   .fr-kk-inline {
     display: flex;

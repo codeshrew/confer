@@ -48,14 +48,18 @@ test('opening a board row surfaces the RequestDetail lifecycle trail', async ({ 
 });
 
 test('a code-ref reverse-index hook opens the reverse-index panel', async ({ page }) => {
-  // Chat defaults to Summary density — expand this specific note to reveal
-  // its full body (and the code-ref card within it) before interacting with
-  // the revhook.
-  const summaryLine = page.getByText('bundle assembly wired, pinned to a3f1c9');
-  await expect(summaryLine).toBeVisible();
-  const noteRow = page.locator('.msg').filter({ has: summaryLine });
-  await noteRow.getByRole('button', { name: 'Expand message' }).click();
-  await expect(page.getByText('Wired it — bundle assembly is here')).toBeVisible();
+  // Chat defaults to Summary density (piece 4, item 3: Summary means
+  // summary now — one line + chips, no rendered code/refs, no per-message
+  // expand into them anymore). Switch the whole stream to Full density to
+  // reveal the note's full body and its code-ref card.
+  //
+  // "restore chain context" specifically (not "bundle assembly wired") —
+  // its body has no inline `--ref` mention, so its ref stays a full
+  // trailing CodeRefCard (with a real revhook button) rather than being
+  // anchored inline as a compact chip (piece 4, item 3.3 — see
+  // chat-glance.spec.ts for that path's own reverse-index coverage).
+  await page.getByRole('button', { name: 'Full', exact: true }).click();
+  await expect(page.getByText('For context, the restore chain')).toBeVisible();
 
   // The revhook is the inner button carrying the "N conversations reference
   // these lines" hook — not the outer message row (also clickable, and its
@@ -65,5 +69,5 @@ test('a code-ref reverse-index hook opens the reverse-index panel', async ({ pag
   const drawer = page.getByTestId('right-drawer');
   await expect(drawer.getByText('Reverse index')).toBeVisible();
   await expect(drawer.getByText('Conversations about this code')).toBeVisible();
-  await expect(drawer.getByText('PlateBundle.swift')).toBeVisible();
+  await expect(drawer.getByText('plates.py')).toBeVisible();
 });

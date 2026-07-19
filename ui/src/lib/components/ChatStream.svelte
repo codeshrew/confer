@@ -397,7 +397,14 @@
       </div>
     {/if}
     {#each dayGroups as group (group.day)}
-      <div class="daybreak">{formatDayDivider(group.day)}</div>
+      <!-- piece 4, item 3 — STICKY: pins to the top of .stream as the
+           operator scrolls past it, so "which day am I looking at" is
+           always answered without scrolling back to check (the previous
+           day's divider naturally slides under this one). -->
+      <div class="daybreak">
+        <span class="d">{formatDayDivider(group.day)}</span>
+        <span class="count">{group.messages.length} message{group.messages.length === 1 ? '' : 's'}</span>
+      </div>
       {#each group.messages as message (message.id)}
         {#if message.id === firstUnseenId}
           <div class="newmark"><span class="t">NEW · SINCE YOU LAST LOOKED</span></div>
@@ -452,22 +459,33 @@
     color: var(--text);
     border-color: var(--accent);
   }
+  /* piece 4, item 3 — a solid, full-bleed STICKY bar (not the old
+     rule-flanked divider, which would show scrolled content through its
+     gaps once pinned) — negative margins cancel .stream's own horizontal
+     padding so it spans edge-to-edge while sticky, matching padding
+     re-applied to keep the label where it visually sat before. */
   .daybreak {
+    position: sticky;
+    top: 0;
+    z-index: 5;
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 6px 0 16px;
+    margin: 0 -20px 16px;
+    padding: 7px 20px;
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
     color: var(--faint);
     font: 600 10.5px/1 var(--mono);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
-  .daybreak::before,
-  .daybreak::after {
-    content: '';
-    height: 1px;
-    background: var(--border);
-    flex: 1;
+  .daybreak .count {
+    margin-left: auto;
+    color: var(--muted);
+    text-transform: none;
+    letter-spacing: normal;
   }
   .newmark {
     display: flex;

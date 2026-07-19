@@ -13,6 +13,21 @@
 // not silently attached to something plausible-looking.
 import type { CodeRef, Message, MsgType, ThreadNode } from './types';
 
+/** Short, glanceable per-`MsgType` tags — the minimap's own vocabulary
+ * (piece 4, item 1), shared here so the focus reader's prev/next (item 3.4:
+ * "borrowing the minimap language") uses the exact same words rather than a
+ * second, drifting set. */
+export const KIND_TAG: Record<MsgType, string> = {
+  request: 'req',
+  claim: 'claim',
+  blocked: 'blocked',
+  done: 'done',
+  note: 'note',
+  error: 'error',
+  defer: 'defer',
+  supersede: 'super',
+};
+
 export interface TrailNode {
   msgId: string;
   from: string;

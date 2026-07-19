@@ -24,13 +24,13 @@
   // buildTrail still needs it to recover real `ts`/parent edges — but this
   // component no longer renders message bodies or CodeRefCard from it.
   import { formatClock, formatIso8601 } from '../format';
-  import { buildTrail, childrenOf, trailRoot, type TrailNode } from '../thread';
+  import { buildTrail, childrenOf, KIND_TAG, trailRoot, type TrailNode } from '../thread';
   import { copyToClipboard } from '../clipboard';
   import { paneFocus } from '../paneFocus.svelte';
   import { readState } from '../readState.svelte';
   import CopyIdButton from './CopyIdButton.svelte';
   import CopiedToast from './CopiedToast.svelte';
-  import type { Agent, Message as MessageT, MsgType, ThreadNode } from '../types';
+  import type { Agent, Message as MessageT, ThreadNode } from '../types';
 
   interface Props {
     thread: ThreadNode[];
@@ -217,17 +217,6 @@
     const idx = uniqueTopics.indexOf(topic);
     return TOPIC_PALETTE[idx % TOPIC_PALETTE.length] ?? 'var(--muted)';
   }
-
-  const KIND_TAG: Record<MsgType, string> = {
-    request: 'req',
-    claim: 'claim',
-    blocked: 'blocked',
-    done: 'done',
-    note: 'note',
-    error: 'error',
-    defer: 'defer',
-    supersede: 'super',
-  };
 
   interface Row {
     node: TrailNode;

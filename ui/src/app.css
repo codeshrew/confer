@@ -331,6 +331,33 @@ button {
   padding: 0 4px;
   border-radius: 5px;
 }
+/* piece 4, item 3 — "inline refs anchored to prose": Message.svelte's
+   anchorInlineRefs replaces an inline `--ref repo:path@sha` mention's
+   `code.mono` span with a real `<button class="inline-ref-chip">` at that exact
+   point in the rendered markup — this is that button's ONLY style
+   definition, since it's built with document.createElement (not template
+   markup Svelte's scoped-CSS compiler ever sees), same reasoning as
+   .mention/.prose.md above. */
+.prose.md .inline-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 5px;
+  padding: 0.05em 0.45em;
+  cursor: pointer;
+}
+.prose.md .inline-ref-chip:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.prose.md .inline-ref-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .prose.md pre {
   margin: 0.6em 0;
   padding: 10px 12px;

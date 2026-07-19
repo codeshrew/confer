@@ -3,7 +3,12 @@ import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import Message from './Message.svelte';
 import { readState } from '../readState.svelte';
-import type { Agent, Message as MessageT } from '../types';
+import { api } from '../api';
+import type { Agent, CodeRef, Message as MessageT } from '../types';
+
+vi.mock('../api', () => ({
+  api: { getRefs: vi.fn().mockResolvedValue([]) },
+}));
 
 const herald: Agent = {
   id: 'herald',
@@ -155,66 +160,94 @@ describe('Message', () => {
     });
   });
 
-  describe('summary density', () => {
-    it('shows only the summary line and hides the body until expanded', () => {
+  describe('summary density (piece 4, item 3 — Summary means summary: one line + chips, permanently)', () => {
+    it('shows only the summary line — no body, no rendered code, no expand affordance at all', () => {
       const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
 
       expect(screen.getByText('Shipping confer 0.7.3')).toBeInTheDocument();
       expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
       expect(container.textContent).not.toContain('serve --all-hubs');
+      // The old per-message expand-into-summary chevron is retired
+      // entirely — Full density or the focus reader are the only ways to
+      // see more now.
+      expect(container.querySelector('.expand-toggle')).not.toBeInTheDocument();
     });
 
-    it('reveals the full rendered body on expand, and hides it again on collapse', async () => {
+    it('clicking the summary line does nothing — it is no longer a click-to-expand surface (only the row itself selects)', async () => {
       const user = userEvent.setup();
-      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
-
-      const chevron = container.querySelector('.expand-toggle') as HTMLButtonElement;
-      expect(chevron).toBeInTheDocument();
-      // A readable label, not a bare unlabeled glyph.
-      expect(chevron.textContent).toContain('Show more');
-
-      await user.click(chevron);
-      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
-      expect(container.querySelector('.mention')?.textContent).toBe('@all');
-      expect(chevron.textContent).toContain('Show less');
-
-      await user.click(chevron);
-      expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
-      expect(chevron.textContent).toContain('Show more');
-    });
-
-    it('clicking anywhere on the summary line (not just the chevron) also expands the body', async () => {
-      const user = userEvent.setup();
-      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+      const onSelect = vi.fn();
+      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary', onSelect });
 
       await user.click(screen.getByText('Shipping confer 0.7.3'));
-      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+
+      expect(container.querySelector('.text-wrap')).not.toBeInTheDocument();
+      expect(onSelect).toHaveBeenCalled(); // the row's own click-to-select still fires
     });
 
-    it('clicking the chevron toggles exactly once, not twice (no double-toggle from event bubbling to the summary line)', async () => {
-      const user = userEvent.setup();
-      const { container } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+    it('shows a ◆ N chip when the message has refs, and a ⟨⟩ N chip when it has fenced code blocks — neither when it has neither', () => {
+      const plain = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
+      expect(plain.container.querySelector('.chip.ref')).not.toBeInTheDocument();
+      expect(plain.container.querySelector('.chip.code')).not.toBeInTheDocument();
 
-      const chevron = container.querySelector('.expand-toggle') as HTMLButtonElement;
-      await user.click(chevron);
+      const withRefs: MessageT = {
+        ...noteMessage,
+        id: 'msg_refs',
+        refs: [
+          {
+            repo: 'confer',
+            path: 'src/api.rs',
+            sha: 'abc123',
+            range: null,
+            contentHash: null,
+            refName: null,
+            refType: null,
+            commitDate: null,
+            dirty: false,
+            untracked: false,
+            baseRef: null,
+            forkPoint: null,
+          },
+        ],
+      };
+      const withCode: MessageT = { ...noteMessage, id: 'msg_code', body: 'see:\n```rust\nfn x() {}\n```\n' };
 
-      // A double-toggle (chevron handler + bubbled summary-line handler both
-      // firing) would net out to "still collapsed" — assert it actually
-      // expanded.
-      expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+      const refsRender = render(Message, { message: withRefs, fromAgent: herald, seenEntries: [], density: 'summary' });
+      expect(refsRender.container.querySelector('.chip.ref')).toHaveTextContent('◆ 1');
+      expect(refsRender.container.querySelector('.chip.code')).not.toBeInTheDocument();
+
+      const codeRender = render(Message, { message: withCode, fromAgent: herald, seenEntries: [], density: 'summary' });
+      expect(codeRender.container.querySelector('.chip.code')).toHaveTextContent('⟨⟩ 1');
     });
 
-    it('expanding one message does not affect another (independent per-message state)', async () => {
+    it('clicking a chip fires onOpenFocus for that message, without also selecting it', async () => {
       const user = userEvent.setup();
-      const other: MessageT = { ...noteMessage, id: 'msg_01JQ009', summary: 'Another note', body: 'A separate body.' };
+      const withRefs: MessageT = {
+        ...noteMessage,
+        refs: [
+          {
+            repo: 'confer',
+            path: 'src/api.rs',
+            sha: 'abc123',
+            range: null,
+            contentHash: null,
+            refName: null,
+            refType: null,
+            commitDate: null,
+            dirty: false,
+            untracked: false,
+            baseRef: null,
+            forkPoint: null,
+          },
+        ],
+      };
+      const onOpenFocus = vi.fn();
+      const onSelect = vi.fn();
+      const { container } = render(Message, { message: withRefs, fromAgent: herald, seenEntries: [], density: 'summary', onOpenFocus, onSelect });
 
-      const { container: c1 } = render(Message, { message: noteMessage, fromAgent: herald, seenEntries: [], density: 'summary' });
-      const { container: c2 } = render(Message, { message: other, fromAgent: herald, seenEntries: [], density: 'summary' });
+      await user.click(container.querySelector('.chip.ref') as HTMLButtonElement);
 
-      await user.click(c1.querySelector('.expand-toggle') as HTMLButtonElement);
-
-      expect(c1.querySelector('.text-wrap')).toBeInTheDocument();
-      expect(c2.querySelector('.text-wrap')).not.toBeInTheDocument();
+      expect(onOpenFocus).toHaveBeenCalledWith(withRefs.id);
+      expect(onSelect).not.toHaveBeenCalled();
     });
 
     it('in full density, no chevron is shown and the body is always visible', () => {
@@ -222,6 +255,92 @@ describe('Message', () => {
 
       expect(container.querySelector('.expand-toggle')).not.toBeInTheDocument();
       expect(container.querySelector('.text-wrap')).toBeInTheDocument();
+    });
+  });
+
+  describe('piece 4, item 3 — inline refs anchored to prose (Full density only)', () => {
+    const ref: CodeRef = {
+      repo: 'studio',
+      path: 'docs/uid-spine.md',
+      sha: 'a3f1c9deadbeef0000000000000000000000000',
+      range: null,
+      contentHash: null,
+      refName: null,
+      refType: null,
+      commitDate: null,
+      dirty: false,
+      untracked: false,
+      baseRef: null,
+      forkPoint: null,
+    };
+
+    it('replaces a `--ref repo:path@sha` mention that matches a real message ref with a clickable chip, in Full density', async () => {
+      const withRef: MessageT = {
+        ...noteMessage,
+        body: 'Doc: `--ref studio:docs/uid-spine.md@a3f1c9`. You’re unblocked.',
+        refs: [ref],
+      };
+      const { container } = render(Message, { message: withRef, fromAgent: herald, seenEntries: [], density: 'full' });
+
+      await vi.waitFor(() => {
+        expect(container.querySelector('.inline-ref-chip')).toBeInTheDocument();
+      });
+      expect(container.querySelector('.inline-ref-chip')?.textContent).toContain('docs/uid-spine.md');
+      // The trailing card list must NOT also show it — anchored means
+      // anchored, not "anchored AND still duplicated below".
+      expect(container.querySelectorAll('.refcard').length).toBe(0);
+    });
+
+    it('does NOT anchor a `--ref`-looking mention that has no real matching entry in message.refs — Law #3, never invent what it points to', async () => {
+      const noMatch: MessageT = {
+        ...noteMessage,
+        body: 'Doc: `--ref studio:docs/uid-spine.md@a3f1c9`. You’re unblocked.',
+        refs: [], // nothing real to match against
+      };
+      const { container } = render(Message, { message: noMatch, fromAgent: herald, seenEntries: [], density: 'full' });
+
+      await new Promise((r) => setTimeout(r, 0)); // let the effect settle
+      expect(container.querySelector('.inline-ref-chip')).not.toBeInTheDocument();
+      // Stays plain inline code, unmodified.
+      expect(container.textContent).toContain('--ref studio:docs/uid-spine.md@a3f1c9');
+    });
+
+    it('a ref with NO textual mention in the body still falls back to the trailing card — never silently dropped', () => {
+      const noMention: MessageT = { ...noteMessage, body: 'No mention of the ref here at all.', refs: [ref] };
+      const { container } = render(Message, { message: noMention, fromAgent: herald, seenEntries: [], density: 'full' });
+
+      expect(container.querySelector('.refcard')).toBeInTheDocument();
+    });
+
+    it('clicking the anchored chip fetches real reverse-index hits and fires onOpenRefs', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getRefs).mockResolvedValue([]);
+      const withRef: MessageT = {
+        ...noteMessage,
+        body: 'Doc: `--ref studio:docs/uid-spine.md@a3f1c9`.',
+        refs: [ref],
+      };
+      const onOpenRefs = vi.fn();
+      const { container } = render(Message, { message: withRef, fromAgent: herald, seenEntries: [], density: 'full', hub: 'lab', onOpenRefs });
+
+      await vi.waitFor(() => expect(container.querySelector('.inline-ref-chip')).toBeInTheDocument());
+      await user.click(container.querySelector('.inline-ref-chip') as HTMLButtonElement);
+
+      await vi.waitFor(() => expect(onOpenRefs).toHaveBeenCalledWith(ref, []));
+      expect(api.getRefs).toHaveBeenCalledWith('lab', 'studio:docs/uid-spine.md', true);
+    });
+
+    it('never anchors in Summary density — refs stay as the ◆ N chip only', async () => {
+      const withRef: MessageT = {
+        ...noteMessage,
+        body: 'Doc: `--ref studio:docs/uid-spine.md@a3f1c9`.',
+        refs: [ref],
+      };
+      const { container } = render(Message, { message: withRef, fromAgent: herald, seenEntries: [], density: 'summary' });
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(container.querySelector('.inline-ref-chip')).not.toBeInTheDocument();
+      expect(container.querySelector('.chip.ref')).toHaveTextContent('◆ 1');
     });
   });
 

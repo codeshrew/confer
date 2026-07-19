@@ -348,7 +348,7 @@ export const mockMessages: Message[] = [
     cc: [],
     topic: 'reader',
     summary: 'bundle assembly wired, pinned to a3f1c9',
-    body: 'Wired it — bundle assembly is here, pinned so we’re all looking at the exact same code:',
+    body: 'Wired it — bundle assembly is here, pinned so we’re all looking at the exact same code: `--ref wealdlore:Sources/Reader/PlateBundle.swift@a3f1c9`',
     of: null,
     replyTo: 'msg_01JQd55',
     supersedes: null,
