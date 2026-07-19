@@ -128,7 +128,11 @@
           {/if}
           <div class="kv">
             <span class="k">referenced</span>
-            <span class="v">{entry.refCount} refs{#if !loading} · across {messageCount} message{messageCount === 1 ? '' : 's'} · {topicCount} topic{topicCount === 1 ? '' : 's'}{/if}</span>
+            <span class="v"
+              >{entry.refCount} refs{!loading
+                ? ` · across ${messageCount} message${messageCount === 1 ? '' : 's'} · ${topicCount} topic${topicCount === 1 ? '' : 's'}`
+                : ''}</span
+            >
           </div>
           <div class="rd-actions">
             <button type="button" class="btn" onclick={() => onOpenCode?.(entry!.slug)}>open in code view ›</button>
