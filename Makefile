@@ -6,7 +6,7 @@
 .PHONY: ui build release test
 
 ui:
-	cd ui && if [ -f package-lock.json ]; then npm ci; else npm install; fi
+	cd ui && npm install
 	cd ui && npm run build
 
 build: ui
