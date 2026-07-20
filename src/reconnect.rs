@@ -109,7 +109,7 @@ pub(crate) fn cmd_reconnect(
                 }
                 let kp = config::home()?.join(".confer").join("keys").join(r);
                 if !kp.exists() {
-                    cmd_keygen(Some(r.clone()), false).map_err(|e| {
+                    cmd_keygen(Some(r.clone()), None, false).map_err(|e| {
                         anyhow!(
                             "could not mint a signing key for '{r}': {e}\n\
                              install ssh-keygen (openssh) and ensure ~/.confer/keys is writable, \

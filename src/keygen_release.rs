@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 /// existing key (the identity IS the key, so overwriting one destroys an identity), and prints
 /// the `join --signing-key` line so a keyless agent can go from no-key to a verifiable, keyed
 /// identity (and thus a managed clone) without guessing the ssh-keygen convention.
-pub(crate) fn cmd_keygen(role: Option<String>, print_publish_hint: bool) -> Result<()> {
+pub(crate) fn cmd_keygen(role: Option<String>, out: Option<String>, print_publish_hint: bool) -> Result<()> {
     // Role from --role, else the current clone's role (so `confer keygen` "just works" in a hub).
     let role = match role {
         Some(r) => r,
@@ -28,8 +28,12 @@ pub(crate) fn cmd_keygen(role: Option<String>, print_publish_hint: bool) -> Resu
             "invalid role id '{role}' — a role is lowercase letters/digits/'-' (same rule as `join`)"
         ));
     }
-    let keydir = config::home()?.join(".confer").join("keys");
-    let keypath = keydir.join(&role);
+    // --out redirects the write to a caller-chosen path instead of confer's key store; the
+    // default-store 0o700 dir lockdown below only applies to the default case.
+    let keypath = match &out {
+        Some(p) => std::path::PathBuf::from(p),
+        None => config::home()?.join(".confer").join("keys").join(&role),
+    };
     if keypath.exists() {
         return Err(anyhow!(
             "a signing key already exists for '{role}' at {} — the identity IS the key, so confer \
@@ -37,12 +41,22 @@ pub(crate) fn cmd_keygen(role: Option<String>, print_publish_hint: bool) -> Resu
             keypath.display()
         ));
     }
-    std::fs::create_dir_all(&keydir)?;
-    // Lock the key dir to the owner (0o700) — the key material lives here (defense-in-depth nit).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&keydir, std::fs::Permissions::from_mode(0o700));
+    match &out {
+        Some(_) => {
+            if let Some(parent) = keypath.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        None => {
+            let keydir = config::home()?.join(".confer").join("keys");
+            std::fs::create_dir_all(&keydir)?;
+            // Lock the key dir to the owner (0o700) — the key material lives here (defense-in-depth nit).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&keydir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
     }
     let out = std::process::Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-C", &format!("{role}@confer"), "-N", ""])

@@ -3043,9 +3043,11 @@ fn e2e_show_marks_only_that_message_older_deferred_mail_stays_unread() {
         "the two older messages stay listed: {peek}"
     );
     assert!(!peek.contains("three"), "the opened message is gone: {peek}");
-    // Regression (red-team): a plain `inbox` runs compaction — which must GC only, never advance a
-    // floor over the deferred unread mail. The two older messages must survive it.
-    let _ = b.inbox();
+    // Regression (red-team): the compaction that runs on every `inbox` invocation must GC only,
+    // never advance a floor over the deferred unread mail. `--peek` triggers that same compaction
+    // without consuming (a full-body read now marks displayed mail read — see the A fix / the
+    // peek-vs-read test), so it isolates the compaction behavior. The two older messages must survive.
+    let _ = b.inbox_peek();
     assert_eq!(
         b.unread_count(),
         2,

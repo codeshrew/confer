@@ -240,7 +240,18 @@ fn resolve_unique<'a>(msgs: &'a [Message], query: &str) -> Result<&'a str> {
     hits.dedup();
     match hits.len() {
         1 => Ok(hits[0]),
-        0 => Err(anyhow!("no message matches id '{query}'")),
+        0 => {
+            if crate::envelope::looks_like_wrapper_paste(query) {
+                Err(anyhow!(
+                    "'{query}' looks like the `⟦untrusted:…⟧` frame around a peer message, not a \
+                     message id — that token is a per-render random nonce (it changes every time \
+                     the message is shown), not the id. Use the short id shown by `confer inbox \
+                     --peek` / `confer read` instead."
+                ))
+            } else {
+                Err(anyhow!("no message matches id '{query}'"))
+            }
+        }
         n => Err(anyhow!(
             "id '{query}' is ambiguous — matches {n} messages; use a longer or full id"
         )),
@@ -683,7 +694,7 @@ fn run() -> Result<()> {
         Cmd::Clones => cmd_clones(),
         Cmd::Hubs => cmd_hubs(),
         Cmd::Where => cmd_where(),
-        Cmd::Keygen { role } => cmd_keygen(role, true),
+        Cmd::Keygen { role, out } => cmd_keygen(role, out, true),
         Cmd::Update { check } => cmd_update(check),
         Cmd::AdoptClone { path, force } => cmd_adopt_clone(path, force),
         Cmd::Invite {

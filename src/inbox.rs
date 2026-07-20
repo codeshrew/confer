@@ -301,7 +301,18 @@ pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
         .filter(|m| id_matches(&m.front.id, &id))
         .collect();
     match hits.as_slice() {
-        [] => Err(anyhow!("no message with id (or prefix) '{id}'")),
+        [] => {
+            if crate::envelope::looks_like_wrapper_paste(&id) {
+                Err(anyhow!(
+                    "'{id}' looks like the `⟦untrusted:…⟧` frame around a peer message, not a \
+                     message id — that token is a per-render random nonce (it changes every time \
+                     the message is shown), not the id. Use the short id shown by `confer inbox \
+                     --peek` / `confer read` instead."
+                ))
+            } else {
+                Err(anyhow!("no message with id (or prefix) '{id}'"))
+            }
+        }
         [m] => {
             let roster = roster::load(&root);
             let hub_key = config::hub_key(&root);

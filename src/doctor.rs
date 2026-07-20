@@ -119,7 +119,7 @@ pub fn audit(root: &Path) -> Vec<Finding> {
     if let Some((scope, prog)) = &program {
         if is_interactive_signer(prog) {
             f.push(Finding {
-                level: if agent_clone { Level::Warn } else { Level::Info },
+                level: Level::Info,
                 title: format!(
                     "gpg.ssh.program ({}) is an interactive signer ({prog}) — it prompts/blocks in a headless agent.",
                     scope.label()

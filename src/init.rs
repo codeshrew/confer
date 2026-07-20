@@ -209,7 +209,11 @@ pub(crate) fn cmd_init(
             .join(", ")
     };
     println!("hub ready: {url}");
-    println!("  dir:      {}", root.display());
+    println!(
+        "  dir:      {}{}",
+        root.display(),
+        if managed { "  (staging — relocated under --managed; see below)" } else { "" }
+    );
     println!("  branch:   {branch}");
     println!("  messages: {msg_count}");
     println!("  roles:    {roles}");
@@ -248,7 +252,7 @@ pub(crate) fn cmd_init(
             None => {
                 let kp = config::home()?.join(".confer").join("keys").join(&r);
                 if !kp.exists() {
-                    cmd_keygen(Some(r.clone()), false).map_err(|e| {
+                    cmd_keygen(Some(r.clone()), None, false).map_err(|e| {
                         anyhow!(
                             "could not mint a signing key for '{r}': {e}\n\
                              install ssh-keygen (openssh) and ensure ~/.confer/keys is writable, \

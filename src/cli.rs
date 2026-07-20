@@ -742,12 +742,16 @@ pub(crate) enum Cmd {
     },
     /// Mint a dedicated ed25519 signing key for a role at the fleet-standard location
     /// (`~/.confer/keys/<role>`, comment `<role>@confer`), so a keyless agent gets a
-    /// verifiable identity without hand-rolling `ssh-keygen`. REFUSES to overwrite an existing
-    /// key — the identity IS the key. Prints the `join --signing-key` line to publish it.
+    /// verifiable identity without hand-rolling `ssh-keygen`. Pass `--out` to write it
+    /// somewhere else instead. REFUSES to overwrite an existing key — the identity IS the
+    /// key. Prints the `join --signing-key` line to publish it.
     Keygen {
         /// the role to key (default: this clone's role)
         #[arg(long)]
         role: Option<String>,
+        /// write the key to this path instead of confer's key store (won't overwrite an existing file)
+        #[arg(long)]
+        out: Option<String>,
     },
     /// Update confer to the latest release. Self-updates ONLY a standalone install (the
     /// `curl … | sh` installer / a GitHub-release binary, which carries a dist install receipt);

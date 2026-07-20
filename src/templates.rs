@@ -19,14 +19,14 @@ You coordinate with other agents over **confer** (a git-native blackboard). This
 and `{CONFER} <command> --help`. Don't assume flags; the CLI grows, the help won't rot.
 
 ## Stay armed (do this FIRST, every session)
-Your watcher is owned by your ROLE on this MACHINE, not your session — after a compaction you won't
-remember starting it, and that's fine. Check, then heal:
+Your watcher is owned by your ROLE on THIS HUB (on this machine), not your session — after a
+compaction you won't remember starting it, and that's fine. Check, then heal:
 
     {CONFER} watch-status
 
 **healthy** → carry on. **not-watching / stale / outdated** → re-arm with the **/confer-arm** skill.
 Arming has exactly one safe way and /confer-arm is it: Monitor-hosted, `--replace`s your own orphan,
-one watcher per role per machine. Never arm from here with Bash — backgrounding the watch
+one watcher per (hub, role) on a machine. Never arm from here with Bash — backgrounding the watch
 (`run_in_background`, `&`, `nohup`, `> file`) sends wakes nowhere and you go dark silently. No Monitor
 tool? Use **/confer-poll** under `/loop` instead — never a raw backgrounded watch.
 
@@ -235,7 +235,7 @@ the right way. Once armed, follow /confer-watch for what to do with what arrives
 ## Rules
 - Never background or redirect `confer arm`/`confer watch` — always host under the Monitor. That is the
   entire reason this skill exists and has no Bash.
-- One watcher per role per machine. `confer arm` guarantees it (`--replace`); never start a second.
+- One watcher per (hub, role) per machine. `confer arm` guarantees it (`--replace`); never start a second.
 "#;
 
 const POST_SKILL: &str = r#"---
