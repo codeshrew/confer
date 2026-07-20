@@ -5144,6 +5144,76 @@ fn threads_tracks_open_then_closed_as_a_request_resolves() {
     );
 }
 
+/// C (round-2 field-note, orbit's peer-watcher-visibility gap): sending `--to` a peer whose watch is
+/// down/stale emits a NON-BLOCKING advisory so the sender knows they may not see it — the write still
+/// succeeds. A live peer stays silent (next test).
+#[test]
+fn e2e_append_warns_when_an_addressed_peer_watch_is_down() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    // Fabricate a 45-minutes-old (DOWN) presence beat for beta on the hub (raw-git, same technique
+    // as fleet_json_carries_last_seen_and_age_secs).
+    let stale = (chrono::Utc::now() - chrono::Duration::minutes(45)).to_rfc3339();
+    let push_beat = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{dir}' && printf '{{\"role\":\"beta\",\"last_seen\":\"{stale}\",\"poll_secs\":10}}' > pres.json && \
+             bo=$(git hash-object -w pres.json) && \
+             t=$(printf '100644 blob %s\\tpresence.json\\n' \"$bo\" | git mktree) && \
+             c=$(git commit-tree $t -m beat) && \
+             git update-ref refs/presence/beta $c && \
+             git push --force origin refs/presence/beta:refs/presence/beta && rm -f pres.json",
+            dir = b.dir.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(push_beat.status.success(), "push_beat: {}", String::from_utf8_lossy(&push_beat.stderr));
+    // alpha pulls presence into its local view, then sends to the down peer.
+    let _ = a.confer(&["fleet", "--json"]);
+    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "ping", "--text", "you there?"]);
+    assert!(ok(&o), "the send must still succeed (advisory is non-blocking): {}", err(&o));
+    let e = err(&o);
+    assert!(
+        e.contains("beta") && (e.contains("down") || e.contains("isn't live") || e.contains("aren't watching")),
+        "sending to a down peer must emit a presence advisory: {e}"
+    );
+}
+
+/// C: a LIVE addressee (fresh heartbeat) must NOT trigger the presence advisory (no false alarm).
+#[test]
+fn e2e_append_no_presence_advisory_for_a_live_peer() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let fresh = chrono::Utc::now().to_rfc3339();
+    let push_beat = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{dir}' && printf '{{\"role\":\"beta\",\"last_seen\":\"{fresh}\",\"poll_secs\":10}}' > pres.json && \
+             bo=$(git hash-object -w pres.json) && \
+             t=$(printf '100644 blob %s\\tpresence.json\\n' \"$bo\" | git mktree) && \
+             c=$(git commit-tree $t -m beat) && \
+             git update-ref refs/presence/beta $c && \
+             git push --force origin refs/presence/beta:refs/presence/beta && rm -f pres.json",
+            dir = b.dir.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(push_beat.status.success(), "push_beat: {}", String::from_utf8_lossy(&push_beat.stderr));
+    let _ = a.confer(&["fleet", "--json"]);
+    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "ping", "--text", "you there?"]);
+    let e = err(&o);
+    assert!(
+        !e.contains("isn't live") && !e.contains("aren't watching"),
+        "a live peer must not trigger a presence advisory: {e}"
+    );
+}
+
 #[test]
 fn fleet_json_carries_last_seen_and_age_secs() {
     // design/38 — `confer fleet` must surface the heartbeat AGE (last-seen), not just

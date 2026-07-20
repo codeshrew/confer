@@ -131,6 +131,94 @@ fn recipient_advisory(
     }
 }
 
+/// Compact "how long ago" for a presence heartbeat's `last_seen` (rfc3339). Coarse on purpose — an
+/// advisory only needs the order of magnitude ("42m", "3h", "2d").
+fn age_str(last_seen: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(last_seen) else {
+        return "no heartbeat".into();
+    };
+    let secs = (now - t.with_timezone(&chrono::Utc)).num_seconds().max(0);
+    if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
+}
+
+/// Presence advisory (orbit's round-2 field-note — the peer-watcher-visibility gap): after a send,
+/// warn if any addressed peer's watch is stale/down, so the sender can re-route or escalate instead
+/// of silently blocking on an asleep peer. NON-BLOCKING and stderr-only — it runs after the write is
+/// already committed and can never affect it. Complements `recipient_advisory` (which flags roles
+/// that never JOINED); this flags joined-but-not-watching peers. `--to all` / groups are summarized,
+/// not spammed per member. A peer that has never published presence is skipped (that's join-time
+/// territory, `recipient_advisory`'s job — not "asleep").
+fn presence_advisory(
+    root: &std::path::Path,
+    roster: &roster::Roster,
+    grps: &groups::Groups,
+    from: &str,
+    to: &[String],
+    cc: &[String],
+) {
+    // Expand the addressed tokens to concrete joined peers (excluding me).
+    let mut audience: Vec<String> = Vec::new();
+    for t in to.iter().chain(cc.iter()) {
+        if t == from {
+            continue;
+        }
+        if is_reserved_name(t) {
+            audience.extend(roster.keys().filter(|r| r.as_str() != from).cloned());
+        } else if let Some(members) = grps.get(t) {
+            audience.extend(members.iter().filter(|m| m.as_str() != from).cloned());
+        } else if roster.contains_key(t) {
+            audience.push(t.clone());
+        }
+    }
+    audience.sort_unstable();
+    audience.dedup();
+    if audience.is_empty() {
+        return;
+    }
+    // Local-only presence read (fetch=false): cheap, and a slightly stale view is fine for an
+    // advisory that never blocks. The send just synced the hub, so local presence is near-fresh.
+    let beats = crate::presence::load_verified(root, &config::hub_key(root), roster, false);
+    let now = chrono::Utc::now();
+    let mut stale: Vec<String> = Vec::new();
+    for role in &audience {
+        let Some(b) = beats.iter().find(|b| &b.p.role == role) else {
+            continue; // never published presence — not "asleep", so not our advisory
+        };
+        match crate::presence::liveness(&b.p, now) {
+            crate::presence::Live::Up => {}
+            state => {
+                let word = if matches!(state, crate::presence::Live::Down) {
+                    "down"
+                } else {
+                    "idle"
+                };
+                stale.push(format!("{role} ({word} {})", age_str(&b.p.last_seen, now)));
+            }
+        }
+    }
+    if stale.is_empty() {
+        return;
+    }
+    let detail = stale.join(", ");
+    if stale.len() == 1 {
+        crate::warn_safety(format!(
+            "{detail} — their watch isn't live; they may not see this until they re-arm (check `confer who`)."
+        ));
+    } else {
+        crate::warn_safety(format!(
+            "{} of {} addressees aren't watching: {detail} — they may not see this until they re-arm.",
+            stale.len(),
+            audience.len()
+        ));
+    }
+}
+
 /// Ergonomic first-class lifecycle verbs (`confer claim/done/error/blocked/defer
 /// --of <id>`) — thin sugar over `append` with the type set and a sensible default
 /// summary, so closing/reclassifying a request is one short command.
@@ -789,6 +877,11 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     for p in &ref_provenance {
         eprintln!("confer: {p}");
     }
+
+    // Presence advisory (orbit round-2 field-note): the message is committed; now warn if an
+    // addressed peer's watch is stale/down so the sender doesn't block on an asleep peer. Runs after
+    // the send, never affects it. `grps` was loaded for the recipient advisory above.
+    presence_advisory(&root, &roster::load(&root), &grps, &role, &msg.front.to, &msg.front.cc);
 
     // Claim-race check: on a broadcast request two agents can both
     // claim. Resolution is by fold order — the earliest claim owns. After sync
