@@ -25,13 +25,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --no-self-update
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Build web UI
-        # ui/dist must exist before `cargo publish --verify` builds in its temp dir —
-        # build.rs only reads ui/dist/index.html, it never builds it itself.
-        run: make ui
+      # No web-UI build here on purpose: `ui/dist` is gitignored, so it is never part of the
+      # published crate (`cargo publish --verify` packages git-tracked files only) — the crate
+      # always embeds the build-the-UI placeholder, exactly as it has since 0.8.0. Running the UI
+      # build would only rewrite `ui/package-lock.json` (npm reformats it) and make `cargo publish`
+      # refuse with a dirty working tree. brew ships the real dashboard; `cargo install` is source-only.
       - name: cargo publish (skips cleanly if this version is already on crates.io)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
