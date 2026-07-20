@@ -68,7 +68,27 @@ fn new_hub_with_home(home: PathBuf) -> Hub {
     std::fs::write(seed.join(".gitignore"), ".confer/\n").unwrap();
     std::fs::write(seed.join(".confer-version"), "0.6.5\n").unwrap();
     git(&seed, &["add", "-A"]);
-    git(&seed, &["commit", "-q", "-m", "init"]);
+    // Give each hub a DISTINCT root-commit date so two independently-seeded hubs never
+    // collide on their root-commit SHA. `crosshub::hub_dirs()` dedupes the hubs a machine
+    // follows by root SHA (the F3 identity anchor); with byte-identical seed content, two
+    // hubs whose root commits land in the SAME wall-clock second hash to the SAME root, so
+    // one is silently dropped. On a fast CI box the two `new_hub_with_home` seed commits
+    // fall in one second → the shared-home two-hub fixture collapsed to one hub and
+    // `refs … --all-hubs` saw hub B vanish ([] instead of its ref). A per-hub monotonic
+    // date makes the root SHA deterministically unique regardless of machine speed, while
+    // leaving the hub tree byte-identical to a real hub.
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let date = format!("@{} +0000", 978_307_200u64 + u64::from(n)); // 2001-01-01Z + n secs
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&seed)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t.local", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .expect("run git");
+    assert!(commit.status.success(), "seed commit failed: {}", String::from_utf8_lossy(&commit.stderr));
     git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
     assert!(git(&seed, &["push", "-q", "-u", "origin", "main"]).status.success());
     Hub { bare, home }
