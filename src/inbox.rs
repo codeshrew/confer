@@ -14,13 +14,13 @@
 //! dismiss (`ack`) does. That is what lets directly-addressed mail persist in the inbox until the
 //! agent actually handles it, and lets you defer some while reading others.
 
+use crate::envelope::framed_body;
 use crate::groups::{self, Groups};
-use crate::projection::id_ref_matches;
+use crate::projection::{id_ref_matches, superseded_set};
 use crate::schema::Message;
 use crate::{
-    config, format_line, framed_body, gitcmd, id_matches, projection, render_targets,
-    resolve_unique, roster, schema, short_id, store, superseded_set, tiers, to_json, truncate,
-    verify, warn_safety,
+    config, format_line, gitcmd, id_matches, projection, render_targets, resolve_unique, roster,
+    schema, short_id, store, tiers, to_json, truncate, verify, warn_safety,
 };
 use anyhow::{anyhow, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};

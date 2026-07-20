@@ -9,6 +9,7 @@
 //! someone else's hub means no linkage — the privacy is physics, not policy.
 
 use crate::{config, gitcmd, roster};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -231,6 +232,28 @@ pub fn appearances(exclude: &Path) -> HashMap<String, Vec<(String, String)>> {
         v.retain(|pair| seen.insert(pair.clone()));
     }
     idx
+}
+
+/// Resolve the hubs a viewer (dashboard/serve) should show: explicit `--hub` paths
+/// Which hubs a dashboard/serve view covers. `--all-hubs` → every hub on the machine (the full fleet
+/// view). Otherwise the CURRENT hub — one predictable view, honoring the top-level `--hub <name>`
+/// selector, `$CONFER_HUB`, or the cwd. Explicit rather than cwd-magic: you say `--all-hubs` when you
+/// mean the fleet, `--hub <name>` when you mean one, nothing when you mean where you are.
+#[cfg(any(feature = "dashboard", feature = "serve"))]
+pub(crate) fn resolve_hubs(all: bool) -> Result<Vec<std::path::PathBuf>> {
+    if all {
+        let ds = hub_dirs();
+        if ds.is_empty() {
+            anyhow::bail!("no hubs found on this machine — join one first (confer reconnect / onboard)");
+        }
+        return Ok(ds);
+    }
+    match config::repo_root() {
+        Ok(cwd) => Ok(vec![cwd]),
+        Err(_) => anyhow::bail!(
+            "not inside a hub — run from a hub clone, or use `--hub <name>` (one hub) / `--all-hubs` (the fleet)"
+        ),
+    }
 }
 
 #[cfg(test)]

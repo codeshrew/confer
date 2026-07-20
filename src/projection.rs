@@ -10,7 +10,7 @@
 use crate::schema::Message;
 use crate::{config, crosshub, gitcmd, presence, roster, store, watchlock};
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Strict id match for the **fold layer**: exact full id, or a trailing suffix of
@@ -606,6 +606,19 @@ pub fn render_targets(roster: &roster::Roster, targets: &[String]) -> String {
         .map(|t| if t == "all" { "all".to_string() } else { roster::display(roster, t).to_string() })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Ids that have been superseded (some message's `supersedes` points at them).
+pub(crate) fn superseded_set(msgs: &[Message]) -> HashSet<String> {
+    let mut s = HashSet::new();
+    for m in msgs {
+        if let Some(sup) = &m.front.supersedes {
+            if let Some(t) = msgs.iter().find(|x| id_ref_matches(&x.front.id, sup)) {
+                s.insert(t.front.id.clone());
+            }
+        }
+    }
+    s
 }
 
 #[cfg(test)]

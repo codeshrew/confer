@@ -75,13 +75,14 @@ fn git_apply_is_confined_to_patch_rs() {
 /// hub registry, ignoring operator scope) may be *called* only from `allowed_hubs()` (the
 /// scoped resolver, in api.rs), from the operator/CLI layer where the operator IS the
 /// scope (main.rs — the `serve` command builds its served set here, and operator commands
-/// like `fleet` enumerate directly), and from the `repos discover` CLI (reposdiscover.rs).
+/// like `fleet` enumerate directly; refcmd.rs — the `refs --all-hubs` command handler,
+/// moved out of main.rs), and from the `repos discover` CLI (reposdiscover.rs).
 /// No HTTP *handler* may reach it, so a future endpoint cannot repeat the `?allHubs=1`
 /// cross-hub leak — a handler that wants many hubs must go through `allowed_hubs(dirs,
 /// all_hubs)`, which is the only request-path caller.
 #[test]
 fn hub_dirs_is_reached_only_through_the_scoped_resolver() {
-    let offenders = scan(&["api.rs", "main.rs", "reposdiscover.rs"], &["crosshub::hub_dirs()"]);
+    let offenders = scan(&["api.rs", "main.rs", "reposdiscover.rs", "refcmd.rs"], &["crosshub::hub_dirs()"]);
     assert!(
         offenders.is_empty(),
         "crosshub::hub_dirs() called outside allowed_hubs()/CLI — route it through ServeScope \

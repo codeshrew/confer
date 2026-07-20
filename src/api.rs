@@ -6,7 +6,7 @@
 //! contract with that frontend, not incidental.
 
 use crate::schema::{sanitize_term, CodeRef, Message};
-use crate::{append, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, seen, store, tiers, verify, version};
+use crate::{append_ref, config, crosshub, gitcmd, presence, projection, refcode, repomap, repos, roster, seen, store, tiers, verify, version};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -725,7 +725,7 @@ fn refs(dirs: &[PathBuf], all_hubs: bool, q: &HashMap<String, String>) -> ApiRes
     let Some(target) = q.get("target").filter(|s| !s.is_empty()) else {
         return ApiResponse::err(400, "missing ?target=");
     };
-    let (repo, path, range) = match crate::parse_ref_query(target) {
+    let (repo, path, range) = match crate::refcmd::parse_ref_query(target) {
         Ok(v) => v,
         Err(e) => return ApiResponse::err(400, e.to_string()),
     };
@@ -918,7 +918,7 @@ fn code(dirs: &[PathBuf], q: &HashMap<String, String>) -> ApiResponse {
         return ApiResponse::err(404, "not a referenced (repo, path, sha) — /api/code only serves pinned refs");
     }
     let range = match q.get("range").filter(|s| !s.is_empty()) {
-        Some(r) => match append::parse_range(r) {
+        Some(r) => match append_ref::parse_range(r) {
             Ok(v) => Some(v),
             Err(e) => return ApiResponse::err(400, e.to_string()),
         },

@@ -266,3 +266,63 @@ mod tests {
         assert_eq!(json_num(r#"{"x":"str"}"#, "x"), None);
     }
 }
+
+/// Set or show the GitHub App config used by `confer credential`.
+pub(crate) fn cmd_app_config(
+    app_id: Option<String>,
+    key: Option<String>,
+    installation_id: Option<u64>,
+    find_installation: bool,
+) -> Result<()> {
+    let mut c = load_config().unwrap_or_default();
+    let mut changed = false;
+    if let Some(a) = app_id {
+        c.app_id = a;
+        changed = true;
+    }
+    if let Some(k) = key {
+        c.key_path = k;
+        changed = true;
+    }
+    if let Some(i) = installation_id {
+        c.installation_id = Some(i);
+        changed = true;
+    }
+    // Persist app_id/key FIRST so they survive even if the App isn't installed yet
+    // (find-installation can then be re-run once it is).
+    if changed {
+        save_config(&c)?;
+    }
+    if find_installation {
+        match crate::ghapp::find_installation(&c) {
+            Ok(id) => {
+                println!("found installation id: {id}");
+                c.installation_id = Some(id);
+                save_config(&c)?;
+            }
+            Err(e) => eprintln!(
+                "confer: {e}\n(config saved; install the App on your repos, then re-run `confer app-config --find-installation`)"
+            ),
+        }
+    }
+    println!(
+        "app_id:          {}\nkey:             {}\ninstallation_id: {}",
+        if c.app_id.is_empty() {
+            "(unset)"
+        } else {
+            &c.app_id
+        },
+        if c.key_path.is_empty() {
+            "(unset)"
+        } else {
+            &c.key_path
+        },
+        c.installation_id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "(unset)".into()),
+    );
+    if !changed {
+        println!("\nwire the credential helper: git config credential.\"https://github.com\".helper \"!confer credential\"");
+    }
+    Ok(())
+}

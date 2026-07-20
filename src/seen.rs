@@ -295,6 +295,8 @@ mod tests {
                 .arg("-C")
                 .arg(dir)
                 .args([
+                    "-c", "user.name=t",
+                    "-c", "user.email=t@t.local",
                     "-c", "gpg.format=ssh",
                     "-c", &format!("user.signingkey={}", key.display()),
                     "-c", &format!("gpg.ssh.program={keygen_path}"),
@@ -303,7 +305,12 @@ mod tests {
                 .output()
                 .unwrap()
         } else {
-            Command::new("git").arg("-C").arg(dir).args(["commit-tree", &tree, "-m", "beat"]).output().unwrap()
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t.local", "commit-tree", &tree, "-m", "beat"])
+                .output()
+                .unwrap()
         };
         assert!(ok(&commit_o));
         let commit = String::from_utf8_lossy(&commit_o.stdout).trim().to_string();

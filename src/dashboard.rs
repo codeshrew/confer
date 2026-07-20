@@ -441,6 +441,12 @@ fn draw_tail(f: &mut Frame, area: Rect, h: &HubView) {
     );
 }
 
+/// Launch the live TUI dashboard over the resolved hubs.
+#[cfg(feature = "dashboard")]
+pub(crate) fn cmd_dashboard(all_hubs: bool) -> Result<()> {
+    run(crate::crosshub::resolve_hubs(all_hubs)?)
+}
+
 /// Entry point for the `dashboard` subcommand. Redirects stderr to a log file
 /// before entering the alternate screen so stray warnings can't garble the TUI.
 pub fn run(dirs: Vec<PathBuf>) -> Result<()> {

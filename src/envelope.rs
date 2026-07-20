@@ -46,6 +46,20 @@ fn frame_with(n: &str, body: &str, who: &str, role: &str, trust: &Trust, tier: O
     )
 }
 
+/// Wrap a rendered body in the untrusted-data envelope, annotating it with the heuristic
+/// screen's verdict (⚠) computed from the RAW body — not the framed markdown, whose
+/// `---\nfrom:` frontmatter would self-trigger format-injection. DESIGN.md §2 + §3.
+pub(crate) fn framed_body(
+    display_md: &str,
+    m: &crate::schema::Message,
+    who: &str,
+    trust: &Trust,
+    tier: Option<Tier>,
+) -> String {
+    let note = crate::screen_note(m, tier);
+    frame(display_md, who, &m.front.from, trust, tier, note.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
