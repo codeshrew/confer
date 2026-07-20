@@ -181,14 +181,19 @@ fn presence_advisory(
     if audience.is_empty() {
         return;
     }
-    // Local-only presence read (fetch=false): cheap, and a slightly stale view is fine for an
-    // advisory that never blocks. The send just synced the hub, so local presence is near-fresh.
-    let beats = crate::presence::load_verified(root, &config::hub_key(root), roster, false);
+    // Fetch presence so the liveness read is actually FRESH: append's own sync uses git's default
+    // refspec, which does NOT include refs/presence/* (red-team), so fetch=false would read a stale
+    // or empty local view and the advisory would silently no-op. This runs AFTER the message is
+    // already committed+pushed, so the extra fetch never delays delivery. And SKIP untrusted beats —
+    // like every other load_verified consumer, the liveness of a forged/replayed (Untrusted) beat
+    // must not be believed (a hostile hub-writer could forge "up" to suppress the warning, or "down"
+    // to fake one). A role with only an untrusted beat is treated the same as "never published".
+    let beats = crate::presence::load_verified(root, &config::hub_key(root), roster, true);
     let now = chrono::Utc::now();
     let mut stale: Vec<String> = Vec::new();
     for role in &audience {
-        let Some(b) = beats.iter().find(|b| &b.p.role == role) else {
-            continue; // never published presence — not "asleep", so not our advisory
+        let Some(b) = beats.iter().find(|b| &b.p.role == role && b.trust.ok()) else {
+            continue; // never published, or only an untrusted/forged beat — not a believable "asleep"
         };
         match crate::presence::liveness(&b.p, now) {
             crate::presence::Live::Up => {}

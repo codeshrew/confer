@@ -5173,8 +5173,8 @@ fn e2e_append_warns_when_an_addressed_peer_watch_is_down() {
         .output()
         .unwrap();
     assert!(push_beat.status.success(), "push_beat: {}", String::from_utf8_lossy(&push_beat.stderr));
-    // alpha pulls presence into its local view, then sends to the down peer.
-    let _ = a.confer(&["fleet", "--json"]);
+    // No priming: the advisory fetches presence itself (fetch=true), so this proves it works for a
+    // CLI-only agent that never runs fleet/who — the send-path sync alone doesn't fetch presence refs.
     let o = a.append(&["--type", "note", "--to", "beta", "--summary", "ping", "--text", "you there?"]);
     assert!(ok(&o), "the send must still succeed (advisory is non-blocking): {}", err(&o));
     let e = err(&o);
@@ -5207,7 +5207,6 @@ fn e2e_append_no_presence_advisory_for_a_live_peer() {
         .output()
         .unwrap();
     assert!(push_beat.status.success(), "push_beat: {}", String::from_utf8_lossy(&push_beat.stderr));
-    let _ = a.confer(&["fleet", "--json"]);
     let o = a.append(&["--type", "note", "--to", "beta", "--summary", "ping", "--text", "you there?"]);
     let e = err(&o);
     assert!(

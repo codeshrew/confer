@@ -114,12 +114,18 @@ pub fn audit(root: &Path) -> Vec<Finding> {
     let program = scoped(root, "gpg.ssh.program");
     let signingkey = scoped(root, "user.signingkey");
     let email = scoped(root, "user.email");
+    let signing_on = gpgsign.as_ref().map(|(_, v)| v == "true").unwrap_or(false);
 
-    // Interactive signer (blocks headless agents).
+    // Interactive signer. It only BLOCKS a headless agent when signing is actually ON — then every
+    // commit invokes the interactive program and hangs, a real problem (Warn). With signing OFF the
+    // program is never invoked (an inherited-but-unused global), so it's informational, not a counted
+    // action item — that's the round-2 cry-wolf fix, WITHOUT hiding the genuine headless-signing
+    // blocker a full downgrade would (red-team: local key + interactive gpg.ssh.program + gpgsign=on
+    // still hangs, and `doctor --check` must keep catching it for onboarding automation).
     if let Some((scope, prog)) = &program {
         if is_interactive_signer(prog) {
             f.push(Finding {
-                level: Level::Info,
+                level: if agent_clone && signing_on { Level::Warn } else { Level::Info },
                 title: format!(
                     "gpg.ssh.program ({}) is an interactive signer ({prog}) — it prompts/blocks in a headless agent.",
                     scope.label()
@@ -135,7 +141,6 @@ pub fn audit(root: &Path) -> Vec<Finding> {
         // Agent clone should sign with an agent key set LOCALLY, not the human's inherited key.
         // A key alone isn't enough — `commit.gpgsign` must actually be ON, or messages go out
         // unsigned and no peer can verify them (this exact gap shipped an unverifiable fleet-op).
-        let signing_on = gpgsign.as_ref().map(|(_, v)| v == "true").unwrap_or(false);
         match &signingkey {
             Some((Scope::Local, _)) if signing_on => f.push(Finding {
                 level: Level::Ok,
