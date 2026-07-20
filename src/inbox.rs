@@ -374,11 +374,13 @@ pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
     }
 }
 
-/// The unread inbox: directly-addressed mail past the read frontier. Prints the full
-/// messages and (unless `--peek`) marks them read. The "did I actually see it"
-/// backstop, distinct from the delivery cursor. `--json` prints one `to_json` object per unread
-/// message (NDJSON) — `--peek` doesn't change the JSON shape (a machine consumer reads the
-/// fields itself); an empty inbox emits nothing on stdout (design/37 item 6/11).
+/// The unread inbox: directly-addressed mail past the read frontier. Prints the full messages and
+/// marks each PRINTED one read — per-id (adds to `opened`, never advances the floor), so
+/// deferred/unshown mail is untouched — which is what lets `confer inbox` clear the watch's "N
+/// unread" nag, as the skill promises. `--peek` lists compact triage lines WITHOUT consuming;
+/// `--json` is a non-consuming machine query (one `to_json` object per unread message, NDJSON — same
+/// shape as `--peek`, a consumer reads the fields itself). An empty inbox emits nothing on stdout
+/// (design/37 item 6/11).
 pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
@@ -414,6 +416,7 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<
         println!("── {} unread for {me} ──\n", unread.len());
     }
     let mut vc = verify::Cache::default();
+    let mut marked = 0usize;
     for m in &unread {
         let t = verify::status(&root, &hub, &roster, &mut vc, m);
         if json {
@@ -432,14 +435,27 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<
             let body = schema::sanitize_term(&m.to_markdown()?, true);
             println!("{}", framed_body(&body, m, who, &t, tiers::get(&hub)));
             println!();
+            // Printing the full body IS consuming it — mark THIS message read. Per-id (adds to
+            // `opened`, never advances the floor), so older mail you did NOT see here — e.g. a
+            // late-pushed old-id message not yet in the log (the DeferredLocal path) — stays unread
+            // and surfaces when it syncs. This is what makes `confer inbox` clear the watch's "N
+            // unread" nag, as the skill has always promised. (The old code deliberately did NOT mark,
+            // to dodge the single-high-water-mark sweep bug — obsolete now that reads are per-id.)
+            // `--peek` (triage) and `--json` (machine query) are non-consuming and never mark.
+            let _ = mark_read(&hub, &me, &m.front.id);
+            marked += 1;
         }
     }
-    // The inbox LISTS — it never marks mail read (that was the single-high-water-mark bug: opening
-    // one message read all the older deferred mail). You mark mail read explicitly, one at a time.
     if !json {
-        println!(
-            "(nothing marked read — `confer show <id>` opens one, `confer ack <id>` dismisses one, `confer ack` clears all)"
-        );
+        if peek {
+            println!(
+                "(--peek — nothing marked read; drop --peek to read + clear, or `confer ack <id>` / `confer ack` to clear all)"
+            );
+        } else {
+            println!(
+                "({marked} marked read. `confer show <id>` re-opens one; `confer ack <id>` dismisses one without opening; deferred / not-yet-synced mail stays unread)"
+            );
+        }
     }
     Ok(())
 }

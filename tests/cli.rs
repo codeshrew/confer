@@ -2723,13 +2723,37 @@ fn e2e_inbox_direct_mail_unread_then_read_clears() {
         b.inbox_peek()
     );
     assert_eq!(b.unread_count(), 1);
-    // The inbox LISTS — it no longer auto-marks the whole batch read (that was the single-HWM bug).
-    // Listing leaves it unread so you can defer; re-checking still shows it.
+    // `--peek` is triage-only: it lists the mail but never consumes it, so re-peeking still shows it.
+    assert_eq!(b.unread_count(), 1, "--peek must not clear (triage-only)");
+    // A full-body `confer inbox` READS the mail → marks each displayed message read (per-id, so
+    // deferred/unshown mail is untouched) → clears the watch's unread nag, exactly as the skill
+    // promises. This is the fix for the round-2 field-note: inbox now does what its docs always said.
     assert!(b.inbox().contains("did you see the fix?"));
-    assert_eq!(b.unread_count(), 1, "inbox lists; it must NOT auto-clear (defer model)");
-    // Dismiss it explicitly → inbox clears and stays clear.
+    assert_eq!(b.unread_count(), 0, "a full-body inbox read marks the displayed mail read");
+    // ack on an already-clear inbox is a harmless no-op; it stays clear.
     assert!(ok(&b.confer(&["ack"])));
-    assert_eq!(b.unread_count(), 0, "ack clears the inbox");
+    assert_eq!(b.unread_count(), 0, "inbox stays clear");
+}
+
+#[test]
+fn e2e_inbox_peek_triages_without_consuming_full_read_clears() {
+    // A (round-2 field-note): a full-body `confer inbox` marks the displayed mail read so the watch's
+    // "N unread" nag clears; `--peek` stays a non-consuming triage view. Two messages, so this also
+    // proves it isn't a single-item special case.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    a.send(&["--type", "note", "--to", "beta", "--summary", "first", "--text", "one"]);
+    a.send(&["--type", "note", "--to", "beta", "--summary", "second", "--text", "two"]);
+    assert_eq!(b.unread_count(), 2);
+    // Peek repeatedly — it must never consume.
+    let _ = b.inbox_peek();
+    let _ = b.inbox_peek();
+    assert_eq!(b.unread_count(), 2, "--peek is triage-only and must never mark read");
+    // A full-body read consumes both displayed messages.
+    let full = b.inbox();
+    assert!(full.contains("first") && full.contains("second"), "full inbox shows both: {full}");
+    assert_eq!(b.unread_count(), 0, "a full-body inbox read marks all displayed mail read");
 }
 
 #[test]
