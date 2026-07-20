@@ -29,6 +29,14 @@ publish-jobs = ["homebrew"]
 # Write an install receipt from the shell installer so `confer update` can detect a standalone
 # install (receipt present) vs a package-manager one (absent → it delegates to brew/cargo).
 install-updater = true
+# Inject `make ui` (build the web dashboard) into the build-local-artifacts job, right after
+# checkout and before `dist build` — so build.rs (read-only) has ui/dist/index.html to embed.
+# Path is relative to .github/workflows/; the fragment lives at .github/build-setup.yml (one
+# level up) so GitHub doesn't mistake it for a standalone workflow. NOTE: this only takes
+# effect on the NEXT `dist generate`/regeneration of release.yml — the same two steps are also
+# hand-added directly to release.yml's build-local-artifacts job so it works right now without
+# a full regen.
+github-build-setup = "../build-setup.yml"
 
 # musl needs the cross toolchain on the Linux builders.
 [dist.dependencies.apt]

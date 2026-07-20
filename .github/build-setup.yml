@@ -1,0 +1,13 @@
+# Injected by cargo-dist (`github-build-setup` in dist-workspace.toml) into the
+# `build-local-artifacts` job of the generated .github/workflows/release.yml, right after
+# the `actions/checkout` step and before `dist build` runs.
+#
+# Builds the web dashboard so build.rs (read-only — it never shells out to npm) can embed
+# ui/dist/index.html into the binary. Stored one level above .github/workflows/ so GitHub
+# doesn't mistake this fragment for a standalone workflow (per cargo-dist docs).
+- name: Install Node
+  uses: actions/setup-node@v4
+  with:
+    node-version: 20
+- name: Build web UI
+  run: make ui

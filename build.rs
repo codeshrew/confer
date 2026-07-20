@@ -28,17 +28,13 @@ fn main() {
 
     // Embed the built web dashboard — a single self-contained index.html from `ui/`
     // (vite-plugin-singlefile inlines all JS/CSS) — so `confer serve` ships it with no
-    // runtime assets. `ui/dist` is gitignored, so on a fresh checkout (CI, the cargo-dist
-    // release, `cargo install --git`) it's absent — BUILD it when node/npm is available so the
-    // released binary embeds the REAL dashboard, and fall back to a placeholder only when node
-    // isn't there (a no-node `cargo build` must still succeed). This is the forcing function
-    // that keeps the release from silently shipping the placeholder (regression fix, 0.8.1).
+    // runtime assets. `ui/dist` is gitignored and built by the CI/release PIPELINE (a `Build
+    // web UI` step runs `npm --prefix ui ci && npm --prefix ui run build` before `cargo build`;
+    // devs run it locally). If it isn't built, embed a placeholder that says how. This build
+    // script only READS — it never modifies the source tree (cargo forbids that, and it broke
+    // `cargo publish --verify` when build.rs shelled out to npm).
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
-    let dist = std::path::Path::new("ui/dist/index.html");
-    if !dist.is_file() {
-        build_ui(); // best-effort; leaves dist absent if node/npm is unavailable → placeholder
-    }
-    let html = std::fs::read_to_string(dist).unwrap_or_else(|_| {
+    let html = std::fs::read_to_string("ui/dist/index.html").unwrap_or_else(|_| {
         "<!doctype html><meta charset=\"utf-8\"><title>confer serve</title>\
          <body style=\"font-family:system-ui;max-width:34rem;margin:3rem auto;padding:0 1rem\">\
          <h1>confer serve</h1><p>The web dashboard isn't built yet. Run \
@@ -47,29 +43,5 @@ fn main() {
             .to_string()
     });
     std::fs::write(std::path::Path::new(&out).join("dashboard.html"), html).expect("write dashboard.html");
-    // Rebuild the embedded dashboard when the built bundle OR the UI source/deps change.
     println!("cargo:rerun-if-changed=ui/dist/index.html");
-    println!("cargo:rerun-if-changed=ui/src");
-    println!("cargo:rerun-if-changed=ui/package.json");
-}
-
-/// Build the web UI (`npm --prefix ui install && npm --prefix ui run build`) into `ui/dist`.
-/// Best-effort: if `npm` is missing or the build fails, leave `ui/dist` absent so the caller
-/// falls back to the placeholder — a `cargo build` without node must still succeed.
-fn build_ui() {
-    for args in [
-        ["--prefix", "ui", "install"].as_slice(),
-        ["--prefix", "ui", "run", "build"].as_slice(),
-    ] {
-        match Command::new("npm").args(args).status() {
-            Ok(s) if s.success() => {}
-            _ => {
-                println!(
-                    "cargo:warning=confer: web dashboard not built (npm unavailable or failed) — \
-                     `confer serve` will show the build-the-UI placeholder. Install node/npm to embed it."
-                );
-                return;
-            }
-        }
-    }
 }
