@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.1
+
+*Fixes the 0.8.0 release-packaging regression — the web dashboard is now actually embedded.*
+
+- **Fix: `confer serve` ships the real web dashboard.** 0.8.0's released binaries embedded the
+  "dashboard isn't built yet" placeholder — `ui/dist` is gitignored and the release pipeline never ran
+  the UI build, so `build.rs` fell back to the placeholder for every published binary. `build.rs` now
+  builds the UI (`npm --prefix ui install && npm --prefix ui run build`) when `ui/dist` is missing, so
+  the cargo-dist release, CI, and `cargo install --git` all embed the real SPA; a no-node build still
+  falls back gracefully. **Upgrade to 0.8.1** (`brew upgrade codeshrew/tap/confer`) for the working
+  dashboard.
+- **Internal: line-budget + test hermeticity.** Split `main.rs`/`append.rs` back under the 1500-line
+  cap (new `refcmd` / `pollcmd` / `append_ref` modules) and made the `seen` tests set their own git
+  identity, so CI on `main` is green again. Pure move, no behavior change.
+
 ## 0.8.0
 
 *The web dashboard release — a complete `confer serve` UI — plus coordination hardening.*
