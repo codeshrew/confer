@@ -6,12 +6,8 @@
 .PHONY: ui build release test
 
 ui:
-	@if [ -f ui/package-lock.json ]; then \
-		npm --prefix ui ci; \
-	else \
-		npm --prefix ui install; \
-	fi
-	npm --prefix ui run build
+	cd ui && if [ -f package-lock.json ]; then npm ci; else npm install; fi
+	cd ui && npm run build
 
 build: ui
 	cargo build
