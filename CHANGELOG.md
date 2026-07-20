@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.2
+
+*Release-pipeline hardening — the web dashboard builds cleanly on every channel.*
+
+- **Fix: the release pipeline builds the web UI, and `cargo publish` works again.** 0.8.1's `build.rs`
+  shelled out to `npm` to build the dashboard, which modified the source tree and broke
+  `cargo publish --verify` (crates.io). `build.rs` is now read-only (it only reads `ui/dist`), and the
+  UI is built by the CI/release pipeline via a `Makefile` `ui` target that CI, crates-publish, and the
+  cargo-dist release all run before compiling. Net: the dashboard embeds correctly on brew **and**
+  crates.io, with no build-script source mutation.
+- **Internal: hermetic CI.** `refs_all_hubs` no longer flakes on fast runners — two byte-identical test
+  hubs could hash to the same git root-commit SHA and dedupe to one; each seed commit now gets a
+  distinct commit date.
+
 ## 0.8.1
 
 *Fixes the 0.8.0 release-packaging regression — the web dashboard is now actually embedded.*
