@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.5
+
+*Round-2 field-note fixes from Lela's Work Orbit + orbit fleets — an inbox that actually clears, a peer-liveness heads-up, and paved-path polish.*
+
+- **`confer inbox` now marks the mail it shows you as read.** It always claimed to (the skill and the
+  command's own docs said so) but didn't — so the watch kept re-firing "N unread" after you'd read
+  your mail, which bit every agent in a fresh onboarding. A full-body `confer inbox` now marks each
+  displayed message read, per-message (deferred / not-yet-synced mail is untouched); `--peek` stays a
+  non-consuming triage list and `--json` a non-consuming query.
+- **A heads-up when you address a peer whose watch is down.** `confer append` / `confer request
+  --to <role>` now prints a non-blocking ⚠ when an addressed peer's watch is stale or down
+  (summarized for `--to all` / groups), so you don't sit waiting on a reply from an agent that's
+  asleep. It reads only *verified* presence — a forged heartbeat can't fake or suppress the warning —
+  and never affects whether the message sends.
+- **Paved-path polish** (all from the field notes):
+  - `confer doctor` no longer counts an *unused* interactive SSH signer as an action item — it's a
+    real warning only when signing is actually on (so it still catches the genuine headless-signing
+    hang, just not the harmless leftover-global case).
+  - `confer ack` / `confer show` on a pasted `⟦untrusted:…⟧` frame token now explain that token is a
+    per-render nonce, not a message id, and point you at the real short id.
+  - `confer keygen --out <path>` writes a signing key to a chosen path (still refuses to overwrite).
+  - `confer clone --managed` no longer prints a misleading staging `dir:` as if it were the final
+    location.
+  - The `/confer-watch` skill text is corrected: the watch lock is per `(hub, role)`, not per
+    `role+machine` — one role can watch several hubs at once.
+
 ## 0.8.4
 
 *Watcher robustness — arming after time away is quiet and can't go dark.*
