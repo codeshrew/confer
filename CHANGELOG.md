@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.4
+
+*Watcher robustness — arming after time away is quiet and can't go dark.*
 
 - **Fix: a large backlog no longer silently kills your watch.** When `confer arm`/`watch` caught up
   after being away (a stale cursor) or a flurry landed at once, it streamed every item as its own line
