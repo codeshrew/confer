@@ -467,7 +467,13 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                     if unread.is_empty() {
                         last_inbox_key.clear(); // cleared — re-show if new mail arrives
                     } else {
-                        let key = format!("{}:{}", unread.len(), unread.last().map(|m| m.front.id.as_str()).unwrap_or(""));
+                        // Key on the exact unread SET (sorted ids), not len+last-id: the latter
+                        // flapped when `unread_for_me`'s order shifted, re-printing the footer for
+                        // an unchanged set. Sorted-join is order-independent, so within the re-nag
+                        // window an unchanged set prints exactly once.
+                        let mut ids: Vec<&str> = unread.iter().map(|m| m.front.id.as_str()).collect();
+                        ids.sort_unstable();
+                        let key = ids.join(",");
                         if key != last_inbox_key || periodic {
                             print_unread_footer(&roster::load(&root), &unread);
                             last_inbox_key = key;
@@ -595,6 +601,12 @@ fn print_unread_footer(roster: &roster::Roster, unread: &[&Message]) {
 
 /// Emit new actionable messages added since the cursor commit, then advance the
 /// cursor to HEAD (commit-ordered incremental read; no wall-clock comparison).
+/// Above this many wake-worthy items in a single emit batch, the watch coalesces them into one
+/// summary line instead of streaming each (see `emit_new`). Sized so a normal reactive trickle
+/// (a peer or two posting while you watch) still streams individually, but a stale-cursor catch-up
+/// or a real flurry can't blow past a Monitor host's rate cap and kill the watch.
+const COALESCE_THRESHOLD: usize = 8;
+
 fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>) -> Result<usize> {
     let roster = roster::load(root);
     let grps = crate::groups::load(root);
@@ -634,20 +646,56 @@ fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>)
         .collect();
 
     let mut out = std::io::stdout().lock();
-    let hub_key = crate::config::hub_key(root);
-    let mut vc = crate::verify::Cache::default();
-    for m in &new {
-        let line = if opts.json {
-            let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);
-            let tier = crate::tiers::get(&hub_key);
-            crate::to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?
+    if new.len() > COALESCE_THRESHOLD {
+        // A large catch-up burst — armed after being away (a stale cursor), or a flurry that
+        // landed at once — would stream dozens of individual wake lines. That is enough to trip a
+        // Monitor host's rate cap, which then SILENTLY kills the watch and the agent goes deaf
+        // (observed 2026-07-19). Coalesce it into ONE line: reactive-going-forward is the watch's
+        // job; replaying a backlog is `poll`/`inbox`'s. The cursor still advances to head below, so
+        // steady-state resumes clean, and the unread-for-you footer still surfaces the direct-mail
+        // subset that actually needs action. In `--json` it's a typed `backlog` event so the stream
+        // stays parseable (same contract as `update-available`).
+        if opts.json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "event": "backlog",
+                    "count": new.len(),
+                    "addressed": !firehose,
+                })
+            )?;
+        } else if firehose {
+            writeln!(
+                out,
+                "⏩ {} board items since you were last here — `confer poll` to review.",
+                new.len()
+            )?;
         } else {
-            // machine feed → full summary, with the read-path verification glyph
-            let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);
-            crate::format_line(&roster, m, true, Some(&t))
-        };
-        writeln!(out, "{line}")?;
-        out.flush()?; // Monitor reads line-by-line over a pipe; flush each event
+            writeln!(
+                out,
+                "⏩ {} message(s) for you since you were last here — `confer inbox` to read them \
+                 (`confer poll` for the full stream).",
+                new.len()
+            )?;
+        }
+        out.flush()?;
+    } else {
+        let hub_key = crate::config::hub_key(root);
+        let mut vc = crate::verify::Cache::default();
+        for m in &new {
+            let line = if opts.json {
+                let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);
+                let tier = crate::tiers::get(&hub_key);
+                crate::to_json(m, &t, tier, crate::screen_note(m, tier).as_deref())?
+            } else {
+                // machine feed → full summary, with the read-path verification glyph
+                let t = crate::verify::status(root, &hub_key, &roster, &mut vc, m);
+                crate::format_line(&roster, m, true, Some(&t))
+            };
+            writeln!(out, "{line}")?;
+            out.flush()?; // Monitor reads line-by-line over a pipe; flush each event
+        }
     }
     // Caught up: anchor the cursor at the last stable (pushed) ancestor of HEAD,
     // not local HEAD — a rebased-away HEAD sha would later orphan the cursor and

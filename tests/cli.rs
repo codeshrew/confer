@@ -3289,6 +3289,41 @@ fn e2e_wake_on_default_notice_mutes_transactional() {
     );
 }
 
+/// Regression (2026-07-19): a large catch-up burst must coalesce into ONE summary line, not stream
+/// every item. Streaming dozens of individual wake lines tripped a Monitor host's rate cap, which
+/// silently killed the watch and the agent went deaf. Above COALESCE_THRESHOLD (8) wake-worthy
+/// items in a single emit, the watch emits a single "⏩ N message(s) … since you were last here"
+/// line and still advances the cursor; the mail stays unread (recoverable via poll/inbox).
+#[test]
+fn e2e_watch_coalesces_a_large_backlog_burst() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    for i in 0..9 {
+        let sum = format!("backlog-item-{i}");
+        a.send(&[
+            "--type", "note", "--to", "beta", "--summary", sum.as_str(), "--text", "x",
+        ]);
+    }
+    let w = watch_briefly(&b, 3);
+    assert!(
+        w.contains('⏩') && w.contains("since you were last here"),
+        "a >8-item backlog must coalesce into one summary line, not stream each: {w}"
+    );
+    // backlog-item-3 is older than the unread footer's newest-5 window, so it must appear NOWHERE
+    // — proving the per-item stream was suppressed (not merely hidden below the footer cap).
+    assert!(
+        !w.contains("backlog-item-3"),
+        "a coalesced backlog must NOT stream individual item summaries: {w}"
+    );
+    // Coalesced delivery is still delivery, never consumption.
+    assert_eq!(
+        b.unread_count(),
+        9,
+        "a coalesced emit must not advance the read frontier"
+    );
+}
+
 /// `--wake-on alert` mutes `notice` too: a `done` on MY OWN request no longer wakes, but a
 /// `request` addressed to me and an `error` on MY OWN request still do (they're `alert`).
 #[test]

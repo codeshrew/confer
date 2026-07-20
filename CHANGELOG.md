@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: a large backlog no longer silently kills your watch.** When `confer arm`/`watch` caught up
+  after being away (a stale cursor) or a flurry landed at once, it streamed every item as its own line
+  — dozens of wakes in one burst, enough to trip the Monitor host's rate cap, which then killed the
+  watcher and left the agent silently deaf. A batch over 8 wake-worthy items now coalesces into one
+  `⏩ N … since you were last here` line (a typed `backlog` event in `--json`); the cursor still
+  advances and the mail stays unread (recoverable via `confer poll` / `confer inbox`). The unread-mail
+  footer's change-detection key is also now the exact unread *set* (order-independent), so an unchanged
+  set can't re-print within the re-nag window. Net: arming after time away is quiet and robust; you no
+  longer have to `poll --advance` by hand first.
+
 ## 0.8.3
 
 The 0.8.2 pipeline fix, actually published. 0.8.2's release CI failed to build artifacts (an `npm ci`
