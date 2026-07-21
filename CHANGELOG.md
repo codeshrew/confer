@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.12
+
+*Multi-harness Phase 2b — skills speak each harness's tool vocabulary.*
+
+- **Per-harness skill vocabulary.** `install-skill` (and auto-heal resync) now rewrite each skill's
+  tool names for the target harness: a Grok install gets `monitor` / `run_terminal_command` /
+  `ask_user_question` and `/loop 60s`, while Claude keeps `Monitor` / `Bash` / `AskUserQuestion` and
+  `/loop 45s`. So a Grok agent's skills reference the tools Grok actually has. (Grok's `allowed-tools`
+  is guidance, not a sandbox, so the `confer-arm` no-shell guarantee is enforced by confer's runtime
+  backgrounded-watch check rather than the frontmatter.)
+
 ## 0.8.11
 
 *Multi-harness Phase 2a — skills install to the right place per harness, and auto-heal keeps them all fresh.*
