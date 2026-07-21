@@ -234,6 +234,41 @@ pub fn appearances(exclude: &Path) -> HashMap<String, Vec<(String, String)>> {
     idx
 }
 
+/// Where else on this machine a role by this NAME (not pubkey) appears — the misroute guardrail for
+/// `append --to` (append.rs). If you address a role that isn't watching THIS hub but the same name
+/// is on another hub you belong to, you may have meant to post there. Returns `(hub_label, live)` per
+/// distinct OTHER hub carrying the name (`live` = a trusted, currently-`Up` beat). LOCAL reads only:
+/// roster is a pure fs read and presence uses the locally CACHED beat (fetch=false, no network), so
+/// it never blocks or slows a send — a stale cache just makes `live` conservative, and card-existence
+/// alone is already a strong misroute signal. Modeled on `appearances` (iterates `prune()` directly,
+/// so it doesn't touch the scope-gated `hub_dirs()`).
+pub fn role_elsewhere(role: &str, exclude: &Path) -> Vec<(String, bool)> {
+    let exclude = exclude.canonicalize().unwrap_or_else(|_| exclude.to_path_buf());
+    let now = chrono::Utc::now();
+    let mut hits: HashMap<String, bool> = HashMap::new();
+    for m in prune() {
+        let dir = PathBuf::from(&m.dir);
+        if dir.canonicalize().map(|d| d == exclude).unwrap_or(false) || !dir.is_dir() {
+            continue;
+        }
+        let ros = roster::load(&dir);
+        if !ros.contains_key(role) {
+            continue;
+        }
+        let live = crate::presence::load_verified(&dir, &config::hub_key(&dir), &ros, false)
+            .iter()
+            .any(|b| {
+                b.p.role == role
+                    && b.trust.ok()
+                    && matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Up)
+            });
+        // A hub can have sibling clones in the registry; collapse by label, live if ANY clone is.
+        let e = hits.entry(hub_label(&dir)).or_insert(false);
+        *e = *e || live;
+    }
+    hits.into_iter().collect()
+}
+
 /// Resolve the hubs a viewer (dashboard/serve) should show: explicit `--hub` paths
 /// Which hubs a dashboard/serve view covers. `--all-hubs` → every hub on the machine (the full fleet
 /// view). Otherwise the CURRENT hub — one predictable view, honoring the top-level `--hub <name>`

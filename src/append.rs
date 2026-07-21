@@ -191,36 +191,54 @@ fn presence_advisory(
     let beats = crate::presence::load_verified(root, &config::hub_key(root), roster, true);
     let now = chrono::Utc::now();
     let mut stale: Vec<String> = Vec::new();
+    let mut misrouted: Vec<String> = Vec::new(); // "did you mean another hub?" hints
     for role in &audience {
-        let Some(b) = beats.iter().find(|b| &b.p.role == role && b.trust.ok()) else {
-            continue; // never published, or only an untrusted/forged beat — not a believable "asleep"
-        };
-        match crate::presence::liveness(&b.p, now) {
-            crate::presence::Live::Up => {}
-            state => {
-                let word = if matches!(state, crate::presence::Live::Down) {
-                    "down"
-                } else {
-                    "idle"
-                };
-                stale.push(format!("{role} ({word} {})", age_str(&b.p.last_seen, now)));
-            }
+        let beat = beats.iter().find(|b| &b.p.role == role && b.trust.ok());
+        let up_here = beat
+            .is_some_and(|b| matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Up));
+        if up_here {
+            continue; // watching here — nothing to say
+        }
+        // Not watching here. If the SAME role name is live on another hub this machine belongs to,
+        // that's the strongest signal you addressed the wrong hub (misroute, Pipeline's field report)
+        // — surface it ahead of the plain down/idle note. Local reads only, never blocks the send.
+        let elsewhere = crate::crosshub::role_elsewhere(role, root);
+        if let Some((label, _)) = elsewhere.iter().find(|(_, live)| *live) {
+            misrouted.push(format!(
+                "'{role}' isn't watching this hub, but a '{role}' is live on hub '{label}' — did you mean to post there?"
+            ));
+        } else if let Some(b) = beat {
+            // Has a stale/down beat here and isn't live elsewhere → the plain "not watching" note.
+            let word = if matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Down) {
+                "down"
+            } else {
+                "idle"
+            };
+            stale.push(format!("{role} ({word} {})", age_str(&b.p.last_seen, now)));
+        } else if let Some((label, _)) = elsewhere.first() {
+            // No beat here at all, but the name exists on another hub (not currently live) → softer.
+            misrouted.push(format!(
+                "'{role}' isn't watching this hub, but a '{role}' exists on hub '{label}' — did you mean to post there?"
+            ));
+        }
+        // else: no beat here and nowhere else — recipient_advisory covers not-joined; stay quiet.
+    }
+    if !stale.is_empty() {
+        let detail = stale.join(", ");
+        if stale.len() == 1 {
+            crate::warn_safety(format!(
+                "{detail} — their watch isn't live; they may not see this until they re-arm (check `confer who`)."
+            ));
+        } else {
+            crate::warn_safety(format!(
+                "{} of {} addressees aren't watching: {detail} — they may not see this until they re-arm.",
+                stale.len(),
+                audience.len()
+            ));
         }
     }
-    if stale.is_empty() {
-        return;
-    }
-    let detail = stale.join(", ");
-    if stale.len() == 1 {
-        crate::warn_safety(format!(
-            "{detail} — their watch isn't live; they may not see this until they re-arm (check `confer who`)."
-        ));
-    } else {
-        crate::warn_safety(format!(
-            "{} of {} addressees aren't watching: {detail} — they may not see this until they re-arm.",
-            stale.len(),
-            audience.len()
-        ));
+    for hint in &misrouted {
+        crate::warn_safety(hint);
     }
 }
 

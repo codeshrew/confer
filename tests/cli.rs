@@ -5256,6 +5256,62 @@ fn e2e_lifecycle_and_create_verbs_accept_body_file() {
     );
 }
 
+/// Pipeline field-note (DG5Q6F): addressing a role that's joined-but-not-watching HERE, when the
+/// same name is live on another hub you belong to, must HINT the misroute rather than silently post
+/// into a void. Non-blocking (the send still succeeds).
+#[test]
+fn e2e_append_hints_a_misroute_when_the_role_is_live_on_another_hub() {
+    let hub_a = new_hub();
+    let a = hub_a.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    // jarvis has a card on hub A (an addressable peer) but is NOT watching here (no beat).
+    std::fs::write(a.dir.join("roles").join("jarvis.md"), "---\ndisplay: jarvis\nhost: h\n---\n").unwrap();
+    git(&a.dir, &["add", "-A"]);
+    git(&a.dir, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "jarvis card"]);
+
+    // A SEPARATE hub B with a 'jarvis' card + a fresh (live) local presence beat.
+    let hub_b = tmp("misroute-hub-b");
+    assert!(git(&hub_b, &["init", "-q"]).status.success());
+    std::fs::create_dir_all(hub_b.join("roles")).unwrap();
+    std::fs::create_dir_all(hub_b.join("threads")).unwrap();
+    std::fs::write(hub_b.join(".confer-version"), "0.8.6\n").unwrap();
+    std::fs::write(hub_b.join("roles").join("jarvis.md"), "---\ndisplay: jarvis\nhost: h\n---\n").unwrap();
+    git(&hub_b, &["add", "-A"]);
+    git(&hub_b, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed b"]);
+    let fresh = chrono::Utc::now().to_rfc3339();
+    let beat = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{dir}' && printf '{{\"role\":\"jarvis\",\"last_seen\":\"{fresh}\",\"poll_secs\":10}}' > p.json && \
+             bo=$(git hash-object -w p.json) && t=$(printf '100644 blob %s\\tpresence.json\\n' \"$bo\" | git mktree) && \
+             c=$(git commit-tree $t -m beat) && git update-ref refs/presence/jarvis $c && rm -f p.json",
+            dir = hub_b.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(beat.status.success(), "beat: {}", String::from_utf8_lossy(&beat.stderr));
+
+    // Register BOTH hubs in hub A's home so role_elsewhere can see hub B.
+    std::fs::write(
+        hub_a.home.join(".confer").join("hubs.json"),
+        format!(
+            r#"{{"hubs":[{{"dir":"{}","role":"alpha"}},{{"dir":"{}","role":"jarvis"}}]}}"#,
+            a.dir.display(),
+            hub_b.display()
+        ),
+    )
+    .unwrap();
+
+    // Address jarvis from hub A → misroute hint, and the send still succeeds.
+    let o = a.append(&["--type", "note", "--to", "jarvis", "--summary", "design", "--text", "a big design doc"]);
+    assert!(ok(&o), "the send must still succeed (advisory is non-blocking): {}", err(&o));
+    let e = err(&o);
+    assert!(
+        e.contains("jarvis") && e.contains("did you mean to post there"),
+        "a misroute must be hinted when the role is live on another hub: {e}"
+    );
+}
+
 #[test]
 fn fleet_json_carries_last_seen_and_age_secs() {
     // design/38 — `confer fleet` must surface the heartbeat AGE (last-seen), not just
