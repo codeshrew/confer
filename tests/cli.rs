@@ -4413,12 +4413,25 @@ fn install_skill_harness_selects_the_right_dir() {
     assert!(grok_watch.is_file(), "install-skill --harness grok must write ~/.grok/skills");
     assert!(!claude_watch.is_file(), "a grok-only install must NOT write ~/.claude/skills");
 
-    // --harness all → both known harness dirs.
+    // Grok content is rewritten to Grok's tool vocabulary (design/52 Phase 2b).
+    let grok_txt = std::fs::read_to_string(&grok_watch).unwrap();
+    assert!(
+        grok_txt.contains("run_terminal_command"),
+        "grok skill must use Grok's tool name (run_terminal_command), not Bash: {grok_txt:?}"
+    );
+    assert!(
+        !grok_txt.contains("Monitor"),
+        "grok skill must not name the Claude tool `Monitor` (rewritten to `monitor`)"
+    );
+
+    // --harness all → both known harness dirs, each with its own vocabulary.
     assert!(ok(&a.confer(&["install-skill", "--harness", "all", "--role", "alpha", "--no-autoheal"])));
     assert!(
         grok_watch.is_file() && claude_watch.is_file(),
         "install-skill --harness all must write every known harness dir"
     );
+    let claude_txt = std::fs::read_to_string(&claude_watch).unwrap();
+    assert!(claude_txt.contains("Monitor"), "claude skill keeps the Claude tool vocabulary");
 
     // an unknown harness is a clear error, not a silent wrong-dir write.
     assert!(!ok(&a.confer(&["install-skill", "--harness", "bogus", "--role", "alpha", "--no-autoheal"])));
