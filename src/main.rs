@@ -903,6 +903,10 @@ pub(crate) struct LifecycleArgs {
     /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
     #[arg(long = "allow-dirty")]
     allow_dirty: bool,
+    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
+    /// `append --body-file`. So a substantive close/claim body no longer needs `append --type`.
+    #[arg(long = "body-file")]
+    body_file: Option<String>,
 }
 
 impl LifecycleArgs {
@@ -986,6 +990,10 @@ pub(crate) struct CreateArgs {
     /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
     #[arg(long = "allow-large-patch")]
     allow_large_patch: bool,
+    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
+    /// `append --body-file` (mutually exclusive with --text).
+    #[arg(long = "body-file")]
+    body_file: Option<String>,
 }
 
 /// This running binary's build identity (semver from Cargo + short git sha).

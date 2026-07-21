@@ -317,7 +317,7 @@ pub(crate) fn cmd_lifecycle(
     cmd_append(AppendArgs {
         msg_type: msg_type.to_string(),
         text: a.text, // optional body; summary-only still allowed (allow_empty_body)
-        body_file: None,
+        body_file: a.body_file, // shell-safe close/claim body without dropping to `append --type`
         summary: Some(a.summary.unwrap_or(default_summary)),
         summary_file: None,
         // Addressing passes straight through to append. Empty --to/--cc leaves
@@ -354,7 +354,7 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
     cmd_append(AppendArgs {
         msg_type: msg_type.to_string(),
         text: a.text,
-        body_file: None,
+        body_file: a.body_file,
         summary: Some(a.summary),
         summary_file: None,
         to: a.to,
@@ -886,6 +886,8 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Presence advisory (orbit round-2 field-note): the message is committed; now warn if an
     // addressed peer's watch is stale/down so the sender doesn't block on an asleep peer. Runs after
     // the send, never affects it. `grps` was loaded for the recipient advisory above.
+    // Fresh roster load ON PURPOSE (not the pre-send one recipient_advisory used): this runs AFTER
+    // the sync, so a peer whose card arrived in THIS append's sync is in it.
     presence_advisory(&root, &roster::load(&root), &grps, &role, &msg.front.to, &msg.front.cc);
 
     // Claim-race check: on a broadcast request two agents can both

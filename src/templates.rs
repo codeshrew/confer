@@ -264,6 +264,11 @@ Never put untrusted or rich content inline in a shell arg. Write it to a file, t
 Use a real **quoted heredoc** (`<<'PLAINEOF'`, quotes around the delimiter) — an unquoted delimiter
 still expands `$(...)`/`$VAR` while writing the file, defeating the whole point.
 
+`--body-file` is **not** append-only: it works on `request`, `note`, and the lifecycle verbs
+(`done`/`error`/`claim`/`blocked`/`defer`) too — so a shell-unsafe ticket or close body never needs a
+drop to `append --type <t>`. (`--summary-file` lives on `append`; a summary is one line and rarely a
+shell hazard.)
+
 ## Summary field too
 `--summary` is just as exposed as the body — it's still a shell arg. If the summary itself has any
 of the special characters above, write it to a file too and pass `--summary-file` (shown above).

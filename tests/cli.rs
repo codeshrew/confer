@@ -5215,6 +5215,47 @@ fn e2e_append_no_presence_advisory_for_a_live_peer() {
     );
 }
 
+/// orbit field-note (N1BHCB, dogfooding 0.8.5): the lifecycle sugar verbs (done/error/claim/…) and
+/// the create verbs (request/note) didn't accept `--body-file`, forcing a fallback to `append
+/// --type` for a shell-unsafe body. Now they thread it through — same class as the earlier `--ref`
+/// gap. A body full of shell metacharacters proves the file is read verbatim, never shell-parsed.
+#[test]
+fn e2e_lifecycle_and_create_verbs_accept_body_file() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let tricky = "Report: `backticks`, $(command sub), and a 'quoted' phrase — all verbatim.";
+
+    // request --body-file (create verb / CreateArgs)
+    let reqfile = a.dir.join("req-body.md");
+    std::fs::write(&reqfile, tricky).unwrap();
+    let rq = a.confer(&[
+        "request", "--to", "beta", "--summary", "please close me", "--body-file", reqfile.to_str().unwrap(),
+    ]);
+    assert!(ok(&rq), "request --body-file must post: {}", err(&rq));
+    let req = newest_id(&a);
+    let shown_req = out(&a.confer(&["show", &req]));
+    assert!(
+        shown_req.contains("backticks") && shown_req.contains("$(command sub)"),
+        "request --body-file body must land verbatim: {shown_req}"
+    );
+
+    // done --body-file (lifecycle sugar verb / LifecycleArgs)
+    b.pull();
+    let closefile = b.dir.join("close-body.md");
+    std::fs::write(&closefile, tricky).unwrap();
+    let dn = b.confer(&[
+        "done", "--of", &req, "--summary", "closed", "--body-file", closefile.to_str().unwrap(),
+    ]);
+    assert!(ok(&dn), "done --body-file must post: {}", err(&dn));
+    let did = newest_id(&b);
+    let shown_done = out(&b.confer(&["show", &did]));
+    assert!(
+        shown_done.contains("backticks") && shown_done.contains("$(command sub)"),
+        "done --body-file body must land verbatim: {shown_done}"
+    );
+}
+
 #[test]
 fn fleet_json_carries_last_seen_and_age_secs() {
     // design/38 — `confer fleet` must surface the heartbeat AGE (last-seen), not just
