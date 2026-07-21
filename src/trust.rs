@@ -496,9 +496,15 @@ fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
                 out.push(doctor::Finding {
                     level: doctor::Level::Warn,
                     title: format!(
-                        "role '{role}' is used by managed clones with {n} DIFFERENT signing keys — identity IS the key (DESIGN.md): one is an impersonation or a misconfigured re-key."
+                        "role '{role}' signs with {n} DIFFERENT keys across your managed clones — a split identity. One key = one agent across hubs, and cross-hub recognition (the `≡` line, misroute hints) depends on it."
                     ),
-                    fix: Some("give each distinct agent its own role id".to_string()),
+                    // Lead with the UNIFY remedy (the paved path), not a bare impersonation alarm — a
+                    // split here is usually a re-key mistake (a fresh key minted per hub-join), not an
+                    // attack. Reuse one key across the role's hubs; only investigate if you didn't
+                    // create the second key. (design/52: identity is one key across hubs + harnesses.)
+                    fix: Some(
+                        "unify to ONE key: re-key the odd clone(s) with `confer join --role <role> --signing-key <the-key-to-keep>` (use `confer keygen --out <path>` to place a shareable key first). If these are genuinely DIFFERENT agents, give each its own role id instead. If you did NOT create the second key, treat it as impersonation and investigate.".to_string(),
+                    ),
                 });
             }
         }
