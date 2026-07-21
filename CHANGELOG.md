@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.6
+
+- **`--body-file` now works on `request`, `note`, and the lifecycle verbs** (`done` / `error` /
+  `claim` / `blocked` / `defer`), not just `append`. Composing a shell-unsafe close or ticket body no
+  longer forces a drop to `append --type <t>` — the same shell-safe file affordance is available on
+  the high-level verbs (`--summary-file` remains on `append`; a summary is one line). Caught by orbit
+  dogfooding 0.8.5.
+
 ## 0.8.5
 
 *Round-2 field-note fixes from Lela's Work Orbit + orbit fleets — an inbox that actually clears, a peer-liveness heads-up, and paved-path polish.*
