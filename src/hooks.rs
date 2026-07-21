@@ -77,6 +77,23 @@ pub(crate) fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()
     Ok(())
 }
 
+/// Install confer's Grok Build hooks (design/52 axis 7/8). Grok trusts every `~/.grok/hooks/*.json`,
+/// so confer owns its OWN file (`confer.json`) and simply (over)writes it — no merge into a shared
+/// settings file. NATIVE Grok shape: lifecycle events take NO matcher (Grok rejects a matcher on
+/// SessionStart/Pre/PostCompact), one `{hooks:[{type:command,command,timeout}]}` entry per event.
+/// `session-heal`'s SIDE EFFECTS (skill resync; the context file, Phase 4) run on each fire — Grok
+/// ignores the stdout `additionalContext` path, which is why delivery moves to a file (#4).
+pub(crate) fn write_grok_hook(home: &std::path::Path, cmd: &str) -> Result<()> {
+    let dir = home.join(".grok").join("hooks");
+    std::fs::create_dir_all(&dir)?;
+    let entry = || serde_json::json!([{ "hooks": [{ "type": "command", "command": cmd, "timeout": 30 }] }]);
+    let doc = serde_json::json!({
+        "hooks": { "SessionStart": entry(), "PreCompact": entry(), "PostCompact": entry() }
+    });
+    std::fs::write(dir.join("confer.json"), serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
 pub(crate) fn cmd_install_hook(project: Option<String>) -> Result<()> {
     let path = settings_path(&project)?;
     let exe = std::env::current_exe()?.to_string_lossy().to_string();

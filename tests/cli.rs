@@ -4423,6 +4423,12 @@ fn install_skill_harness_selects_the_right_dir() {
         !grok_txt.contains("Monitor"),
         "grok skill must not name the Claude tool `Monitor` (rewritten to `monitor`)"
     );
+    // Claude's !`cmd` bang-exec syntax is neutralized in Grok skills (inert on Grok anyway).
+    let grok_poll = std::fs::read_to_string(
+        a.home.join(".grok").join("skills").join("confer-poll").join("SKILL.md"),
+    )
+    .unwrap();
+    assert!(!grok_poll.contains("!`"), "grok skills must not carry Claude !`cmd` bang-exec");
 
     // --harness all → both known harness dirs, each with its own vocabulary.
     assert!(ok(&a.confer(&["install-skill", "--harness", "all", "--role", "alpha", "--no-autoheal"])));
@@ -4435,6 +4441,32 @@ fn install_skill_harness_selects_the_right_dir() {
 
     // an unknown harness is a clear error, not a silent wrong-dir write.
     assert!(!ok(&a.confer(&["install-skill", "--harness", "bogus", "--role", "alpha", "--no-autoheal"])));
+}
+
+/// Phase 3 (design/52 axis 7/8): `install-skill --harness grok` writes confer's OWN native Grok hook
+/// at ~/.grok/hooks/confer.json — SessionStart + PreCompact + PostCompact, each with NO matcher
+/// (Grok rejects a matcher on lifecycle events) — and does NOT touch Claude's settings.json.
+#[test]
+fn install_skill_grok_writes_native_hook_without_matchers() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["install-skill", "--harness", "grok", "--role", "alpha"]))); // WITH hook
+    let hook = a.home.join(".grok").join("hooks").join("confer.json");
+    let txt = std::fs::read_to_string(&hook).expect("grok hook at ~/.grok/hooks/confer.json");
+    let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    for ev in ["SessionStart", "PreCompact", "PostCompact"] {
+        let arr = v["hooks"][ev].as_array().unwrap_or_else(|| panic!("grok hook missing {ev}: {txt}"));
+        assert_eq!(arr.len(), 1, "{ev} has one entry");
+        assert!(arr[0].get("matcher").is_none(), "{ev} must carry NO matcher (Grok rejects it): {txt}");
+        assert!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap_or_default().contains("session-heal"),
+            "{ev} runs session-heal: {txt}"
+        );
+    }
+    assert!(
+        !a.home.join(".claude").join("settings.json").exists(),
+        "a grok-only install must not write the Claude settings.json hook"
+    );
 }
 
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);

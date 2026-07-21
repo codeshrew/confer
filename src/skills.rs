@@ -7,7 +7,11 @@
 //! silently re-derive them — never creating skills where none exist.
 
 use crate::templates::CONFER_SKILLS;
-use crate::{autoheal, config, hooks::write_session_hook, BUILD_SHA};
+use crate::{
+    autoheal, config,
+    hooks::{write_grok_hook, write_session_hook},
+    BUILD_SHA,
+};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -46,7 +50,10 @@ fn harness_rewrite(text: &str, harness: &str) -> String {
             .replace("Monitor", "monitor")
             .replace("Bash", "run_terminal_command")
             .replace("AskUserQuestion", "ask_user_question")
-            .replace("/loop 45s", "/loop 60s"),
+            .replace("/loop 45s", "/loop 60s")
+            // Claude's `!`cmd`` auto-exec syntax is inert on Grok (field-confirmed) — neutralize it to
+            // plain `cmd` inline code the agent runs itself.
+            .replace("!`", "`"),
         _ => text.to_string(), // claude = the templates as authored (the identity)
     }
 }
@@ -171,17 +178,32 @@ pub(crate) fn cmd_install_skill(
     // Full reactive stack: also install + enable the SessionStart auto-heal hook
     // so a compacted session is told to re-arm a stale watcher. Inert
     // until a watch registers a target; opt out with --no-autoheal.
+    // Install the auto-heal hook for EACH target harness: Claude's SessionStart entry in
+    // ~/.claude/settings.json (matchers), Grok's native ~/.grok/hooks/confer.json (no matchers,
+    // SessionStart + Pre/PostCompact). design/52 axis 7/8.
     if !no_autoheal {
-        let settings = config::home()?.join(".claude").join("settings.json");
-        match write_session_hook(&settings, &format!("{bin} session-heal")) {
-            Ok(()) => {
-                let _ = autoheal::set_enabled(true);
-                println!("  auto-heal: installed SessionStart hook → {} and enabled (confer autoheal off to disable)", settings.display());
+        let cmd = format!("{bin} session-heal");
+        let mut installed = false;
+        for h in targets.iter().map(|(h, _)| *h).collect::<std::collections::BTreeSet<_>>() {
+            let done = match h {
+                "grok" => write_grok_hook(&home, &cmd)
+                    .map(|_| home.join(".grok").join("hooks").join("confer.json")),
+                _ => {
+                    let s = home.join(".claude").join("settings.json");
+                    write_session_hook(&s, &cmd).map(|_| s)
+                }
+            };
+            match done {
+                Ok(p) => {
+                    installed = true;
+                    println!("  auto-heal: installed {h} hook → {}", p.display());
+                }
+                Err(e) => eprintln!("  auto-heal: {h} hook skipped ({e})"),
             }
-            Err(e) => eprintln!(
-                "  auto-heal: skipped (couldn't edit {}: {e})",
-                settings.display()
-            ),
+        }
+        if installed {
+            let _ = autoheal::set_enabled(true);
+            println!("  (confer autoheal off to disable)");
         }
     }
     println!(
