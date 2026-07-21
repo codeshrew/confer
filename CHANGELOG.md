@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.8
+
+- **Fix: the cross-hub misroute check no longer errors on a stale hub entry.** 0.8.7's `--to` misroute
+  hint scans every hub in the machine's registry, but an entry that still exists as a directory yet is
+  no longer a git repo (a moved or removed hub) made it print *"could not read presence refs (not a
+  git repository)"* on every addressed send. It now skips non-git entries cleanly (gated on the hub's
+  root commit), the same way `confer hubs` already does.
+
 ## 0.8.7
 
 - **`append`/`request --to` now hints a likely misroute.** If you address a role that isn't watching
