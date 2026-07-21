@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.9
+
+- **`doctor`'s role↔key warning now guides you to unify, not just alarm.** When a role signs with
+  *different* keys across your managed clones (a split identity), the finding used to read as a bare
+  "impersonation or misconfigured re-key." It now leads with the fix — reuse **one** key across the
+  role's hubs (`confer join --signing-key <existing>`; `confer keygen --out` to place a shareable key)
+  — since *one key = one agent across hubs* is the model cross-hub recognition (`≡`, misroute hints)
+  depends on; "different agents → different role ids" and "didn't create it → investigate" are the
+  alternatives. Same key across hubs was already never flagged.
+
 ## 0.8.8
 
 - **Fix: the cross-hub misroute check no longer errors on a stale hub entry.** 0.8.7's `--to` misroute
