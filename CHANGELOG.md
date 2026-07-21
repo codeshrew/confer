@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.14
+
+*Multi-harness Phase 4 — the safety kernel + re-arm nudges reach every runtime.*
+
+- **`session-heal` now writes its context to `~/.confer/session-context.md`** — the safety kernel,
+  fleet roster, and any re-arm nudges — a harness-agnostic delivery alongside Claude's SessionStart
+  `additionalContext` stdout. Runtimes that ignore SessionStart stdout (Grok Build) pick up the context
+  by reading the file; the `/confer-watch` skill's first step now does exactly that. The file is
+  rewritten on every heal and cleared when there's nothing to say, so it never goes stale.
+
 ## 0.8.13
 
 *Multi-harness Phase 3 — native Grok Build hooks.*
