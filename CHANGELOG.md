@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.10
+
+*Multi-harness Phase 1 — confer detects your agent session across runtimes (Claude Code + Grok Build).*
+
+- **Session detection is now harness-agnostic.** confer reads the session id from each supported
+  runtime's env (`CLAUDE_CODE_SESSION_ID`, `GROK_SESSION_ID`) and hook stdin (`session_id` and
+  camelCase `sessionId`). Under Grok Build — which exposes the session only to hook processes, not to
+  the `arm`/`watch` process — confer recovers it from `~/.grok/active_sessions.json` (only when running
+  under Grok, matched narrowly by process ancestry / cwd so co-resident sessions don't collide, and
+  *declining* rather than guessing if ambiguous). This restores per-session watch ownership on Grok,
+  keeping multi-session heal safe.
+- **`confer arm --session <id>` / `confer watch --session <id>`** — an explicit override for a harness
+  that hides the session id, or an ambiguous multi-session case. Precedence: flag > env > disk.
+
 ## 0.8.9
 
 - **`doctor`'s role↔key warning now guides you to unify, not just alarm.** When a role signs with
