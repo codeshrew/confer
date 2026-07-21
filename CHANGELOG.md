@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.13
+
+*Multi-harness Phase 3 — native Grok Build hooks.*
+
+- **`install-skill --harness grok` (or `all`) now installs confer's native Grok hook** at
+  `~/.grok/hooks/confer.json` — confer's own file (Grok trusts every `~/.grok/hooks/*.json`), with
+  `SessionStart` + `PreCompact` + `PostCompact` entries and **no matcher** (Grok rejects a matcher on
+  lifecycle events), each running `confer session-heal`. Claude installs still write the matchered
+  `SessionStart` hook into `~/.claude/settings.json`; `--harness all` installs both.
+- **Grok skills drop the Claude `` !`cmd` `` bang-exec syntax** (inert on Grok) for plain inline code
+  the agent runs. *(The safety-kernel context still needs Phase 4 — Grok ignores SessionStart stdout,
+  so it'll be delivered via a file that the skill reads.)*
+
 ## 0.8.12
 
 *Multi-harness Phase 2b — skills speak each harness's tool vocabulary.*
