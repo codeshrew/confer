@@ -5291,13 +5291,18 @@ fn e2e_append_hints_a_misroute_when_the_role_is_live_on_another_hub() {
         .unwrap();
     assert!(beat.status.success(), "beat: {}", String::from_utf8_lossy(&beat.stderr));
 
-    // Register BOTH hubs in hub A's home so role_elsewhere can see hub B.
+    // A stale registry entry: a dir that exists but is NOT a git repo (a hub that was moved/removed).
+    // live_roles_elsewhere must SKIP it silently — not spam "not a git repository" on every send.
+    let stale = tmp("misroute-stale-nongit");
+    std::fs::create_dir_all(&stale).unwrap();
+    // Register both real hubs AND the stale non-git dir in hub A's home.
     std::fs::write(
         hub_a.home.join(".confer").join("hubs.json"),
         format!(
-            r#"{{"hubs":[{{"dir":"{}","role":"alpha"}},{{"dir":"{}","role":"jarvis"}}]}}"#,
+            r#"{{"hubs":[{{"dir":"{}","role":"alpha"}},{{"dir":"{}","role":"jarvis"}},{{"dir":"{}","role":"ghost"}}]}}"#,
             a.dir.display(),
-            hub_b.display()
+            hub_b.display(),
+            stale.display()
         ),
     )
     .unwrap();
@@ -5309,6 +5314,10 @@ fn e2e_append_hints_a_misroute_when_the_role_is_live_on_another_hub() {
     assert!(
         e.contains("jarvis") && e.contains("did you mean to post there"),
         "a misroute must be hinted when the role is live on another hub: {e}"
+    );
+    assert!(
+        !e.contains("not a git repository"),
+        "a stale non-git registry entry must be skipped silently, not spam a git error: {e}"
     );
 }
 

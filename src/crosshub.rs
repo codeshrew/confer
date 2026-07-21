@@ -252,16 +252,18 @@ pub fn live_roles_elsewhere(current: &Path) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     for m in prune() {
         let dir = PathBuf::from(&m.dir);
-        if !dir.is_dir() {
+        // Only real git hubs. `root_sha` is None for a stale/moved/non-git registry entry (which
+        // `prune` can't always catch — a dir that still exists but is no longer a git repo). Skip it,
+        // so the presence read below can't fail with a noisy "not a git repository" on every
+        // addressed send, and a non-hub dir can't be mistaken for a hub.
+        let Some(sha) = root_sha(&dir) else {
             continue;
-        }
-        let sha = root_sha(&dir);
+        };
         // Skip the current hub BY IDENTITY (root SHA), and collapse sibling clones of one hub.
-        if sha.is_some() && sha == cur_sha {
+        if cur_sha.as_deref() == Some(sha.as_str()) {
             continue;
         }
-        let key = sha.clone().unwrap_or_else(|| m.dir.clone());
-        if !seen_hub.insert(key) {
+        if !seen_hub.insert(sha.clone()) {
             continue;
         }
         let ros = roster::load(&dir);
