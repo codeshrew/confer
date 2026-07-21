@@ -11,7 +11,7 @@
 use crate::{config, gitcmd, roster};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -234,39 +234,47 @@ pub fn appearances(exclude: &Path) -> HashMap<String, Vec<(String, String)>> {
     idx
 }
 
-/// Where else on this machine a role by this NAME (not pubkey) appears — the misroute guardrail for
-/// `append --to` (append.rs). If you address a role that isn't watching THIS hub but the same name
-/// is on another hub you belong to, you may have meant to post there. Returns `(hub_label, live)` per
-/// distinct OTHER hub carrying the name (`live` = a trusted, currently-`Up` beat). LOCAL reads only:
-/// roster is a pure fs read and presence uses the locally CACHED beat (fetch=false, no network), so
-/// it never blocks or slows a send — a stale cache just makes `live` conservative, and card-existence
-/// alone is already a strong misroute signal. Modeled on `appearances` (iterates `prune()` directly,
-/// so it doesn't touch the scope-gated `hub_dirs()`).
-pub fn role_elsewhere(role: &str, exclude: &Path) -> Vec<(String, bool)> {
-    let exclude = exclude.canonicalize().unwrap_or_else(|_| exclude.to_path_buf());
+/// Roles currently LIVE on OTHER hubs this machine belongs to — keyed by role NAME → hub label. The
+/// misroute guardrail for `append --to` (append.rs): if you address a role that isn't watching THIS
+/// hub but the same name is live on another hub you belong to, you likely meant to post there.
+///
+/// Scanned ONCE per send (not per addressed role — a whole-registry scan is O(hubs), not
+/// O(roles×hubs)). Each DISTINCT other hub is read once: deduped by root-commit SHA like `hub_dirs`,
+/// and the CURRENT hub is excluded by SHA — not just by path — so a second local clone of the SAME
+/// hub can't self-report as "elsewhere". Only a trusted, currently-`Up` beat counts (a card-only or
+/// stale match is too weak a signal and coincidental same-names would spam a hint). LOCAL reads only
+/// (`fetch=false`), so it never blocks or slows a send. Iterates `prune()` directly, so it doesn't
+/// touch the scope-gated `hub_dirs()`.
+pub fn live_roles_elsewhere(current: &Path) -> HashMap<String, String> {
     let now = chrono::Utc::now();
-    let mut hits: HashMap<String, bool> = HashMap::new();
+    let cur_sha = root_sha(current);
+    let mut seen_hub: HashSet<String> = HashSet::new();
+    let mut out: HashMap<String, String> = HashMap::new();
     for m in prune() {
         let dir = PathBuf::from(&m.dir);
-        if dir.canonicalize().map(|d| d == exclude).unwrap_or(false) || !dir.is_dir() {
+        if !dir.is_dir() {
+            continue;
+        }
+        let sha = root_sha(&dir);
+        // Skip the current hub BY IDENTITY (root SHA), and collapse sibling clones of one hub.
+        if sha.is_some() && sha == cur_sha {
+            continue;
+        }
+        let key = sha.clone().unwrap_or_else(|| m.dir.clone());
+        if !seen_hub.insert(key) {
             continue;
         }
         let ros = roster::load(&dir);
-        if !ros.contains_key(role) {
-            continue;
+        let label = hub_label(&dir);
+        for b in crate::presence::load_verified(&dir, &config::hub_key(&dir), &ros, false) {
+            if b.trust.ok()
+                && matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Up)
+            {
+                out.entry(b.p.role.clone()).or_insert_with(|| label.clone());
+            }
         }
-        let live = crate::presence::load_verified(&dir, &config::hub_key(&dir), &ros, false)
-            .iter()
-            .any(|b| {
-                b.p.role == role
-                    && b.trust.ok()
-                    && matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Up)
-            });
-        // A hub can have sibling clones in the registry; collapse by label, live if ANY clone is.
-        let e = hits.entry(hub_label(&dir)).or_insert(false);
-        *e = *e || live;
     }
-    hits.into_iter().collect()
+    out
 }
 
 /// Resolve the hubs a viewer (dashboard/serve) should show: explicit `--hub` paths

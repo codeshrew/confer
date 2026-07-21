@@ -190,38 +190,41 @@ fn presence_advisory(
     // to fake one). A role with only an untrusted beat is treated the same as "never published".
     let beats = crate::presence::load_verified(root, &config::hub_key(root), roster, true);
     let now = chrono::Utc::now();
+    // Roles live on OTHER hubs this machine belongs to (name → hub label). Scanned ONCE, local reads
+    // only. Used to hint a MISROUTE below — but only for a role with NO beat here: one that has ever
+    // watched here is a local peer that's merely down/idle (a coincidental same-name on another hub
+    // shouldn't redirect you). Excludes the current hub by root-SHA, so a second local clone of this
+    // same hub can't self-report.
+    let live_elsewhere = crate::crosshub::live_roles_elsewhere(root);
     let mut stale: Vec<String> = Vec::new();
     let mut misrouted: Vec<String> = Vec::new(); // "did you mean another hub?" hints
     for role in &audience {
         let beat = beats.iter().find(|b| &b.p.role == role && b.trust.ok());
-        let up_here = beat
-            .is_some_and(|b| matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Up));
-        if up_here {
-            continue; // watching here — nothing to say
+        match beat {
+            // A trusted beat here → a local peer. Up = silent; down/idle = the plain note.
+            Some(b) => match crate::presence::liveness(&b.p, now) {
+                crate::presence::Live::Up => {}
+                state => {
+                    let word = if matches!(state, crate::presence::Live::Down) {
+                        "down"
+                    } else {
+                        "idle"
+                    };
+                    stale.push(format!("{role} ({word} {})", age_str(&b.p.last_seen, now)));
+                }
+            },
+            // No beat here (never seen watching this hub). If the same name is LIVE on another hub
+            // you belong to, that's the strong "wrong hub" signal (Pipeline's field report). If it's
+            // not live anywhere we know, stay quiet — recipient_advisory covers not-joined, and a
+            // fresh joiner who just hasn't heartbeated shouldn't be nagged.
+            None => {
+                if let Some(label) = live_elsewhere.get(role.as_str()) {
+                    misrouted.push(format!(
+                        "'{role}' isn't watching this hub, but a '{role}' is live on hub '{label}' — did you mean to post there?"
+                    ));
+                }
+            }
         }
-        // Not watching here. If the SAME role name is live on another hub this machine belongs to,
-        // that's the strongest signal you addressed the wrong hub (misroute, Pipeline's field report)
-        // — surface it ahead of the plain down/idle note. Local reads only, never blocks the send.
-        let elsewhere = crate::crosshub::role_elsewhere(role, root);
-        if let Some((label, _)) = elsewhere.iter().find(|(_, live)| *live) {
-            misrouted.push(format!(
-                "'{role}' isn't watching this hub, but a '{role}' is live on hub '{label}' — did you mean to post there?"
-            ));
-        } else if let Some(b) = beat {
-            // Has a stale/down beat here and isn't live elsewhere → the plain "not watching" note.
-            let word = if matches!(crate::presence::liveness(&b.p, now), crate::presence::Live::Down) {
-                "down"
-            } else {
-                "idle"
-            };
-            stale.push(format!("{role} ({word} {})", age_str(&b.p.last_seen, now)));
-        } else if let Some((label, _)) = elsewhere.first() {
-            // No beat here at all, but the name exists on another hub (not currently live) → softer.
-            misrouted.push(format!(
-                "'{role}' isn't watching this hub, but a '{role}' exists on hub '{label}' — did you mean to post there?"
-            ));
-        }
-        // else: no beat here and nowhere else — recipient_advisory covers not-joined; stay quiet.
     }
     if !stale.is_empty() {
         let detail = stale.join(", ");
