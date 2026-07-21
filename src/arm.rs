@@ -69,6 +69,7 @@ pub fn run(
     all: bool,
     min_priority: Option<String>,
     wake_on: Option<String>,
+    session: Option<String>,
 ) -> Result<()> {
     let clone = resolve_clone(&role)?;
     std::env::set_current_dir(&clone)
@@ -98,5 +99,6 @@ pub fn run(
         wake_on,
         no_version_notice: false,
         delivery: Some("monitor".to_string()),
+        session,
     })
 }

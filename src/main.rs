@@ -766,6 +766,7 @@ fn run() -> Result<()> {
             wake_on,
             no_version_notice,
             delivery,
+            session,
             ..
         } => {
             // Resolve wake_on/min_priority/topic/all: explicit CLI flag > saved per-(hub,role)
@@ -794,10 +795,11 @@ fn run() -> Result<()> {
                 wake_on,
                 no_version_notice,
                 delivery,
+                session,
             })
         }
-        Cmd::Arm { role, topic, all, min_priority, wake_on } => {
-            arm::run(role, topic, all, min_priority, wake_on)
+        Cmd::Arm { role, topic, all, min_priority, wake_on, session } => {
+            arm::run(role, topic, all, min_priority, wake_on, session)
         }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),

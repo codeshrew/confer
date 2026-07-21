@@ -42,6 +42,10 @@ pub struct WatchOpts {
     /// self-declared arming method stamped onto the watch lock (`--delivery`), so `watch-status` can
     /// affirm this watcher DELIVERS wakes vs. just runs. The `/confer-watch` skill passes `monitor`.
     pub delivery: Option<String>,
+    /// explicit owning-session id for the watch-registry stamp (`--session`) — overrides env/disk
+    /// detection. For a harness (e.g. Grok Build) that doesn't expose the session to this process, a
+    /// hook or the arm skill can pass the id it knows.
+    pub session: Option<String>,
 }
 
 /// If this watch's stdout is a discard — a regular file (`> file`) or a non-terminal char device
@@ -213,7 +217,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     let hub = config::hub_key(&root);
     // Register this (hub, role) so the SessionStart auto-heal hook knows to keep an
     // eye on it after a compaction. Best-effort, idempotent.
-    crate::autoheal::add_target(&root.to_string_lossy(), &me);
+    crate::autoheal::add_target(&root.to_string_lossy(), &me, opts.session.clone());
 
     // Single-watcher lock: two watchers for the same (hub, role) on one machine
     // share the cursor and silently steal each other's events (classic orphan

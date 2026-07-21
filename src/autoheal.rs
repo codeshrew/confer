@@ -27,10 +27,109 @@ pub struct Target {
     pub session: Option<String>,
 }
 
-/// The Claude session driving this process, if any. Purely local — read from the env,
-/// never persisted anywhere the hub can see.
+/// The session env keys we recognize, in priority order, one per supported agent harness
+/// (design/52 axis 1). Extend this list to add a harness — the read sites don't change.
+pub const SESSION_ENV_KEYS: &[&str] = &["CLAUDE_CODE_SESSION_ID", "GROK_SESSION_ID"];
+
+/// First non-empty value among `keys`, via the provided getter. Pure (no env) so it's testable;
+/// `current_session` wires it to the real environment.
+pub(crate) fn session_from(get: impl Fn(&str) -> Option<String>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| get(k).filter(|s| !s.is_empty()))
+}
+
+/// The agent session driving this process, if any (Claude Code, Grok Build, …). Purely local — read
+/// from the env, never persisted anywhere the hub can see. Harness-agnostic: tries each runtime's
+/// session env var, then a per-harness on-disk fallback. NOTE: a session var present in a HOOK
+/// process may be ABSENT in the interactive/monitor-hosted `arm`/`watch` process — hence the disk
+/// fallback (Grok) and the hook stdin `sessionId`/`session_id` field (see `cmd_session_heal`).
 pub fn current_session() -> Option<String> {
-    std::env::var("CLAUDE_CODE_SESSION_ID").ok().filter(|s| !s.is_empty())
+    session_from(|k| std::env::var(k).ok(), SESSION_ENV_KEYS).or_else(grok_session_from_disk)
+}
+
+/// Grok Build (≤0.2.106) does NOT expose the session id as an env var to the agent shell or a
+/// monitor-hosted process — only to hook processes — but it records the live session on disk. When
+/// we detect we're under Grok (`GROK_AGENT`) and the env gave us nothing, recover the id from
+/// `~/.grok/active_sessions.json`, matched NARROWLY so co-resident Grok sessions don't collide. Only
+/// touches Grok's files when actually under Grok; returns None (caller warns) rather than guess.
+fn grok_session_from_disk() -> Option<String> {
+    // Only under Grok — never read another runtime's private files.
+    std::env::var("GROK_AGENT").ok().filter(|s| !s.is_empty())?;
+    let path = config::home().ok()?.join(".grok").join("active_sessions.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let cwd = std::env::current_dir().ok();
+    pick_grok_session(&v, &ancestor_pids(), cwd.as_deref().and_then(|p| p.to_str()))
+}
+
+/// Choose the ONE session id from Grok's `active_sessions.json` that belongs to this process — pure
+/// (no env / fs / /proc) so it's testable. Priority: (1) the entry whose `pid` is an ANCESTOR of this
+/// process (the session that spawned us — precise under multi-session); (2) the SOLE entry sharing
+/// our `cwd`; (3) the SOLE entry overall. Ambiguous ⇒ None (never a wrong guess). Accepts either a
+/// JSON array of entries or a single object.
+fn pick_grok_session(
+    v: &serde_json::Value,
+    ancestors: &std::collections::HashSet<u32>,
+    cwd: Option<&str>,
+) -> Option<String> {
+    let entries: Vec<&serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a.iter().collect(),
+        serde_json::Value::Object(_) => vec![v],
+        _ => return None,
+    };
+    if entries.is_empty() {
+        return None;
+    }
+    let sid = |e: &serde_json::Value| e.get("session_id").and_then(|x| x.as_str()).map(String::from);
+    // (1) pid-ancestor match.
+    if !ancestors.is_empty() {
+        let m: Vec<&&serde_json::Value> = entries
+            .iter()
+            .filter(|e| e.get("pid").and_then(|p| p.as_u64()).is_some_and(|p| ancestors.contains(&(p as u32))))
+            .collect();
+        if let [only] = m.as_slice() {
+            return sid(only);
+        }
+    }
+    // (2) sole entry sharing our cwd.
+    if let Some(cwd) = cwd {
+        let m: Vec<&&serde_json::Value> = entries
+            .iter()
+            .filter(|e| e.get("cwd").and_then(|c| c.as_str()) == Some(cwd))
+            .collect();
+        if let [only] = m.as_slice() {
+            return sid(only);
+        }
+    }
+    // (3) sole entry overall.
+    if let [only] = entries.as_slice() {
+        return sid(only);
+    }
+    None
+}
+
+/// This process's ancestor pids (self + parents up the tree) via `/proc` (Linux — Grok's platform;
+/// empty elsewhere, e.g. macOS, where the Grok path never runs anyway). Bounded + loop-guarded.
+fn ancestor_pids() -> std::collections::HashSet<u32> {
+    let mut set = std::collections::HashSet::new();
+    let mut pid = std::process::id();
+    for _ in 0..64 {
+        if !set.insert(pid) {
+            break; // cycle guard
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        // `pid (comm) state ppid …` — comm may hold spaces/parens, so read the fields AFTER the
+        // last ')': index 0 = state, index 1 = ppid.
+        let Some((_, after)) = stat.rsplit_once(')') else { break };
+        let Some(ppid) = after.split_whitespace().nth(1).and_then(|p| p.parse::<u32>().ok()) else {
+            break;
+        };
+        if ppid == 0 || ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+    set
 }
 
 fn path() -> Result<PathBuf> {
@@ -64,12 +163,22 @@ pub fn set_enabled(on: bool) -> Result<()> {
 /// as its owner. Re-arming in a new session **takes ownership** (so the resuming
 /// session — not the one that first armed it — is who `session-heal` nudges). Idempotent,
 /// best-effort (never fails a caller — e.g. `watch` startup).
-pub fn add_target(hub: &str, role: &str) {
+pub fn add_target(hub: &str, role: &str, session_override: Option<String>) {
     if role.is_empty() {
         return;
     }
     let mut r = load();
-    let session = current_session();
+    // Precedence: explicit `--session` > env/disk auto-detection. Under a harness that hides the
+    // session from this process (Grok Build) with no override, note it — ownership falls back to
+    // role-only, which is unsafe for co-resident same-role multi-session (design/52).
+    let session = session_override.or_else(current_session);
+    if session.is_none() && std::env::var("GROK_AGENT").is_ok() {
+        crate::hint(
+            "session id unknown (Grok exposes it only to hooks) — watch ownership is role-only; \
+             fine for a single session, but pass `confer arm --session <id>` (e.g. from \
+             ~/.grok/active_sessions.json) if you run several Grok sessions on this machine.",
+        );
+    }
     if let Some(t) = r.targets.iter_mut().find(|t| t.hub == hub && t.role == role) {
         if t.session != session {
             t.session = session;
@@ -192,6 +301,52 @@ mod tests {
         assert!(!owned_by_session(&t(Some("sess-B"), "carol"), &me_s, &me_r));
         // a legacy None-session target for a PEER role — NOT healed (no cross-role hijack)
         assert!(!owned_by_session(&t(None, "carol"), &me_s, &me_r));
+    }
+
+    #[test]
+    fn session_from_tries_each_harness_key_in_order() {
+        // Grok key present, Claude absent → Grok session (design/52 axis 1).
+        let g = |k: &str| (k == "GROK_SESSION_ID").then(|| "grok-1".to_string());
+        assert_eq!(session_from(g, SESSION_ENV_KEYS).as_deref(), Some("grok-1"));
+        // Both present → the first listed key (Claude) wins, deterministically.
+        let both = |k: &str| match k {
+            "CLAUDE_CODE_SESSION_ID" => Some("cc-1".to_string()),
+            "GROK_SESSION_ID" => Some("grok-1".to_string()),
+            _ => None,
+        };
+        assert_eq!(session_from(both, SESSION_ENV_KEYS).as_deref(), Some("cc-1"));
+        // An empty value is skipped, not treated as a session.
+        let empty_claude = |k: &str| match k {
+            "CLAUDE_CODE_SESSION_ID" => Some(String::new()),
+            "GROK_SESSION_ID" => Some("grok-1".to_string()),
+            _ => None,
+        };
+        assert_eq!(session_from(empty_claude, SESSION_ENV_KEYS).as_deref(), Some("grok-1"));
+        // Nothing set anywhere → None (no identity).
+        assert_eq!(session_from(|_| None, SESSION_ENV_KEYS), None);
+    }
+
+    #[test]
+    fn pick_grok_session_matches_narrowly_or_declines() {
+        use std::collections::HashSet;
+        let j = serde_json::json!([
+            {"session_id": "s-anc", "pid": 4242, "cwd": "/w/a"},
+            {"session_id": "s-cwd", "pid": 9999, "cwd": "/w/b"},
+        ]);
+        // (1) pid-ancestor wins, even when cwd points elsewhere.
+        let anc: HashSet<u32> = [1u32, 4242].into_iter().collect();
+        assert_eq!(pick_grok_session(&j, &anc, Some("/w/zzz")).as_deref(), Some("s-anc"));
+        // (2) no ancestor match → the SOLE entry sharing our cwd.
+        let none: HashSet<u32> = HashSet::new();
+        assert_eq!(pick_grok_session(&j, &none, Some("/w/b")).as_deref(), Some("s-cwd"));
+        // ambiguous (no ancestor, cwd matches nothing, >1 entry) → None, never a guess.
+        assert_eq!(pick_grok_session(&j, &none, Some("/w/zzz")), None);
+        // (3) a single object (not array), no ancestor/cwd match → the sole entry.
+        let one = serde_json::json!({"session_id": "solo", "pid": 7, "cwd": "/w/x"});
+        assert_eq!(pick_grok_session(&one, &none, Some("/nope")).as_deref(), Some("solo"));
+        // empty / non-object-or-array → None.
+        assert_eq!(pick_grok_session(&serde_json::json!([]), &none, None), None);
+        assert_eq!(pick_grok_session(&serde_json::json!("nope"), &none, None), None);
     }
 
     #[test]

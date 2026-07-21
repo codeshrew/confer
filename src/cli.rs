@@ -447,6 +447,11 @@ pub(crate) enum Cmd {
         /// run — `watch-status` then can't confirm you're actually receiving events.
         #[arg(long)]
         delivery: Option<String>,
+        /// explicitly stamp the owning SESSION id on the watch registry (overrides env/disk
+        /// detection). For a harness that hides the session from this process (e.g. Grok Build,
+        /// which only exposes it to hooks), a hook or the arm skill can pass the id it knows.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Arm (or re-arm) your watcher the ONE correct way, then stream wakes: self-locate your
     /// role's clone, take over any orphan (`--replace`), and stamp `--delivery monitor` so
@@ -473,6 +478,10 @@ pub(crate) enum Cmd {
         /// else `notice`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
         #[arg(long = "wake-on")]
         wake_on: Option<String>,
+        /// same as `watch --session` — explicitly stamp the owning session id (for a harness that
+        /// hides it from this process, e.g. Grok Build). Usually unnecessary: `arm` auto-detects it.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether

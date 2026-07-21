@@ -147,7 +147,12 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
     // hijack the peer). Ownership = the arming session id, with the agent's own role as the
     // resume/rotation fallback. The roster block below stays fleet-wide (just names);
     // only the ACTION nudges are scoped.
-    let me_session = field("session_id").or_else(autoheal::current_session);
+    // Hook stdin carries the session id — Claude snake_case `session_id`, Grok camelCase `sessionId`
+    // (design/52 axis 2). Prefer stdin (the harness injects it into the hook process) over the env,
+    // since the env var may be absent in a monitor-hosted arm/watch process.
+    let me_session = field("session_id")
+        .or_else(|| field("sessionId"))
+        .or_else(autoheal::current_session);
     let me_role = std::env::var("CONFER_ROLE")
         .ok()
         .filter(|s| !s.is_empty())
