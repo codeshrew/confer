@@ -292,10 +292,26 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
              `confer autoheal prune` — it's a manual, human-verified step and won't delete anything on its own."
         ));
     }
-    if sections.is_empty() {
-        return Ok(()); // nothing to inject → silent
-    }
     let ctx = sections.join("\n\n");
+    // Harness-agnostic context delivery (design/52 #4): write the sections to a file the skill reads
+    // at session start. Grok ignores SessionStart stdout — so the `additionalContext` below never
+    // reaches its model — but the file does (the `/confer-watch` / `/confer-arm` skill's first step
+    // reads it). On Claude both carry it (harmless overlap). Rewritten every heal, and CLEARED when
+    // there's nothing to say, so a reader never picks up a stale context. Best-effort; never fails.
+    if let Ok(home) = config::home() {
+        let p = home.join(".confer").join("session-context.md");
+        if ctx.is_empty() {
+            let _ = std::fs::remove_file(&p);
+        } else {
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(&p, &ctx);
+        }
+    }
+    if sections.is_empty() {
+        return Ok(()); // nothing to deliver via stdout → silent (the context file was cleared above)
+    }
     let out = serde_json::json!({
         "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ctx }
     });

@@ -4469,6 +4469,33 @@ fn install_skill_grok_writes_native_hook_without_matchers() {
     );
 }
 
+/// Phase 4 (design/52 #4): `session-heal` writes its context (safety kernel, roster, re-arm nudges)
+/// to ~/.confer/session-context.md — the harness-agnostic delivery a skill can read, for runtimes
+/// (Grok) that ignore the SessionStart stdout `additionalContext` channel.
+#[test]
+fn session_heal_writes_the_harness_agnostic_context_file() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    // install-skill enables auto-heal (session-heal is a silent no-op otherwise — the realistic
+    // precondition, since the hook that runs session-heal is installed alongside it).
+    assert!(ok(&a.confer(&["install-skill", "--role", "alpha"])));
+    // Run with EMPTY stdin — the hook reads stdin, and null avoids blocking on a terminal.
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .arg("session-heal")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "session-heal exits 0: {}", String::from_utf8_lossy(&o.stderr));
+    let ctx = a.home.join(".confer").join("session-context.md");
+    let txt =
+        std::fs::read_to_string(&ctx).expect("session-heal writes ~/.confer/session-context.md");
+    assert!(txt.contains("safety kernel"), "context file carries the confer safety kernel: {txt}");
+}
+
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
 /// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
 #[test]
