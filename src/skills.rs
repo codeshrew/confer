@@ -8,45 +8,74 @@
 
 use crate::templates::CONFER_SKILLS;
 use crate::{autoheal, config, hooks::write_session_hook, BUILD_SHA};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use std::path::{Path, PathBuf};
 
-/// Tier-1 auto-heal: if confer skills are already installed in the default global dir but were baked
-/// from a DIFFERENT build than this binary, silently re-derive them. This is safe to do without
-/// asking — skills are a pure function of the on-disk binary (fixed templates + the binary's own
-/// path), and SessionStart runs the NEW binary — so it closes the "updated the binary but forgot to
-/// re-sync the skills" gap with zero agent action and nothing to judge. Returns the build it synced
-/// to when it acted (for a one-line note), None when nothing was stale. It NEVER creates skills where
-/// none exist — a fresh install is an explicit `install-skill` choice, not something to auto-heal —
-/// and only touches the DEFAULT global dir (a `--dir` install is the agent's own placement to manage).
-pub(crate) fn resync_skills_if_stale() -> Option<String> {
-    let dir = config::home().ok()?.join(".claude").join("skills");
-    let marker = dir.join("confer-watch").join(".confer-build");
-    // Present = installed here. Absent = not installed → not ours to create.
+/// Agent harnesses confer installs skills for, and their global skills dir under $HOME (design/52
+/// axis 3). Extend this to add a harness — both install and resync read it.
+pub(crate) const HARNESS_SKILL_HOMES: &[(&str, &str)] = &[("claude", ".claude"), ("grok", ".grok")];
+
+/// The skills dir for `harness` under `home`, if it's a known harness.
+fn harness_skill_dir(home: &Path, harness: &str) -> Option<PathBuf> {
+    HARNESS_SKILL_HOMES
+        .iter()
+        .find(|(h, _)| *h == harness)
+        .map(|(_, sub)| home.join(sub).join("skills"))
+}
+
+/// The harness running THIS process (design/52): Grok Build sets `GROK_AGENT`; default Claude Code.
+pub(crate) fn detect_harness() -> &'static str {
+    if std::env::var("GROK_AGENT").ok().filter(|s| !s.is_empty()).is_some() {
+        "grok"
+    } else {
+        "claude"
+    }
+}
+
+/// Re-derive the confer skills in ONE dir if they exist there but were baked from a different build.
+/// Returns whether it acted. Never creates skills where none exist; bails (role-blind safety) if a
+/// template unexpectedly bakes {ROLE}/{HUB}.
+fn resync_dir(dir: &Path, bin: &str) -> bool {
     if !dir.join("confer-watch").join("SKILL.md").is_file() {
-        return None;
+        return false; // not installed here → not ours to create
     }
+    let marker = dir.join("confer-watch").join(".confer-build");
     if std::fs::read_to_string(&marker).unwrap_or_default().trim() == BUILD_SHA {
-        return None; // already current — the common case, a cheap stat+read
+        return false; // already current — cheap stat+read
     }
-    let bin = std::env::current_exe().ok()?.to_string_lossy().to_string();
     for (name, tmpl) in CONFER_SKILLS {
-        let filled = tmpl.replace("{CONFER}", &bin);
-        // Defensive: these templates are role-agnostic by design (design/32). If a future one ever
-        // baked {ROLE}/{HUB}, a role-blind resync would write a broken skill — so bail rather than
-        // corrupt a working install; the explicit `install-skill` (which knows role+hub) still fixes it.
+        let filled = tmpl.replace("{CONFER}", bin);
         if filled.contains("{ROLE}") || filled.contains("{HUB}") {
-            return None;
+            return false; // role-blind resync must not write a role/hub-baked skill (design/32)
         }
         let d = dir.join(name);
-        std::fs::create_dir_all(&d).ok()?;
-        std::fs::write(d.join("SKILL.md"), filled).ok()?;
+        if std::fs::create_dir_all(&d).is_err() || std::fs::write(d.join("SKILL.md"), filled).is_err() {
+            return false;
+        }
     }
     let _ = std::fs::write(&marker, BUILD_SHA);
-    Some(BUILD_SHA.to_string())
+    true
+}
+
+/// Tier-1 auto-heal: refresh confer skills in EVERY installed harness dir, not just ~/.claude/skills
+/// (design/52 axis 3 — a Grok-only or dual install must self-heal too). Silently re-derives any baked
+/// from a different build; SessionStart runs the NEW binary and skills are a pure function of it, so
+/// it's safe with zero agent action. NEVER creates skills where none exist (a fresh install is an
+/// explicit `install-skill`); a custom `--dir` install stays the agent's own to manage. Returns the
+/// build synced to if any dir acted.
+pub(crate) fn resync_skills_if_stale() -> Option<String> {
+    let home = config::home().ok()?;
+    let bin = std::env::current_exe().ok()?.to_string_lossy().to_string();
+    let mut acted = false;
+    for (_, sub) in HARNESS_SKILL_HOMES {
+        acted |= resync_dir(&home.join(sub).join("skills"), &bin);
+    }
+    acted.then(|| BUILD_SHA.to_string())
 }
 
 pub(crate) fn cmd_install_skill(
     dir: Option<String>,
+    harness: Option<String>,
     hub: Option<String>,
     role: Option<String>,
     no_autoheal: bool,
@@ -60,13 +89,23 @@ pub(crate) fn cmd_install_skill(
         Some(r) => r,
         None => config::resolve_role(None, &hub_root)?,
     };
-    // Default to the GLOBAL skills dir (~/.claude/skills): a coordination watch
-    // skill is cross-project infrastructure, and Claude Code only auto-discovers
-    // skills from ~/.claude or the *current* project — so writing into the hub
-    // repo hides /watch from an agent whose session lives in its own code repo.
-    let dir = match dir {
-        Some(d) => std::path::PathBuf::from(d),
-        None => config::home()?.join(".claude").join("skills"),
+    let home = config::home()?;
+    // WHICH skill dir(s) to write. `--dir` is an explicit single override (back-compat,
+    // harness-agnostic — the agent's own placement). Else `--harness` selects: `auto` (default) = the
+    // runtime detected from the env (Claude, or Grok via GROK_AGENT); `claude`/`grok` = that one;
+    // `all` = every known harness (design/52 axis 3). A coordination skill is cross-project infra, so
+    // it lives in the harness's GLOBAL skills dir (Grok: ~/.grok/skills; Claude: ~/.claude/skills) —
+    // writing into the hub repo would hide it from a session living in its own code repo.
+    let targets: Vec<PathBuf> = if let Some(d) = dir {
+        vec![PathBuf::from(d)]
+    } else {
+        match harness.as_deref().unwrap_or("auto") {
+            "all" => HARNESS_SKILL_HOMES.iter().map(|(_, s)| home.join(s).join("skills")).collect(),
+            "auto" => vec![harness_skill_dir(&home, detect_harness())
+                .expect("the detected harness is always a known one")],
+            h => vec![harness_skill_dir(&home, h)
+                .ok_or_else(|| anyhow!("unknown --harness '{h}' — expected auto | claude | grok | all"))?],
+        }
     };
     let fill = |t: &str| {
         t.replace("{CONFER}", &bin)
@@ -74,43 +113,29 @@ pub(crate) fn cmd_install_skill(
             .replace("{ROLE}", &role)
     };
 
-    // ONE generic skill, shared by every agent on the machine — the skill text is role-agnostic
-    // (commands resolve the caller's role from the hub clone they're run in), so co-resident agents
-    // no longer clobber each other by baking their own role into a shared `confer-watch/SKILL.md`
-    // (design/32). Only {CONFER} (the machine's binary path, shared by co-resident agents) is baked.
-    for (name, tmpl) in CONFER_SKILLS {
-        let d = dir.join(name);
-        std::fs::create_dir_all(&d)?;
-        std::fs::write(d.join("SKILL.md"), fill(tmpl))?;
-    }
-    // Stamp the build these skills were baked from so the SessionStart tier-1 auto-heal can tell,
-    // cheaply, when a later binary update has left them stale and silently re-derive them.
-    let _ = std::fs::write(dir.join("confer-watch").join(".confer-build"), BUILD_SHA);
-    let names = CONFER_SKILLS
-        .iter()
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>()
-        .join(",");
-    println!("wrote {}/{{{names}}}/SKILL.md", dir.display());
-    // Migrate: remove OUR superseded skill dirs so an agent doesn't keep stale copies alongside the
-    // current set. Two kinds: pre-namespacing names (watch/check-blackboard), and confer-* skills we
-    // retired (fleet-ops/fleetop → folded into /confer-fleet; norms → the SessionStart safety-kernel
-    // hook). Only remove ones clearly OURS (mention confer) — never an unrelated skill. Exact dir
-    // names, so this never touches a current skill (e.g. confer-fleet is untouched by confer-fleetop).
-    for legacy in [
-        "watch",
-        "check-blackboard",
-        "confer-fleet-ops",
-        "confer-fleetop",
-        "confer-norms",
-    ] {
-        let sk = dir.join(legacy).join("SKILL.md");
-        if std::fs::read_to_string(&sk)
-            .map(|s| s.contains("confer"))
-            .unwrap_or(false)
-        {
-            let _ = std::fs::remove_dir_all(dir.join(legacy));
-            println!("  migrated: removed legacy /{legacy}");
+    // ONE generic skill set, role-agnostic (commands resolve the caller's role from the hub clone
+    // they run in), so co-resident agents don't clobber each other (design/32) — only {CONFER} (the
+    // shared binary path) is baked. Written to each selected harness dir.
+    for dir in &targets {
+        for (name, tmpl) in CONFER_SKILLS {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("SKILL.md"), fill(tmpl))?;
+        }
+        // Stamp the build so the SessionStart tier-1 auto-heal can tell, cheaply, when a later binary
+        // update left these stale and silently re-derive them.
+        let _ = std::fs::write(dir.join("confer-watch").join(".confer-build"), BUILD_SHA);
+        let names = CONFER_SKILLS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(",");
+        println!("wrote {}/{{{names}}}/SKILL.md", dir.display());
+        // Migrate OUR superseded skill dirs (pre-namespacing watch/check-blackboard + retired
+        // fleet-ops/fleetop→/confer-fleet, norms→the safety-kernel hook) IN THIS dir. Only ones that
+        // mention confer — never an unrelated skill; exact names, so a current skill is untouched.
+        for legacy in ["watch", "check-blackboard", "confer-fleet-ops", "confer-fleetop", "confer-norms"] {
+            let sk = dir.join(legacy).join("SKILL.md");
+            if std::fs::read_to_string(&sk).map(|s| s.contains("confer")).unwrap_or(false) {
+                let _ = std::fs::remove_dir_all(dir.join(legacy));
+                println!("  migrated: removed legacy /{legacy}");
+            }
         }
     }
     println!("  confer: {bin}");

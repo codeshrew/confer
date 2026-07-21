@@ -731,10 +731,11 @@ fn run() -> Result<()> {
         } => ghapp::cmd_app_config(app_id, key, installation_id, find_installation),
         Cmd::InstallSkill {
             dir,
+            harness,
             hub,
             role,
             no_autoheal,
-        } => cmd_install_skill(dir, hub, role, no_autoheal),
+        } => cmd_install_skill(dir, harness, hub, role, no_autoheal),
         Cmd::Reconnect {
             role,
             hub,

@@ -130,6 +130,7 @@ pub(crate) fn cmd_reconnect(
     // 3. Full reactive stack: skills + auto-heal hook (idempotent; migrates legacy names).
     cmd_install_skill(
         None,
+        None,
         Some(root.to_string_lossy().to_string()),
         role.clone(),
         false,

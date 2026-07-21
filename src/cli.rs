@@ -797,6 +797,11 @@ pub(crate) enum Cmd {
         /// Pass e.g. `--dir .claude/skills` to scope them to one project.
         #[arg(long)]
         dir: Option<String>,
+        /// which harness's skill dir(s): auto (default — detected from the env: Grok if GROK_AGENT is
+        /// set, else Claude), claude (~/.claude/skills), grok (~/.grok/skills), or all (every known
+        /// harness). Ignored when --dir is given. (design/52)
+        #[arg(long)]
+        harness: Option<String>,
         /// hub working copy (default: the current repo)
         #[arg(long)]
         hub: Option<String>,

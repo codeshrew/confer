@@ -4398,6 +4398,32 @@ fn install_skill_is_generic_no_coresident_clobber() {
     let _ = std::fs::remove_dir_all(&sk);
 }
 
+/// Phase 2 (design/52 axis 3): `install-skill --harness` targets the right global skills dir per
+/// harness — Grok's ~/.grok/skills, Claude's ~/.claude/skills, or all — so a Grok agent's skills land
+/// where Grok discovers them (not silently in ~/.claude/skills).
+#[test]
+fn install_skill_harness_selects_the_right_dir() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let grok_watch = a.home.join(".grok").join("skills").join("confer-watch").join("SKILL.md");
+    let claude_watch = a.home.join(".claude").join("skills").join("confer-watch").join("SKILL.md");
+
+    // --harness grok → ~/.grok/skills only.
+    assert!(ok(&a.confer(&["install-skill", "--harness", "grok", "--role", "alpha", "--no-autoheal"])));
+    assert!(grok_watch.is_file(), "install-skill --harness grok must write ~/.grok/skills");
+    assert!(!claude_watch.is_file(), "a grok-only install must NOT write ~/.claude/skills");
+
+    // --harness all → both known harness dirs.
+    assert!(ok(&a.confer(&["install-skill", "--harness", "all", "--role", "alpha", "--no-autoheal"])));
+    assert!(
+        grok_watch.is_file() && claude_watch.is_file(),
+        "install-skill --harness all must write every known harness dir"
+    );
+
+    // an unknown harness is a clear error, not a silent wrong-dir write.
+    assert!(!ok(&a.confer(&["install-skill", "--harness", "bogus", "--role", "alpha", "--no-autoheal"])));
+}
+
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
 /// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
 #[test]

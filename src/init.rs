@@ -272,6 +272,7 @@ pub(crate) fn cmd_init(
         if !managed {
             match cmd_install_skill(
                 None,
+                None,
                 Some(root.to_string_lossy().to_string()),
                 Some(r.clone()),
                 false,
@@ -296,7 +297,7 @@ pub(crate) fn cmd_init(
         // Arm the reactive stack FROM the final path — skipped before the move (stale paths), done
         // now so a managed join is complete in one command, exactly like the non-managed branch.
         if let Some(r) = &managed_role {
-            match cmd_install_skill(None, Some(dest.to_string_lossy().to_string()), Some(r.clone()), false) {
+            match cmd_install_skill(None, None, Some(dest.to_string_lossy().to_string()), Some(r.clone()), false) {
                 Ok(_) => {
                     println!();
                     println!("✅ fleet ready at {}", dest.display());
