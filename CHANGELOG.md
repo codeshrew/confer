@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.11
+
+*Multi-harness Phase 2a — skills install to the right place per harness, and auto-heal keeps them all fresh.*
+
+- **`confer install-skill --harness {auto,claude,grok,all}`.** Skills now install to the harness's
+  global skills dir — Grok's `~/.grok/skills`, Claude's `~/.claude/skills`, or all — instead of always
+  `~/.claude/skills`. `auto` (the default) detects the runtime from the env (Grok if `GROK_AGENT` is
+  set, else Claude); `--dir` still overrides for an explicit path. So a Grok agent's skills land where
+  Grok actually discovers them.
+- **Auto-heal resync now covers every installed harness dir**, not just `~/.claude/skills` — a
+  Grok-only or dual install self-heals to a new build too (it previously went stale silently).
+
 ## 0.8.10
 
 *Multi-harness Phase 1 — confer detects your agent session across runtimes (Claude Code + Grok Build).*
