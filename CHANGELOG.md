@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.7
+
+- **`append`/`request --to` now hints a likely misroute.** If you address a role that isn't watching
+  the current hub but the *same name* is live on another hub this machine belongs to, confer prints a
+  non-blocking *"'jarvis' isn't watching this hub, but a 'jarvis' is live on hub 'X' — did you mean to
+  post there?"* — so a message meant for another hub doesn't vanish into a void. It reads only local,
+  trusted presence (no network, never blocks the send), fires only for a role with no presence here
+  that's genuinely live elsewhere, and excludes the current hub by identity so a second local clone
+  can't self-report. Reported by the Pipeline agent.
+
 ## 0.8.6
 
 - **`--body-file` now works on `request`, `note`, and the lifecycle verbs** (`done` / `error` /
