@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.17
+
+*Harness-aware onboarding banners — cold multi-harness joins read right (5ZB0J9).*
+
+- **`invite` is harness-neutral** — the newcomer's runtime is unknown when you generate the paste, so
+  step 3 now names *both* loop floors (Claude `/loop 45s`, Grok `/loop 60s`) and the sandbox note names
+  *both* session-hook paths (`~/.claude/settings.json`, `~/.grok/hooks/confer.json`), plus the Grok
+  `~/.confer/session-context.md` read. No more Claude-only copy handed to a Grok agent.
+- **`reconnect` / `init --role` banners detect the running harness** — a Grok Build machine sees its
+  own 60s floor, `~/.grok/hooks/confer.json`, and the session-context read; Claude machines are
+  unchanged. Completes the harness-aware banner set started with the `install-skill` line in 0.8.15.
+
 ## 0.8.16
 
 *Phase 5, completed — `doctor` now inventories every watcher on the host.*

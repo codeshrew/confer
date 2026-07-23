@@ -4517,6 +4517,19 @@ fn doctor_reports_per_harness_integration_and_grok_banner() {
     );
 }
 
+/// Banner polish (5ZB0J9): the `invite` copy-paste is harness-neutral (the newcomer's runtime is
+/// unknown at invite time), so it names BOTH loop floors + BOTH session-hook paths — not Claude-only.
+#[test]
+fn invite_copy_is_harness_neutral() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let inv = out(&a.confer(&["invite", "--role", "newbie"]));
+    assert!(inv.contains("/loop 45s") && inv.contains("/loop 60s"), "invite names both loop floors: {inv}");
+    assert!(inv.contains(".grok") && inv.contains(".claude"), "invite names both harness hook paths: {inv}");
+    assert!(inv.contains("session-context.md"), "invite mentions the Grok session-context file: {inv}");
+}
+
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
 /// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
 #[test]
@@ -4538,7 +4551,7 @@ fn onboard_points_to_init_for_create_and_managed_clone_for_join() {
         "create path carries the role:\n{s}"
     );
     assert!(
-        s.contains("confer poll --role backend"),
+        s.contains("/confer-poll") || s.contains("confer poll --role backend"),
         "names the non-Claude reactive fallback:\n{s}"
     );
 
@@ -4598,7 +4611,7 @@ fn init_local_path_creates_bare_hub_and_keys_and_joins() {
         "missing the create confirmation:\n{s}"
     );
     assert!(
-        s.contains("confer poll --role backend"),
+        s.contains("/confer-poll") || s.contains("confer poll --role backend"),
         "missing the non-Claude reactive fallback:\n{s}"
     );
 }

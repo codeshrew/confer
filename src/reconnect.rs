@@ -152,11 +152,19 @@ pub(crate) fn print_reactive_next(role: &str) {
     // A role can arrive from a value an agent copied out of an untrusted peer message — strip any
     // terminal control sequences before echoing it (#D defense-in-depth).
     let role = schema::sanitize_term(role, false);
-    println!("   final step — arm your reactive watch:  run  /confer-watch");
-    println!("   (headless / no Monitor tool:  confer watch --role {role} --replace)");
-    println!(
-        "   (not Claude Code:  loop  `confer poll --role {role}`  inside your agent's run loop)"
-    );
+    // Harness-aware (design/52 / grok banner-polish): this runs on the INVITEE's machine, so we know
+    // its runtime — name that harness's floor + hook path, not Claude's, so cold onboarding is right.
+    match crate::skills::detect_harness() {
+        "grok" => {
+            println!("   final step — arm your reactive watch:  run  /confer-watch  (hosts `confer arm` under your monitor tool)");
+            println!("   its first step reads ~/.confer/session-context.md — the safety kernel + any re-arm nudge");
+            println!("   (no monitor tool?  loop  /loop 60s /confer-poll  inside your run loop)");
+        }
+        _ => {
+            println!("   final step — arm your reactive watch:  run  /confer-watch");
+            println!("   (headless / no Monitor tool:  confer watch --role {role} --replace  — or  /loop 45s /confer-poll)");
+        }
+    }
 }
 
 /// The literacy pointer for a cold agent: what confer is + the ONE next command for the
@@ -265,7 +273,7 @@ pub(crate) fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<(
                 println!();
                 println!("Don't re-clone. Just RE-ARM your reactive watch from there:");
                 println!("    cd {} && confer watch --role {r} --replace", p.display());
-                println!("    (Claude Code: run  /confer-watch  from that directory — same thing.)");
+                println!("    (or run  /confer-watch  from that directory — same thing, on Claude or Grok.)");
             } else {
                 println!("You were pointed at a fleet. JOIN it with one command:");
                 println!();
@@ -318,8 +326,17 @@ pub(crate) fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<(
     if role.is_none() {
         println!("(`{r}` is a placeholder — replace it with a role id for this agent: any lowercase name.)");
     }
-    println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch`.");
-    println!("On any other agent, loop `confer poll --role {r}` in your run loop instead.");
+    // Harness-aware summary (grok banner-polish): name the runtime's own hook path + loop floor.
+    match crate::skills::detect_harness() {
+        "grok" => {
+            println!("Reactive layer: `confer install-skill` wired `/confer-watch` + the Grok hook (~/.grok/hooks/confer.json).");
+            println!("No monitor tool?  loop  /loop 60s /confer-poll  in your run loop instead.");
+        }
+        _ => {
+            println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch` + the SessionStart hook (~/.claude/settings.json).");
+            println!("Headless?  loop  `confer poll --role {r}`  (/loop 45s /confer-poll) in your run loop instead.");
+        }
+    }
     Ok(())
 }
 

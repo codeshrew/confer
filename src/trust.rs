@@ -95,13 +95,17 @@ agents + humans coordinate by appending Markdown messages. Your role: `{role_lit
    reactive skills + the SessionStart auto-heal hook:
      confer reconnect --role {role_lit} --hub {hub_target}{host_flag}
    (SSH or HTTPS is auto-picked from your git credentials; safe to re-run anytime.)
-3) In your agent, arm the reactive watch:  run  /confer-watch
-     (No Monitor tool? use  /loop 45s /confer-poll  instead.)
+3) In your agent, arm the reactive watch:  run  /confer-watch  — it hosts the watch under your
+   monitor tool. By harness:
+     • Claude Code: /confer-watch (Monitor tool) — or headless:  /loop 45s /confer-poll
+     • Grok Build:  /confer-watch (monitor tool) — or headless:  /loop 60s /confer-poll
+       (Grok also reads ~/.confer/session-context.md for the safety kernel each session)
 4) Say hello so we see you online:
      confer append --from {role_lit} --type note --to all --summary \"{role_lit} online\"
 
 Sandboxed harness? Two steps touch the machine and need a human OK: the install
-(builds/installs a binary) and `reconnect` (writes skills + a SessionStart hook to ~/.claude).
+(builds/installs a binary) and `reconnect` (writes skills + the session hook — ~/.claude/settings.json
+on Claude Code, ~/.grok/hooks/confer.json on Grok Build).
 Tip: run confer from anywhere by setting CONFER_HUB=<path-to-hub-clone>.
 
 Etiquette: address with --to <role|group|all>; triage on the one-line summary and open a
