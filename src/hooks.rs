@@ -83,6 +83,17 @@ pub(crate) fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()
 /// SessionStart/Pre/PostCompact), one `{hooks:[{type:command,command,timeout}]}` entry per event.
 /// `session-heal`'s SIDE EFFECTS (skill resync; the context file, Phase 4) run on each fire — Grok
 /// ignores the stdout `additionalContext` path, which is why delivery moves to a file (#4).
+/// Is confer's auto-heal hook installed for `harness`? (Grok: its own ~/.grok/hooks/confer.json;
+/// Claude: a session-heal SessionStart entry in ~/.claude/settings.json.) For the Phase-5 doctor.
+pub(crate) fn confer_hook_installed(home: &std::path::Path, harness: &str) -> bool {
+    match harness {
+        "grok" => home.join(".grok").join("hooks").join("confer.json").exists(),
+        _ => std::fs::read_to_string(home.join(".claude").join("settings.json"))
+            .map(|s| s.contains("session-heal"))
+            .unwrap_or(false),
+    }
+}
+
 pub(crate) fn write_grok_hook(home: &std::path::Path, cmd: &str) -> Result<()> {
     let dir = home.join(".grok").join("hooks");
     std::fs::create_dir_all(&dir)?;

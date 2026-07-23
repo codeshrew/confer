@@ -4496,6 +4496,27 @@ fn session_heal_writes_the_harness_agnostic_context_file() {
     assert!(txt.contains("safety kernel"), "context file carries the confer safety kernel: {txt}");
 }
 
+/// Phase 5 (design/52 / grok #6): `doctor` reports per-harness integration state — and flags a
+/// harness whose skills are installed but whose auto-heal hook is missing. Plus the banner polish:
+/// a grok install advertises Grok's 60s /loop floor.
+#[test]
+fn doctor_reports_per_harness_integration_and_grok_banner() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    // Install grok skills WITHOUT the hook (--no-autoheal) → doctor should flag skills-but-no-hook.
+    let inst = a.confer(&["install-skill", "--harness", "grok", "--role", "alpha", "--no-autoheal"]);
+    assert!(ok(&inst));
+    assert!(out(&inst).contains("/loop 60s"), "a grok install banner uses the 60s loop floor: {}", out(&inst));
+
+    let j = out(&a.confer(&["doctor", "--json"]));
+    assert!(j.contains("grok"), "doctor reports the grok harness: {j}");
+    assert!(
+        j.contains("hook is MISSING") || j.contains("skills installed but"),
+        "doctor flags grok skills installed without the auto-heal hook: {j}"
+    );
+}
+
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);
 /// with a hub it points to `reconnect` (join one). Agent-agnostic, needs no hub state.
 #[test]
