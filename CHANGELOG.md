@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.15
+
+*Multi-harness Phase 5 — `doctor` sees each runtime; harness-aware install banner.*
+
+- **`confer doctor` now reports per-harness integration health.** For every harness whose skills are
+  installed (`~/.claude/skills`, `~/.grok/skills`), it checks the auto-heal hook is present — and
+  **warns** when the skills are there but the hook is missing (a SessionStart that won't re-arm or
+  resync). It also flags when this process's session id isn't resolvable (watch ownership falls back to
+  role-only — fine for one session, worth a `--session` when you run several of the same role), and when
+  an SSH hub is reached through the *ambient* agent rather than a pinned key (the durability trap where a
+  locked agent silently cuts off the hub). All advisory `Info`/`Warn` — nothing new fails `--check` bar a
+  genuinely half-installed harness.
+- **`install-skill` banner is harness-aware** — a Grok install shows Grok's 60s `/loop` floor (Claude
+  stays 45s) and every banner now points at `~/.confer/session-context.md`.
+
 ## 0.8.14
 
 *Multi-harness Phase 4 — the safety kernel + re-arm nudges reach every runtime.*

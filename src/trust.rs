@@ -275,6 +275,75 @@ pub(crate) fn cmd_verify(id: String, strict: bool) -> Result<()> {
 /// diagnostics below (transport self-containment, reactive-watch liveness, clone shallow/nested,
 /// machine-config validation, role↔key) remain TEXT-ONLY and are not part of the findings array or
 /// the --check gate; folding them in would need converting them to `Finding`s too, out of scope here.
+/// Per-harness integration health (design/52 Phase 5 / grok #6): for each harness whose skills are
+/// installed, is its auto-heal hook present? Is this process's session id resolvable (watch
+/// ownership)? Is the hub transport self-contained (a pinned key vs the ambient SSH agent — the
+/// durability trap where a locked agent silently cuts off the hub)?
+fn harness_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
+    use doctor::{Finding, Level};
+    let mut out = Vec::new();
+    let Ok(home) = crate::config::home() else {
+        return out;
+    };
+    let detected = crate::skills::detect_harness();
+    out.push(Finding {
+        level: Level::Info,
+        title: format!("harness: this process looks like {detected} — confer reads its session/skills/hooks accordingly"),
+        fix: None,
+    });
+    let mut any = false;
+    for (h, sub) in crate::skills::HARNESS_SKILL_HOMES {
+        if !home.join(sub).join("skills").join("confer-watch").join("SKILL.md").is_file() {
+            continue; // skills not installed for this harness → nothing to check
+        }
+        any = true;
+        if crate::hooks::confer_hook_installed(&home, h) {
+            out.push(Finding {
+                level: Level::Ok,
+                title: format!("harness {h}: skills + auto-heal hook installed"),
+                fix: None,
+            });
+        } else {
+            out.push(Finding {
+                level: Level::Warn,
+                title: format!("harness {h}: skills installed but its auto-heal hook is MISSING — SessionStart won't re-arm or resync"),
+                fix: Some(format!("re-run `confer install-skill --harness {h}` (installs the hook too)")),
+            });
+        }
+    }
+    if !any {
+        out.push(Finding {
+            level: Level::Info,
+            title: "harness: confer skills aren't installed in any known harness dir".to_string(),
+            fix: Some(format!("`confer install-skill` (auto-detects {detected})")),
+        });
+    }
+    if crate::autoheal::current_session().is_none() {
+        out.push(Finding {
+            level: Level::Info,
+            title: format!("harness: this {detected} session's id isn't resolvable (env or on-disk) — watch ownership is role-only"),
+            fix: Some("fine for a single session; if you run several sessions of the SAME role on this machine, pass `confer arm --session <id>`".to_string()),
+        });
+    }
+    // Transport pin: a headless agent reaching an SSH hub via the AMBIENT agent breaks when that
+    // agent locks/unloads (Herald hit this). Pin a dedicated key so access is self-contained.
+    let url = crate::gitcmd::output(root, &["config", "--get", "remote.origin.url"])
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let is_ssh = url.starts_with("git@") || url.starts_with("ssh://");
+    let pinned = crate::gitcmd::output(root, &["config", "--get", "core.sshCommand"])
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    if is_ssh && !pinned {
+        out.push(Finding {
+            level: Level::Info,
+            title: "hub transport uses the ambient SSH agent (no pinned key) — it cuts off if that agent locks or unloads".to_string(),
+            fix: Some("pin a dedicated key so headless hub access is self-contained: `confer reconnect --role <you> --ssh-key <path>`".to_string()),
+        });
+    }
+    out
+}
+
 pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool) -> Result<()> {
     let root = match dir {
         Some(d) => std::path::PathBuf::from(d),
@@ -314,6 +383,7 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
     // not be a false-green just because it lived in text-only prose (bug that prompted this fix).
     let mut findings = doctor::audit(&root);
     findings.extend(advisory_findings(&root));
+    findings.extend(harness_findings(&root));
     let any_hard = findings.iter().any(|f| f.level == doctor::Level::Warn);
     if json {
         let arr: Vec<serde_json::Value> = findings
