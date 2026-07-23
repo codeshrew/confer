@@ -276,10 +276,10 @@ pub(crate) fn cmd_verify(id: String, strict: bool) -> Result<()> {
 /// machine-config validation, role↔key) remain TEXT-ONLY and are not part of the findings array or
 /// the --check gate; folding them in would need converting them to `Finding`s too, out of scope here.
 /// Per-harness integration health (design/52 Phase 5 / grok #6): for each harness whose skills are
-/// installed, is its auto-heal hook present? Is this process's session id resolvable (watch
-/// ownership)? Is the hub transport self-contained (a pinned key vs the ambient SSH agent — the
-/// durability trap where a locked agent silently cuts off the hub)?
-fn harness_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
+/// installed, is its auto-heal hook present? Is this process's session id resolvable for watch
+/// ownership? (The hub-transport-self-containment check lives in `advisory_findings`; the host-wide
+/// live-watch inventory is report-only in `cmd_doctor` — runtime state must not gate `--check`.)
+fn harness_findings() -> Vec<doctor::Finding> {
     use doctor::{Finding, Level};
     let mut out = Vec::new();
     let Ok(home) = crate::config::home() else {
@@ -325,23 +325,73 @@ fn harness_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
             fix: Some("fine for a single session; if you run several sessions of the SAME role on this machine, pass `confer arm --session <id>`".to_string()),
         });
     }
-    // Transport pin: a headless agent reaching an SSH hub via the AMBIENT agent breaks when that
-    // agent locks/unloads (Herald hit this). Pin a dedicated key so access is self-contained.
-    let url = crate::gitcmd::output(root, &["config", "--get", "remote.origin.url"])
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    let is_ssh = url.starts_with("git@") || url.starts_with("ssh://");
-    let pinned = crate::gitcmd::output(root, &["config", "--get", "core.sshCommand"])
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
-    if is_ssh && !pinned {
-        out.push(Finding {
-            level: Level::Info,
-            title: "hub transport uses the ambient SSH agent (no pinned key) — it cuts off if that agent locks or unloads".to_string(),
-            fix: Some("pin a dedicated key so headless hub access is self-contained: `confer reconnect --role <you> --ssh-key <path>`".to_string()),
-        });
-    }
     out
+}
+
+/// Host-wide live-watch inventory (grok #4/#5): every watcher lock under `~/.confer/watch` on THIS
+/// host — not just our role — so a mixed Claude/Grok, multi-session box is diagnosable at a glance.
+/// A live lock with no `delivery` stamp is the silent-death trap (a backgrounded watch whose wakes go
+/// nowhere) → a ⚠ line. Report-only (like the per-role liveness line above): it's runtime state, not
+/// a repo/config property, so it must NEVER gate `--check`.
+fn print_host_watches() {
+    let Ok(home) = config::home() else { return };
+    let reg = crate::autoheal::load();
+    let owner = |hub_key: &str, role: &str| -> Option<String> {
+        reg.targets.iter().find_map(|t| {
+            (config::hub_key(std::path::Path::new(&t.hub)) == hub_key && t.role == role)
+                .then(|| t.session.clone())
+                .flatten()
+        })
+    };
+    let mut hubs: Vec<_> = std::fs::read_dir(home.join(".confer").join("watch"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+    if hubs.is_empty() {
+        return;
+    }
+    hubs.sort_by_key(|e| e.file_name());
+    let mut lines: Vec<String> = Vec::new();
+    for hub_entry in hubs {
+        let hub_key = hub_entry.file_name().to_string_lossy().to_string();
+        let mut roles: Vec<_> =
+            std::fs::read_dir(hub_entry.path()).into_iter().flatten().flatten().collect();
+        roles.sort_by_key(|e| e.file_name());
+        for role_entry in roles {
+            let fname = role_entry.file_name().to_string_lossy().to_string();
+            let Some(stem) = fname.strip_suffix(".json") else { continue };
+            let role = if stem == "_all" { "" } else { stem };
+            let Some(info) = watchlock::inspect(&hub_key, role, 90) else { continue };
+            if !info.same_host {
+                continue; // a lock from another machine synced into view — not a local watcher
+            }
+            let rlabel = if role.is_empty() { "(all)" } else { role };
+            let sess = owner(&hub_key, role)
+                .map(|s| format!(" · session {}", &s[..s.len().min(8)]))
+                .unwrap_or_default();
+            let ver = info.version.as_deref().unwrap_or("?");
+            if info.alive && info.fresh {
+                match info.delivery.as_deref() {
+                    Some(d) => {
+                        lines.push(format!("  ✓ {hub_key}/{rlabel}: live — pid {}, {d}, {ver}{sess}", info.pid))
+                    }
+                    None => lines.push(format!(
+                        "  ⚠ {hub_key}/{rlabel}: live (pid {}, {ver}) but NO delivery stamp — wakes may go nowhere; re-arm via /confer-arm{sess}",
+                        info.pid
+                    )),
+                }
+            } else {
+                lines.push(format!("  · {hub_key}/{rlabel}: not live — stale lock (pid {}){sess}", info.pid));
+            }
+        }
+    }
+    if !lines.is_empty() {
+        println!("\nwatches on this host:");
+        for l in lines {
+            println!("{l}");
+        }
+    }
 }
 
 pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool) -> Result<()> {
@@ -383,7 +433,7 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
     // not be a false-green just because it lived in text-only prose (bug that prompted this fix).
     let mut findings = doctor::audit(&root);
     findings.extend(advisory_findings(&root));
-    findings.extend(harness_findings(&root));
+    findings.extend(harness_findings());
     let any_hard = findings.iter().any(|f| f.level == doctor::Level::Warn);
     if json {
         let arr: Vec<serde_json::Value> = findings
@@ -422,6 +472,10 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
             }
         }
     }
+
+    // Host-wide live-watch inventory (grok #4/#5) — report-only, same category as the per-role line
+    // above (runtime state, never gates --check). Surfaces every watcher on a mixed/multi-session box.
+    print_host_watches();
 
     // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
     println!(

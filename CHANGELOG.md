@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.16
+
+*Phase 5, completed — `doctor` now inventories every watcher on the host.*
+
+- **`confer doctor` prints a host-wide live-watch inventory** — every watcher lock under
+  `~/.confer/watch`, not just the current role: `hub/role: live — pid, delivery, version · session`.
+  This makes a mixed Claude/Grok, multi-session box (grok + grok-b on one host) diagnosable at a
+  glance — you see *both* live watches, not only your own. A live watch with **no `delivery` stamp**
+  (the silent-death trap — a backgrounded watch whose wakes go nowhere) gets a `⚠` line pointing at
+  `/confer-arm`. Report-only, like the per-role liveness line: runtime state never gates `--check`.
+
 ## 0.8.15
 
 *Multi-harness Phase 5 — `doctor` sees each runtime; harness-aware install banner.*
