@@ -482,6 +482,11 @@ pub(crate) enum Cmd {
         /// hides it from this process, e.g. Grok Build). Usually unnecessary: `arm` auto-detects it.
         #[arg(long)]
         session: Option<String>,
+        /// replace a HEALTHY watcher even when this session can't be confirmed as its owner. Off by
+        /// default so a role-only re-arm never SIGTERMs a co-resident peer's live watcher (H2); the
+        /// normal case (dead/stale/outdated watcher) always replaces without this.
+        #[arg(long)]
+        force: bool,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether

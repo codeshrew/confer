@@ -799,8 +799,8 @@ fn run() -> Result<()> {
                 session,
             })
         }
-        Cmd::Arm { role, topic, all, min_priority, wake_on, session } => {
-            arm::run(role, topic, all, min_priority, wake_on, session)
+        Cmd::Arm { role, topic, all, min_priority, wake_on, session, force } => {
+            arm::run(role, topic, all, min_priority, wake_on, session, force)
         }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
