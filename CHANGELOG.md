@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.19
+
+*Stability + hardening batch — watch-lock races, arm/session ownership, presence leases, per-session
+context. From a post-multi-harness security/stability review; upgrade recommended.*
+
+- **Watcher lock no longer races on `--replace` (H1 + M4).** A departing watcher only removes/refreshes
+  the lock when it still holds it (pid+host guard), so a `--replace` successor's lock is never deleted
+  or clobbered; `acquire` waits for the old watcher to exit after the kill, and serializes its
+  check→kill→write critical section under a bounded flock so two concurrent `--replace`s can't both
+  win. Net: exactly one live watcher.
+- **`arm` won't hijack a co-resident peer's watcher (H2).** `confer arm` now refuses to replace a
+  *healthy* watcher this session can't confirm it owns (no matching session stamp) — pointing at
+  `--session` or the new `--force` — instead of blindly SIGTERMing it. Every non-healthy state
+  (dead/stale/outdated) still re-arms freely, so normal resume/adopt-a-new-build is unaffected.
+- **Per-session context (H3).** `session-heal` writes `~/.confer/session-context/<session-id>.md` and a
+  new `confer session-context` prints *this* session's file — so a co-resident agent's re-arm nudges no
+  longer overwrite another's (falls back to the safety-kernel floor when the session can't be resolved).
+  The `/confer-watch` skill's first step now runs that command. Roster names are framed as peer data.
+- **Presence uses `--force-with-lease` (H4).** Heartbeats lease against the last-known tip and, on a
+  rejected lease, re-observe the real remote tip and retry once — a concurrent clobber is detected, not
+  silently last-write-wins.
+- **`doctor` gains per-host + per-harness hardening checks.** A host-wide live-watch inventory
+  (0.8.16), and now a warning when a harness's auto-heal hook points at a **missing** binary (M2 — a
+  brew upgrade / move left the baked path stale).
+- **Registry hardening (M3).** `~/.confer/autoheal.json` is written atomically at mode 0600 (it records
+  session ids) under a lock across the read-modify-write, so concurrent arms can't lose a target.
+
 ## 0.8.18
 
 *Security — cross-role signature-verify fix. Upgrade recommended.*
