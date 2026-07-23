@@ -119,6 +119,17 @@ fn read_info(path: &Path) -> Option<(u32, String)> {
     Some((v.get("pid")?.as_u64()? as u32, v.get("host")?.as_str()?.to_string()))
 }
 
+/// True iff the lock file still records THIS process on THIS host — i.e. a `--replace` successor
+/// hasn't taken it over. Gates `Drop` + `heartbeat` so a departing watcher never deletes or clobbers
+/// the new holder's lock (H1). A missing file counts as "not ours" — a successor's acquire may be
+/// mid-flight, so we neither resurrect nor remove it.
+fn we_still_hold(path: &Path) -> bool {
+    match read_info(path) {
+        Some((pid, host)) => pid == std::process::id() && host == config::hostname().unwrap_or_default(),
+        None => false,
+    }
+}
+
 /// Seconds since the lock file was last refreshed (its heartbeat).
 fn age_secs(path: &Path) -> u64 {
     std::fs::metadata(path)
@@ -164,6 +175,24 @@ impl WatchLock {
                 if let Some(p) = pid {
                     let _ = std::process::Command::new("kill").arg(p.to_string())
                         .stderr(std::process::Stdio::null()).status();
+                    // Wait for the old watcher to actually EXIT before we write our lock — a still-
+                    // running old watcher's final heartbeat or clean-exit Drop would otherwise
+                    // clobber/delete the lock we're about to write (H1). Escalate to SIGKILL if it
+                    // lingers past the grace window, then proceed regardless.
+                    let mut waited_ms = 0u64;
+                    while process_alive(p) && waited_ms < 1500 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        waited_ms += 50;
+                    }
+                    if process_alive(p) {
+                        let _ = std::process::Command::new("kill").args(["-9", &p.to_string()])
+                            .stderr(std::process::Stdio::null()).status();
+                        let mut w = 0u64;
+                        while process_alive(p) && w < 500 {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            w += 50;
+                        }
+                    }
                     eprintln!("confer watch: --replace killed the existing watcher (pid {p}) for role '{label}'.");
                 }
             } else {
@@ -200,14 +229,65 @@ impl WatchLock {
 
     /// Refresh the lock's mtime so a later watcher can tell we're alive. Call each cycle.
     pub fn heartbeat(&self) {
+        // Don't resurrect our stamp over a successor's lock: if a `--replace` has taken over (the
+        // file now holds a foreign pid, or is gone mid-takeover), stop refreshing — we're being torn
+        // down and would otherwise clobber the new holder (H1).
+        if !we_still_hold(&self.path) {
+            return;
+        }
         let _ = self.write();
     }
 }
 
 impl Drop for WatchLock {
     fn drop(&mut self) {
-        // Clean exit removes the lock; a hard kill leaves it, and the next
-        // watcher reclaims it as stale (dead pid / old heartbeat).
-        let _ = std::fs::remove_file(&self.path);
+        // Unlink ONLY if we still hold it. A `--replace` successor may have written its own pid to
+        // this path; deleting that would leave the new, live watcher unlocked — the exact dual-watcher
+        // race the lock exists to prevent (H1). A hard-killed watcher never runs Drop at all, so this
+        // specifically guards the clean-exit-races-a-replace case. Otherwise: normal cleanup.
+        if we_still_hold(&self.path) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp(path: &Path, pid: u32, host: &str) {
+        std::fs::write(path, serde_json::json!({ "pid": pid, "host": host }).to_string()).unwrap();
+    }
+
+    /// H1 (grok B0V3DA): a departing watcher must never delete or overwrite a `--replace` successor's
+    /// lock. With a foreign pid in the file, both `heartbeat` and `Drop` are no-ops; with OUR pid,
+    /// `Drop` cleans up as before.
+    #[test]
+    fn drop_and_heartbeat_respect_lock_ownership() {
+        let host = config::hostname().unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("confer-h1-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("role.json");
+
+        // A successor (different pid) now holds the lock.
+        let successor = std::process::id().wrapping_add(1);
+        stamp(&path, successor, &host);
+        {
+            let lk = WatchLock { path: path.clone(), started_at: "t".into(), delivery: None };
+            lk.heartbeat(); // foreign pid present → must NOT clobber
+            assert_eq!(read_info(&path).unwrap().0, successor, "heartbeat must not overwrite a successor's lock");
+        } // Drop runs here: foreign pid present → must NOT remove
+        assert!(path.exists(), "Drop must not delete a successor's lock");
+        assert_eq!(read_info(&path).unwrap().0, successor, "successor's lock survives our Drop intact");
+
+        // Now WE own it → Drop cleans up normally.
+        stamp(&path, std::process::id(), &host);
+        {
+            let _lk = WatchLock { path: path.clone(), started_at: "t".into(), delivery: None };
+        }
+        assert!(!path.exists(), "Drop removes our OWN lock on clean exit");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
