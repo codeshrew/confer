@@ -144,16 +144,41 @@ pub fn load() -> Registry {
         .unwrap_or_default()
 }
 
+/// Exclusive guard over the registry, held across a load-modify-save so concurrent arms/toggles on a
+/// multi-session box can't lose a target via a read-modify-write race (M3). Best-effort (a wedged
+/// holder yields `None` after a bounded wait — the mutation still proceeds, degrading to the prior
+/// unlocked behavior rather than hanging). Hold the returned guard for the whole RMW.
+fn registry_lock() -> Option<std::fs::File> {
+    let p = config::home().ok()?.join(".confer").join("autoheal.lock");
+    config::state_lock(&p)
+}
+
+/// Owner-only perms (0600): the registry records session ids, which shouldn't be world/group-readable
+/// to other local users (M3 — observed `rw-rw----`).
+fn tighten(p: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
 pub fn save(r: &Registry) -> Result<()> {
     let p = path()?;
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(p, serde_json::to_string_pretty(r)?)?;
+    // Atomic write (temp → 0600 → rename) so a concurrent reader never sees a torn file and the
+    // session ids land owner-only from the start (M3).
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(r)?)?;
+    tighten(&tmp);
+    std::fs::rename(&tmp, &p)?;
     Ok(())
 }
 
 pub fn set_enabled(on: bool) -> Result<()> {
+    let _lock = registry_lock(); // held across the RMW
     let mut r = load();
     r.enabled = on;
     save(&r)
@@ -167,6 +192,7 @@ pub fn add_target(hub: &str, role: &str, session_override: Option<String>) {
     if role.is_empty() {
         return;
     }
+    let _lock = registry_lock(); // held across the load-modify-save (M3)
     let mut r = load();
     // Precedence: explicit `--session` > env/disk auto-detection. Under a harness that hides the
     // session from this process (Grok Build) with no override, note it — ownership falls back to
@@ -193,6 +219,7 @@ pub fn add_target(hub: &str, role: &str, session_override: Option<String>) {
 /// Re-point any watch-liveness target from an OLD hub path to a NEW one — used when a clone
 /// moves into the managed home so healing tracks it. Best-effort.
 pub fn retarget(old: &str, new: &str) {
+    let _lock = registry_lock(); // held across the load-modify-save (M3)
     let mut r = load();
     let mut changed = false;
     for t in &mut r.targets {
@@ -222,6 +249,7 @@ pub fn stale_targets() -> Vec<Target> {
 /// must not silently drop a live watcher. Touches only the ephemeral registry — never identity,
 /// keys, roster, or role cards.
 pub fn prune() -> Vec<Target> {
+    let _lock = registry_lock(); // held across the load-modify-save (M3)
     let mut r = load();
     let (live, dead): (Vec<Target>, Vec<Target>) = r
         .targets

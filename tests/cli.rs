@@ -4529,6 +4529,21 @@ fn doctor_reports_per_harness_integration_and_grok_banner() {
     );
 }
 
+/// M3 (grok 9Q530H): the auto-heal registry records session ids, so its file must be owner-only —
+/// not the observed `rw-rw----` that leaks session ids to other local users.
+#[test]
+#[cfg(unix)]
+fn autoheal_registry_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["autoheal", "on"])));
+    let f = a.home.join(".confer").join("autoheal.json");
+    let mode = std::fs::metadata(&f).expect("autoheal.json exists").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "autoheal.json must be 0600 (holds session ids); got {mode:o}");
+}
+
 /// Banner polish (5ZB0J9): the `invite` copy-paste is harness-neutral (the newcomer's runtime is
 /// unknown at invite time), so it names BOTH loop floors + BOTH session-hook paths — not Claude-only.
 #[test]
