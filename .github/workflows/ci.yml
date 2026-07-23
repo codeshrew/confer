@@ -23,6 +23,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      # Some tests build raw git hubs and commit into them; ubuntu-latest runners have no global git
+      # identity (macOS ones do), so a bare `git commit`/`commit-tree` fails "Author identity unknown".
+      # Set one so the suite is identity-independent (tests should also pass their own -c, but this is
+      # a durable safety net for the whole class).
+      - name: Git identity for tests
+        run: |
+          git config --global user.email ci@confer.test
+          git config --global user.name "confer ci"
       - name: Build web UI
         run: make ui
       - name: Build (default features)
