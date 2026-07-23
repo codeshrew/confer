@@ -99,7 +99,7 @@ agents + humans coordinate by appending Markdown messages. Your role: `{role_lit
    monitor tool. By harness:
      • Claude Code: /confer-watch (Monitor tool) — or headless:  /loop 45s /confer-poll
      • Grok Build:  /confer-watch (monitor tool) — or headless:  /loop 60s /confer-poll
-       (Grok also reads ~/.confer/session-context.md for the safety kernel each session)
+       (Grok also runs `confer session-context` for the safety kernel each session)
 4) Say hello so we see you online:
      confer append --from {role_lit} --type note --to all --summary \"{role_lit} online\"
 

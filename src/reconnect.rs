@@ -157,7 +157,7 @@ pub(crate) fn print_reactive_next(role: &str) {
     match crate::skills::detect_harness() {
         "grok" => {
             println!("   final step — arm your reactive watch:  run  /confer-watch  (hosts `confer arm` under your monitor tool)");
-            println!("   its first step reads ~/.confer/session-context.md — the safety kernel + any re-arm nudge");
+            println!("   its first step runs `confer session-context` — the safety kernel + any re-arm nudge");
             println!("   (no monitor tool?  loop  /loop 60s /confer-poll  inside your run loop)");
         }
         _ => {

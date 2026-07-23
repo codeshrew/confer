@@ -210,7 +210,7 @@ pub(crate) fn cmd_install_skill(
     // the session context from the file (design/52 #4/#6, grok banner-polish request).
     let loop_secs = if targets.iter().any(|(h, _)| *h == "grok") { 60 } else { 45 };
     println!(
-        "use: /confer-watch (reactive, hosted by your monitor tool) or /loop {loop_secs}s /confer-poll (poll fallback). Skills read ~/.confer/session-context.md at session start."
+        "use: /confer-watch (reactive, hosted by your monitor tool) or /loop {loop_secs}s /confer-poll (poll fallback). Skills run `confer session-context` at session start."
     );
     Ok(())
 }

@@ -4469,31 +4469,43 @@ fn install_skill_grok_writes_native_hook_without_matchers() {
     );
 }
 
-/// Phase 4 (design/52 #4): `session-heal` writes its context (safety kernel, roster, re-arm nudges)
-/// to ~/.confer/session-context.md — the harness-agnostic delivery a skill can read, for runtimes
-/// (Grok) that ignore the SessionStart stdout `additionalContext` channel.
+/// Phase 4 + H3 (design/52 #4 / grok G26BVD): `session-heal` writes its context (safety kernel,
+/// roster, re-arm nudges) to a PER-SESSION file under ~/.confer/session-context/, and `confer
+/// session-context` reads it back — the harness-agnostic delivery for runtimes (Grok) that ignore
+/// the SessionStart stdout channel. Per-session scoping stops a co-resident agent's heal from
+/// overwriting another's nudges; the reader falls back to the safety-kernel floor when unscoped.
 #[test]
-fn session_heal_writes_the_harness_agnostic_context_file() {
+fn session_context_is_per_session_and_readable() {
     let hub = new_hub();
     let a = hub.clone("alpha");
     assert!(ok(&a.confer(&["join", "--role", "alpha"])));
     // install-skill enables auto-heal (session-heal is a silent no-op otherwise — the realistic
     // precondition, since the hook that runs session-heal is installed alongside it).
     assert!(ok(&a.confer(&["install-skill", "--role", "alpha"])));
-    // Run with EMPTY stdin — the hook reads stdin, and null avoids blocking on a terminal.
-    let o = Command::new(BIN)
+    // Heal with a concrete session id on stdin (as the real hook delivers it) → scoped file.
+    let heal = Command::new(BIN)
         .env("HOME", &a.home)
         .env("CONFER_HUB", &a.dir)
         .env("CONFER_ROLE", "alpha")
         .arg("session-heal")
-        .stdin(std::process::Stdio::null())
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut ch| {
+            use std::io::Write;
+            ch.stdin.take().unwrap().write_all(br#"{"session_id":"SESS-ALPHA-1"}"#).unwrap();
+            ch.wait_with_output()
+        })
         .unwrap();
-    assert!(o.status.success(), "session-heal exits 0: {}", String::from_utf8_lossy(&o.stderr));
-    let ctx = a.home.join(".confer").join("session-context.md");
-    let txt =
-        std::fs::read_to_string(&ctx).expect("session-heal writes ~/.confer/session-context.md");
-    assert!(txt.contains("safety kernel"), "context file carries the confer safety kernel: {txt}");
+    assert!(heal.status.success(), "session-heal exits 0: {}", String::from_utf8_lossy(&heal.stderr));
+    // The scoped file exists (NOT the old global path), and carries the kernel.
+    let scoped = a.home.join(".confer").join("session-context").join("SESS-ALPHA-1.md");
+    let txt = std::fs::read_to_string(&scoped).expect("session-heal writes a per-session context file");
+    assert!(txt.contains("safety kernel"), "scoped context carries the kernel: {txt}");
+    assert!(!a.home.join(".confer").join("session-context.md").exists(), "legacy global file is migrated away");
+    // The reader prints it back (single file → resolves even without a live session env).
+    let read = out(&a.confer(&["session-context"]));
+    assert!(read.contains("safety kernel"), "confer session-context prints the context: {read}");
 }
 
 /// Phase 5 (design/52 / grok #6): `doctor` reports per-harness integration state — and flags a
@@ -4527,7 +4539,7 @@ fn invite_copy_is_harness_neutral() {
     let inv = out(&a.confer(&["invite", "--role", "newbie"]));
     assert!(inv.contains("/loop 45s") && inv.contains("/loop 60s"), "invite names both loop floors: {inv}");
     assert!(inv.contains(".grok") && inv.contains(".claude"), "invite names both harness hook paths: {inv}");
-    assert!(inv.contains("session-context.md"), "invite mentions the Grok session-context file: {inv}");
+    assert!(inv.contains("session-context"), "invite mentions the Grok session-context command: {inv}");
 }
 
 /// `onboard` is a literacy pointer: with no hub it points to `init` (start a fleet);

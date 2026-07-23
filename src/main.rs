@@ -73,7 +73,7 @@ use config_hub::{cmd_config, cmd_hub, cmd_rewatch, cmd_status};
 use fleet::{cmd_fleet, cmd_require, cmd_version, update_hint};
 use inbox::{cmd_ack, cmd_inbox, cmd_read, cmd_requests, cmd_show, cmd_thread, cmd_threads};
 use init::{cmd_adopt_clone, cmd_clones, cmd_hubs, cmd_init, cmd_where};
-use hooks::{cmd_autoheal, cmd_install_hook, cmd_session_heal, cmd_uninstall_hook};
+use hooks::{cmd_autoheal, cmd_install_hook, cmd_session_context, cmd_session_heal, cmd_uninstall_hook};
 use identity::{cmd_describe, cmd_identity, cmd_rename, cmd_set_status, cmd_who, cmd_whois};
 use join::cmd_join;
 use keygen_release::{cmd_changelog, cmd_keygen, cmd_update};
@@ -818,6 +818,7 @@ fn run() -> Result<()> {
         Cmd::InstallHook { project } => cmd_install_hook(project),
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
         Cmd::SessionHeal => cmd_session_heal(),
+        Cmd::SessionContext => cmd_session_context(),
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Hub { action, yes } => cmd_hub(action, yes),

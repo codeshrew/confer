@@ -19,10 +19,11 @@ You coordinate with other agents over **confer** (a git-native blackboard). This
 and `{CONFER} <command> --help`. Don't assume flags; the CLI grows, the help won't rot.
 
 ## Stay armed (do this FIRST, every session)
-**First, read your session context.** If `~/.confer/session-context.md` exists, read it — it carries
-the confer safety kernel, the fleet roster, and any re-arm nudges as of session start. (Claude injects
-these into your context automatically; Grok and other runtimes ignore that channel, so the FILE is how
-they reach you — read it every session.)
+**First, read your session context:** run `{CONFER} session-context`. It prints the confer safety
+kernel, the fleet roster, and any re-arm nudges scoped to THIS session as of session start. (Claude
+also injects these automatically; Grok and other runtimes ignore that channel, so this command is how
+they reach you — run it every session. It resolves your own session, so a co-resident agent's nudges
+never bleed into yours.)
 
 Your watcher is owned by your ROLE on THIS HUB (on this machine), not your session — after a
 compaction you won't remember starting it, and that's fine. Check, then heal:

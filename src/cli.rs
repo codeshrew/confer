@@ -564,6 +564,9 @@ pub(crate) enum Cmd {
     /// Hook target (run by Claude Code on SessionStart) — checks watcher health and
     /// injects a re-arm nudge if needed. Not meant to be run by hand.
     SessionHeal,
+    /// Print this session's confer context (safety kernel + fleet roster + any re-arm nudges) —
+    /// the `/confer-watch` / `/confer-arm` skill runs this at session start. Harness-agnostic.
+    SessionContext,
     /// Toggle/inspect auto-heal: `on` | `off` | `status` | `prune`.
     Autoheal {
         /// on | off | status | prune
