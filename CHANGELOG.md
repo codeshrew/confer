@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.18
+
+*Security — cross-role signature-verify fix. Upgrade recommended.*
+
+- **Fixed a cross-role false-`Verified` in signature checking (C1).** The `%G?` verify cache was keyed
+  by commit SHA alone, but a commit's signature status is evaluated against a one-key allowed-signers
+  file that is specific to each role's pinned key. So a good-signature verdict proven for role A's pin
+  could be reused for role B on a commit that touched both — meaning a hub writer with their own valid
+  pinned key could bundle a message (or card edit) attributed to **another** role into a single signed
+  commit and have it shown as **Verified** under that role. The cache now keys on `(sha, role, pinned)`
+  — the full input to the check — so each `(commit, role-pin)` is verified independently. Found by a
+  post-multi-harness security review; regression test included. No config or workflow change.
+
 ## 0.8.17
 
 *Harness-aware onboarding banners — cold multi-harness joins read right (5ZB0J9).*
