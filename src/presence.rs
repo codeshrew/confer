@@ -74,16 +74,87 @@ pub fn publish(root: &Path, p: &Presence) -> Result<()> {
         must(gitcmd::output(root, &["commit-tree", &tree, "-m", &msg])?, "commit-tree")?
     };
     let refname = presence_ref(&p.role);
+    // Our last-known tip for this ref (what we believe the remote holds) — the lease expectation, so a
+    // concurrent same-role writer's clobber is DETECTED rather than blindly overwritten (H4). None on
+    // the first publish from this clone (nothing to lease against yet).
+    let local_tip = verify_ref(root, &refname);
     gitcmd::check(root, &["update-ref", &refname, &commit])?;
-    // Single-writer ref → plain --force is safe (non-fast-forward by construction).
-    // (Hardening TODO: --force-with-lease against the last-pushed sha to guard a
-    // stale same-agent process; the watch single-lock already makes that rare.)
     let refspec = format!("{commit}:{refname}");
-    let push = gitcmd::output(root, &["push", "--force", "origin", &refspec])?;
-    if !push.status.success() {
-        return Err(anyhow!("presence push: {}", String::from_utf8_lossy(&push.stderr).trim()));
+    // Attempt 1: lease against our last-known tip (plain --force only when there's no expectation).
+    let push = push_presence(root, &refspec, &refname, local_tip.as_deref())?;
+    if push.status.success() {
+        return Ok(());
+    }
+    // Lease rejected → the remote tip moved under us (a concurrent writer, or our view went stale).
+    // Re-observe the ACTUAL remote tip and retry ONCE leased against it: detect-then-update, never a
+    // silent last-write clobber. If it still fails, the caller treats presence as best-effort.
+    let remote_tip = ls_remote_tip(root, &refname);
+    let push2 = push_presence(root, &refspec, &refname, remote_tip.as_deref())?;
+    if !push2.status.success() {
+        return Err(anyhow!(
+            "presence push (lease retry after a concurrent update): {}",
+            String::from_utf8_lossy(&push2.stderr).trim()
+        ));
     }
     Ok(())
+}
+
+/// The sha `refname` resolves to locally, if any.
+fn verify_ref(root: &Path, refname: &str) -> Option<String> {
+    let o = gitcmd::output(root, &["rev-parse", "-q", "--verify", refname]).ok()?;
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The sha the REMOTE holds for `refname` (via `ls-remote`), if any — the authoritative lease value
+/// when our local view proved stale.
+fn ls_remote_tip(root: &Path, refname: &str) -> Option<String> {
+    let o = gitcmd::output(root, &["ls-remote", "origin", refname]).ok()?;
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).split_whitespace().next().unwrap_or_default().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Push the presence refspec, leased against `expected` (the remote tip we require) when known — so a
+/// concurrent clobber is rejected — falling back to plain `--force` only when there's no known tip to
+/// lease against (the very first publish from this clone).
+fn push_presence(
+    root: &Path,
+    refspec: &str,
+    refname: &str,
+    expected: Option<&str>,
+) -> Result<std::process::Output> {
+    let args = push_args(refname, refspec, expected);
+    gitcmd::output(root, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The `git push` args for a presence update: a `--force-with-lease` on the ref's expected remote
+/// tip when we know it (so a concurrent clobber is rejected), else plain `--force` (first publish).
+fn push_args(refname: &str, refspec: &str, expected: Option<&str>) -> Vec<String> {
+    let force = match expected {
+        Some(tip) => format!("--force-with-lease={refname}:{tip}"),
+        None => "--force".to_string(),
+    };
+    vec!["push".to_string(), force, "origin".to_string(), refspec.to_string()]
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn presence_push_leases_against_the_known_tip() {
+        // With a known tip → a lease on that exact ref+sha (a concurrent clobber gets rejected).
+        let a = push_args("refs/presence/alpha", "abc:refs/presence/alpha", Some("deadbeef"));
+        assert!(a.contains(&"--force-with-lease=refs/presence/alpha:deadbeef".to_string()), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--force"), "leased push must NOT be a bare --force: {a:?}");
+        // No known tip (first publish) → plain --force to establish the ref.
+        let b = push_args("refs/presence/alpha", "abc:refs/presence/alpha", None);
+        assert!(b.contains(&"--force".to_string()) && !b.iter().any(|x| x.starts_with("--force-with-lease")), "{b:?}");
+    }
 }
 
 fn must(o: std::process::Output, what: &str) -> Result<String> {
