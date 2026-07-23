@@ -155,6 +155,13 @@ impl WatchLock {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
         }
+        // Serialize the acquire critical section (check → kill old → write our stamp) against a
+        // concurrent acquirer of the SAME (hub, role) — otherwise two `--replace`s could both read
+        // the old lock and both write their own pid (TOCTOU: two watchers each think they won). The
+        // flock is held ONLY for acquire (dropped when this fn returns), not for the watch lifetime;
+        // the pid stamp remains the actual holder record (M4). Best-effort: a wedged holder yields
+        // None after a bounded wait and we proceed (degrading to the pre-M4 behavior, not hanging).
+        let _acq = config::state_lock(&path.with_extension("acquire"));
         let label = if role.is_empty() { "<all>" } else { role };
         if path.exists() {
             let this_host = config::hostname().unwrap_or_default();
