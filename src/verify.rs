@@ -73,14 +73,17 @@ impl Trust {
 }
 
 /// Per-invocation memo so each ADD-commit is located + signature-checked at most once,
-/// even when a render pass touches many messages. A commit's signature is immutable, so
-/// caching by sha is sound within (and across) a process run.
+/// even when a render pass touches many messages.
 #[derive(Default)]
 pub struct Cache {
     add_sha: HashMap<String, Option<String>>, // message id → ADD-commit sha
     card_sha: HashMap<String, Option<String>>, // role → latest roles/<id>.md commit sha
-    gsig: HashMap<String, char>,              // sha → git `%G?`
-    fpr: HashMap<String, String>,             // pubkey → SHA256 fingerprint
+    // `%G?` is NOT a property of the commit alone — it's evaluated against a one-line allowed-signers
+    // file holding EXACTLY one (role, pinned-key). So the cache MUST key on all three; keying by sha
+    // alone let a `G` proven for role A's pin be reused for role B on a multi-file commit → a false
+    // `Verified` for B (a commit signed by A that also touches B's card/message). Key = sha␀role␀pin.
+    gsig: HashMap<String, char>,
+    fpr: HashMap<String, String>, // pubkey → SHA256 fingerprint
 }
 
 impl Cache {
@@ -110,7 +113,10 @@ impl Cache {
     /// role's committer email to its PINNED key. `G` good, `N` unsigned, else signed by
     /// a non-pinned key (`U`/`B`/`E`).
     fn gsig(&mut self, root: &Path, role: &str, pinned: &str, sha: &str) -> char {
-        if let Some(c) = self.gsig.get(sha) {
+        // Key on (sha, role, pinned) — the full input to the `%G?` check — never sha alone, or a
+        // verdict for one role's pin leaks to another role on the same commit (cross-role forgery).
+        let key = format!("{sha}\u{0}{role}\u{0}{pinned}");
+        if let Some(c) = self.gsig.get(&key) {
             return *c;
         }
         let c = (|| {
@@ -146,7 +152,7 @@ impl Cache {
             String::from_utf8_lossy(&out.stdout).trim().chars().next()
         })()
         .unwrap_or('E');
-        self.gsig.insert(sha.to_string(), c);
+        self.gsig.insert(key, c);
         c
     }
 
@@ -294,5 +300,53 @@ mod tests {
         assert!(Trust::Mismatch { reason: "changed".into() }.tag().contains("MISMATCH"));
         assert!(Trust::Mismatch { reason: "c".into() }.is_mismatch());
         assert!(!Trust::Verified { fpr: "SHA256:x".into() }.is_mismatch());
+    }
+
+    /// C1 (grok review JWV0V8): the `%G?` cache must key on (sha, role, pinned), not sha alone —
+    /// otherwise a `G` proven for role A's pin is reused for role B on the SAME commit, so a commit
+    /// signed by A that also touches B's file yields a FALSE `Verified` for B. Reproduce the cross-
+    /// role poisoning directly on `Cache`: one commit signed by key A; gsig(A) must be `G`, and a
+    /// following gsig(B) with a DIFFERENT pin on the same sha must NOT inherit A's `G`.
+    #[test]
+    fn gsig_cache_does_not_leak_a_verdict_across_roles() {
+        // Skip cleanly if the signing toolchain isn't present in this environment.
+        if std::process::Command::new("ssh-keygen").arg("-A").output().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("confer-c1-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |c: &str| {
+            let o = std::process::Command::new("sh").arg("-c").arg(c).current_dir(&root).output().unwrap();
+            assert!(o.status.success(), "cmd failed: {c}\n{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let keygen = |name: &str| {
+            let k = root.join(name);
+            assert!(std::process::Command::new("ssh-keygen")
+                .args(["-t", "ed25519", "-f", k.to_str().unwrap(), "-N", "", "-C", name, "-q"])
+                .status().unwrap().success());
+            (k.clone(), std::fs::read_to_string(root.join(format!("{name}.pub"))).unwrap().trim().to_string())
+        };
+        let (priv_a, pub_a) = keygen("alice");
+        let (_priv_b, pub_b) = keygen("bob");
+        sh("git init -q && git config user.name t && git config user.email t@t");
+        // ONE commit signed by ALICE's key that touches both roles' files (the multi-file attack shape).
+        std::fs::write(root.join("alice.md"), "a").unwrap();
+        std::fs::write(root.join("bob.md"), "b").unwrap();
+        let sha = sh(&format!(
+            "git add -A && git -c gpg.format=ssh -c user.signingkey='{}' -c gpg.ssh.program=ssh-keygen commit -q -S -m x && git rev-parse HEAD",
+            priv_a.display()
+        ));
+
+        let mut cache = Cache::default();
+        // Alice's pin verifies (her key signed it) — populates the cache for this sha.
+        assert_eq!(cache.gsig(&root, "alice", &pub_a, &sha), 'G', "commit is validly signed by alice's pinned key");
+        // Bob's DISTINCT pin on the SAME commit must NOT inherit alice's verdict.
+        assert_ne!(
+            cache.gsig(&root, "bob", &pub_b, &sha), 'G',
+            "a commit signed by alice must never verify as bob (cross-role cache poisoning)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
