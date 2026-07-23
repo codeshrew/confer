@@ -4529,6 +4529,28 @@ fn doctor_reports_per_harness_integration_and_grok_banner() {
     );
 }
 
+/// M2 (grok 9Q530H): the auto-heal hook bakes an absolute confer path; after a brew upgrade / move
+/// that path can point at a binary that's gone, so SessionStart silently invokes nothing. doctor must
+/// flag it (a healthy stable-symlink path, like this test's live binary, must NOT false-warn).
+#[test]
+fn doctor_warns_when_auto_heal_hook_binary_is_missing() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["install-skill", "--role", "alpha"]))); // writes skills + the hook
+    let settings = a.home.join(".claude").join("settings.json");
+    // Healthy first: the freshly-baked path (the live test binary) exists → no missing-binary warn.
+    let healthy = out(&a.confer(&["doctor", "--json"]));
+    assert!(!healthy.contains("MISSING binary"), "a valid baked path must not warn: {healthy}");
+    // Simulate a brew upgrade / move: repoint the hook's command at a binary that no longer exists.
+    let txt = std::fs::read_to_string(&settings).unwrap();
+    let broken = txt.replace(BIN, "/nonexistent/confer-gone");
+    assert_ne!(txt, broken, "expected the baked binary path {BIN} in the hook");
+    std::fs::write(&settings, broken).unwrap();
+    let j = out(&a.confer(&["doctor", "--json"]));
+    assert!(j.contains("MISSING binary"), "doctor flags the stale baked hook path: {j}");
+}
+
 /// M3 (grok 9Q530H): the auto-heal registry records session ids, so its file must be owner-only —
 /// not the observed `rw-rw----` that leaks session ids to other local users.
 #[test]
@@ -5443,7 +5465,7 @@ fn e2e_append_hints_a_misroute_when_the_role_is_live_on_another_hub() {
         .arg(format!(
             "cd '{dir}' && printf '{{\"role\":\"jarvis\",\"last_seen\":\"{fresh}\",\"poll_secs\":10}}' > p.json && \
              bo=$(git hash-object -w p.json) && t=$(printf '100644 blob %s\\tpresence.json\\n' \"$bo\" | git mktree) && \
-             c=$(git commit-tree $t -m beat) && git update-ref refs/presence/jarvis $c && rm -f p.json",
+             c=$(git -c user.email=t@t -c user.name=t commit-tree $t -m beat) && git update-ref refs/presence/jarvis $c && rm -f p.json",
             dir = hub_b.display()
         ))
         .output()

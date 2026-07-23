@@ -119,6 +119,28 @@ pub(crate) fn confer_hook_installed(home: &std::path::Path, harness: &str) -> bo
     }
 }
 
+/// The confer binary path baked into `harness`'s installed auto-heal hook (the `<bin>` in the
+/// `<bin> session-heal` command), if a hook is present. For the M2 doctor check: after a brew
+/// upgrade or a path shadow, that baked ABSOLUTE path can point at a binary that no longer exists,
+/// so SessionStart silently invokes nothing. Reads the same hook files `write_*_hook` writes.
+pub(crate) fn baked_hook_bin(home: &std::path::Path, harness: &str) -> Option<String> {
+    let path = match harness {
+        "grok" => home.join(".grok").join("hooks").join("confer.json"),
+        _ => home.join(".claude").join("settings.json"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    // Both shapes: hooks.SessionStart[].hooks[].command == "<bin> session-heal".
+    v.get("hooks")?
+        .get("SessionStart")?
+        .as_array()?
+        .iter()
+        .filter_map(|e| e.get("hooks").and_then(|h| h.as_array()))
+        .flatten()
+        .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+        .find_map(|cmd| cmd.split(" session-heal").next().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+}
+
 pub(crate) fn write_grok_hook(home: &std::path::Path, cmd: &str) -> Result<()> {
     let dir = home.join(".grok").join("hooks");
     std::fs::create_dir_all(&dir)?;
