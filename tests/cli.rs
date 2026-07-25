@@ -717,8 +717,12 @@ fn signs_self_contained_even_when_local_gpgsign_is_off() {
         .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "alpha", "-q"])
         .status().unwrap().success(), "ssh-keygen");
     assert!(ok(&a.confer(&["join", "--role", "alpha", "--signing-key", key.to_str().unwrap()])), "join --signing-key");
-    // Drift / agent-down proxy: turn the clone's default signing OFF. confer must still sign.
+    // Drift / broken-agent proxy: turn the clone's default signing OFF *and* point gpg.ssh.program at
+    // a signer that always fails (the shape of a global `op-ssh-sign` that can't sign a key it doesn't
+    // hold — Pipeline GPZAVH). confer must STILL sign by overriding both with its own key + real
+    // ssh-keygen via explicit -c.
     git(&a.dir, &["config", "--local", "commit.gpgsign", "false"]);
+    git(&a.dir, &["config", "--local", "gpg.ssh.program", "/bin/false"]);
     assert!(ok(&a.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "t"])),
         "confer must self-sign + send despite local commit.gpgsign=false");
     // The message commit carries a signature regardless of the clone's config.
