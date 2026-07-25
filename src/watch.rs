@@ -6,7 +6,7 @@
 
 use crate::machineconfig::{self, WatchPrefs};
 use crate::schema::{is_actionable, Message};
-use crate::{config, cursor, gitcmd, hint, roster, store, watchlock, BUILD_SHA};
+use crate::{autoheal, config, cursor, gitcmd, hint, roster, store, watchlock, BUILD_SHA};
 use anyhow::{anyhow, Result};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::io::Write;
@@ -936,7 +936,21 @@ mod tests {
 /// new session is still "role X on host H" and can reclaim its own orphan safely.
 /// Exits 1 when action (re-arm) is needed so a hook/loop can branch. See DESIGN.md.
 pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) -> Result<()> {
-    let root = config::repo_root()?;
+    // "Where am I posting from" must be answerable even when cwd/$CONFER_HUB is misconfigured — the
+    // watch REGISTRY already knows this machine's hubs (Pipeline bug #3: reading kept working from the
+    // registry while writing broke from cwd). Answer from it instead of only erroring.
+    let root = match config::repo_root() {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(h) = autoheal::registered_hubs_hint(role.as_deref()) {
+                eprintln!("confer watch-status: can't resolve a hub from cwd/$CONFER_HUB ({e}).");
+                println!("{h}");
+                // Still "not healthy from here" for the scriptable gate.
+                return if check { Err(crate::PredicateFalse.into()) } else { Ok(()) };
+            }
+            return Err(e);
+        }
+    };
     let me = config::resolve_role(role, &root).unwrap_or_default();
     let hub = config::hub_key(&root);
     let this_host = config::hostname().unwrap_or_default();

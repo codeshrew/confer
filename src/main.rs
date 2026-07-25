@@ -629,7 +629,7 @@ fn run() -> Result<()> {
                 r
             }
         }
-        Cmd::Show { id, json } => cmd_show(id, json),
+        Cmd::Show { id, role, json } => cmd_show(id, role, json),
         Cmd::Requests {
             open,
             mine,

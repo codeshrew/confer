@@ -144,6 +144,30 @@ pub fn load() -> Registry {
         .unwrap_or_default()
 }
 
+/// A human hint naming this machine's registered watch hub clone(s) — for an error like "not a confer
+/// hub" where the watch registry already KNOWS where the agent's hubs are but cwd/$CONFER_HUB is
+/// misconfigured (Pipeline bug #3: reading works from the registry while writing broke from cwd). Only
+/// lists hubs that still EXIST on disk. `role` filters to that role; None lists all. None if empty.
+pub fn registered_hubs_hint(role: Option<&str>) -> Option<String> {
+    let reg = load();
+    let mut lines: Vec<String> = reg
+        .targets
+        .iter()
+        .filter(|t| role.is_none_or(|r| t.role == r))
+        .filter(|t| std::path::Path::new(&t.hub).exists())
+        .map(|t| format!("  • role '{}' @ {}", t.role, t.hub))
+        .collect();
+    lines.sort();
+    lines.dedup();
+    (!lines.is_empty()).then(|| {
+        format!(
+            "your watch registry knows these hub clone(s) on this machine — cd into one, or set \
+             $CONFER_HUB to it:\n{}",
+            lines.join("\n")
+        )
+    })
+}
+
 /// Exclusive guard over the registry, held across a load-modify-save so concurrent arms/toggles on a
 /// multi-session box can't lose a target via a read-modify-write race (M3). Best-effort (a wedged
 /// holder yields `None` after a bounded wait — the mutation still proceeds, degrading to the prior

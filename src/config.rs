@@ -11,10 +11,16 @@ use std::process::Command;
 pub fn repo_root() -> Result<PathBuf> {
     if let Ok(h) = std::env::var("CONFER_HUB") {
         if !h.is_empty() {
-            let p = PathBuf::from(&h);
-            return p.canonicalize().map_err(|_| {
+            let p = PathBuf::from(&h).canonicalize().map_err(|_| {
                 anyhow!("$CONFER_HUB points at '{h}', which does not exist")
-            });
+            })?;
+            // Validate the SAME way the cwd branch does — a stale $CONFER_HUB pointing at a
+            // directory whose `.git` is gone (a clone that was moved/deleted) must fail HERE, on the
+            // first syscall, NOT after a command has written a message file into it and then can't
+            // commit — which orphans that file in a non-repo dir (Pipeline bug #1).
+            ensure_git_repo(&p).map_err(|e| anyhow!("$CONFER_HUB '{}' {e}", p.display()))?;
+            ensure_confer_hub(&p)?;
+            return Ok(p);
         }
     }
     let out = Command::new("git")
@@ -26,20 +32,39 @@ pub fn repo_root() -> Result<PathBuf> {
         ));
     }
     let root = PathBuf::from(String::from_utf8(out.stdout)?.trim());
-    // Guard: the enclosing git repo must actually be a confer hub. Without this,
-    // running confer from a NON-hub repo (a product repo you happen to be in)
-    // silently treats THAT repo as the hub — creating .confer/ + threads/ + roles/
-    // in the wrong place and operating there (the split-brain footgun). A real hub — scaffolded by
-    // `clone`/`init` — always has threads/ or roles/. If neither is present, refuse
-    // loudly instead of doing the wrong thing silently.
+    ensure_confer_hub(&root)?;
+    Ok(root)
+}
+
+/// Is `p` inside a git work tree? A hub clone whose `.git` was removed (moved/deleted clone) fails
+/// this — the check that stops a write from landing in a non-repo dir (Pipeline bug #1).
+fn ensure_git_repo(p: &Path) -> Result<()> {
+    let inside = Command::new("git")
+        .args(["-C", &p.to_string_lossy(), "rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !inside {
+        return Err(anyhow!(
+            "is not a git repository — a hub clone's .git is missing (the clone was moved or deleted). \
+             Re-clone with `confer reconnect --hub <hub>`, or point $CONFER_HUB at a valid clone."
+        ));
+    }
+    Ok(())
+}
+
+/// The git repo at `root` must actually be a confer hub. Without this, running confer from a NON-hub
+/// repo (a product repo you happen to be in) silently treats THAT repo as the hub — the split-brain
+/// footgun. A real hub (scaffolded by `clone`/`init`) always has threads/ or roles/.
+fn ensure_confer_hub(root: &Path) -> Result<()> {
     if !root.join("threads").is_dir() && !root.join("roles").is_dir() {
         return Err(anyhow!(
-            "the current git repo ({}) is not a confer hub (no threads/ or roles/). \
+            "the git repo ({}) is not a confer hub (no threads/ or roles/). \
              cd into your hub clone, set $CONFER_HUB=<hub-path>, or run `confer reconnect --hub <hub>`.",
             root.display()
         ));
     }
-    Ok(root)
+    Ok(())
 }
 
 /// Resolve the role: explicit flag → .confer/identity.json → $CONFER_ROLE.

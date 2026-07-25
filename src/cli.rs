@@ -331,6 +331,10 @@ pub(crate) enum Cmd {
     /// A REPORT: exits 0 once the message is printed.
     Show {
         id: String,
+        /// act as this role (alias `--from`, matching `append`/`inbox`) — whose read-state this
+        /// marks. Default: the current clone's identity / $CONFER_ROLE.
+        #[arg(long, visible_alias = "from")]
+        role: Option<String>,
         /// machine output: the message as one `to_json` object (carries `trust`/`tier`/
         /// `screen`), no supersession/edit-notice decoration. Still marks the message read.
         #[arg(long)]
@@ -985,7 +989,8 @@ pub(crate) enum Cmd {
     /// frontier). `--peek` to view without marking. This is the "did I actually see
     /// it" backstop, separate from the delivery cursor. See inbox.rs / DESIGN.md.
     Inbox {
-        #[arg(long)]
+        /// act as this role (alias `--from`, matching `append`). Default: current clone / $CONFER_ROLE.
+        #[arg(long, visible_alias = "from")]
         role: Option<String>,
         /// view without marking as read
         #[arg(long)]

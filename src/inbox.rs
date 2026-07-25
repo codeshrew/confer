@@ -293,7 +293,7 @@ mod tests {
 /// `to_json` object (carries verified `trust`/`tier`/`screen`, design/37 F4) and skips the
 /// supersession/edit-notice decoration — a machine consumer doesn't need the prose, just the
 /// message + its provenance. Side effects (marking the message read) still happen either way.
-pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
+pub(crate) fn cmd_show(id: String, role: Option<String>, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let msgs = store::all_messages(&root)?;
     let hits: Vec<&Message> = msgs
@@ -370,7 +370,8 @@ pub(crate) fn cmd_show(id: String, json: bool) -> Result<()> {
             }
             // Opening a message's body reads THAT message — mark only this id (not a high-water
             // mark sweeping every older message read; inbox.rs). The deferred rest stay unread.
-            if let Ok(me) = config::resolve_role(None, &root) {
+            // `--role`/`--from` acts as that role (Pipeline bug #4); default = current identity.
+            if let Ok(me) = config::resolve_role(role, &root) {
                 let _ = mark_read(&config::hub_key(&root), &me, &m.front.id);
             }
             Ok(())

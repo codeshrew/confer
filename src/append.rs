@@ -107,21 +107,29 @@ fn recipient_advisory(
     }
 
     if !unknown.is_empty() {
-        let joined = if known.is_empty() {
-            "(none yet)".to_string()
-        } else {
-            known.join(", ")
-        };
         let names = unknown
             .iter()
             .map(|r| format!("'{r}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        eprintln!(
-            "confer: warning — {} {names} {} not joined hub '{hub}'; they won't see this until they join. Joined roles: {joined}. If you expected them here, you may be in the wrong hub.",
-            if unknown.len() == 1 { "role" } else { "roles" },
-            if unknown.len() == 1 { "has" } else { "have" },
-        );
+        if known.is_empty() {
+            // Zero joined roles is the REAL diagnosis — lead with the wrong-hub signal instead of
+            // burying "(none yet)" under a per-recipient caveat (Pipeline bug #2). Still non-fatal: a
+            // brand-new hub whose peer cards haven't git-propagated yet legitimately looks like this.
+            eprintln!(
+                "confer: warning — hub '{hub}' has NO joined roles yet, so NOBODY (including {names}) will \
+                 receive this. Either you're pointed at the WRONG hub (check $CONFER_HUB / `confer clones`), \
+                 or you're the first to arrive and peers' cards haven't synced here yet."
+            );
+        } else {
+            eprintln!(
+                "confer: warning — {} {names} {} not joined hub '{hub}'; they won't see this until they join. \
+                 Joined roles: {}. If you expected them here, you may be in the wrong hub.",
+                if unknown.len() == 1 { "role" } else { "roles" },
+                if unknown.len() == 1 { "has" } else { "have" },
+                known.join(", "),
+            );
+        }
     }
     if broadcast_empty {
         let s = truncate(summary, 60);
@@ -429,7 +437,12 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Accept `--to a,b,c` (and `--cc`) as a convenience for addressing several peers at once.
     a.to = split_comma_targets(a.to);
     a.cc = split_comma_targets(a.cc);
-    let root = config::repo_root()?;
+    // If the hub can't be resolved from cwd/$CONFER_HUB, name the registry's known hubs (bug #3):
+    // reading works from the registry while writing broke from cwd — so tell the sender where to go.
+    let root = config::repo_root().map_err(|e| match crate::autoheal::registered_hubs_hint(None) {
+        Some(h) => anyhow!("{e}\n{h}"),
+        None => e,
+    })?;
     let role = config::resolve_role(a.from, &root)?;
     // Surface a silently-dead watch on the next active command: if you armed a watch but it isn't
     // running (backgrounded/reaped), you're not being woken — say so now rather than let you go dark.

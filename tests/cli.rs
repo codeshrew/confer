@@ -4551,6 +4551,31 @@ fn doctor_warns_when_auto_heal_hook_binary_is_missing() {
     assert!(j.contains("MISSING binary"), "doctor flags the stale baked hook path: {j}");
 }
 
+/// Pipeline bug #1: a `$CONFER_HUB` pointing at a directory that LOOKS like a hub (has threads/roles)
+/// but has no `.git` — a clone whose `.git` was removed — must fail on the FIRST syscall, before any
+/// message file is written. Previously the CONFER_HUB branch of repo_root only checked existence, so
+/// append wrote the file and THEN failed the commit, orphaning it in a non-repo dir.
+#[test]
+fn append_into_a_non_git_hub_fails_early_without_writing() {
+    let stale = tmp("stale-nongit-hub");
+    std::fs::create_dir_all(stale.join("threads").join("general")).unwrap();
+    std::fs::create_dir_all(stale.join("roles")).unwrap();
+    let home = tmp("home-nongit");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    let o = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CONFER_HUB", &stale)
+        .env("CONFER_ROLE", "alpha")
+        .args(["append", "--type", "note", "--to", "beta", "--summary", "hi", "--text", "hi"])
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "append into a non-git hub must fail");
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("not a git repository"), "clear not-a-git-repo error: {e}");
+    let wrote = std::fs::read_dir(stale.join("threads").join("general")).unwrap().count();
+    assert_eq!(wrote, 0, "must NOT write a message file into a non-git hub (no partial send)");
+}
+
 /// M3 (grok 9Q530H): the auto-heal registry records session ids, so its file must be owner-only —
 /// not the observed `rw-rw----` that leaks session ids to other local users.
 #[test]
