@@ -702,6 +702,30 @@ fn poll_emits_full_summary_but_read_clips_for_humans() {
     );
 }
 
+/// Pipeline JHZMD1: when a signing key IS configured (messages must be signed for peers to verify),
+/// confer must never SILENTLY emit an UNSIGNED commit — e.g. the signing agent (1Password) is down,
+/// or the clone's `commit.gpgsign` drifted off. It fails closed: refuse + unwind, never send unsigned.
+#[cfg(unix)]
+#[test]
+fn refuses_to_send_an_unsigned_message_when_signing_is_expected() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let keydir = tmp("key-unsigned");
+    let key = keydir.join("alpha");
+    assert!(Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "alpha", "-q"])
+        .status().unwrap().success(), "ssh-keygen");
+    assert!(ok(&a.confer(&["join", "--role", "alpha", "--signing-key", key.to_str().unwrap()])), "join --signing-key");
+    // Simulate the signing agent being down / config drift: this clone now can't actually sign.
+    git(&a.dir, &["config", "--local", "commit.gpgsign", "false"]);
+    let count = || std::fs::read_dir(a.dir.join("threads").join("general")).map(|d| d.count()).unwrap_or(0);
+    let before = count();
+    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "t"]);
+    assert!(!ok(&o), "must refuse to send an unsigned message: {}", out(&o));
+    assert!(err(&o).contains("UNSIGNED"), "clear refusal about the unsigned message: {}", err(&o));
+    assert_eq!(before, count(), "the unsigned message must be unwound, not left committed");
+}
+
 #[cfg(unix)]
 #[test]
 fn signed_append_verifies_against_role_pubkey() {

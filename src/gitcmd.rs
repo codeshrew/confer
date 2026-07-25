@@ -406,6 +406,28 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
     }
     args.extend(["commit", "-q", "-m", msg]);
     check(root, &args)?;
+    // Integrity fail-closed (Pipeline JHZMD1): when a signing key is configured we MEAN to sign, but
+    // whether the commit is ACTUALLY signed depends on the clone's git config + the signing agent. An
+    // intermittent 1Password/gpg agent (or drifted `commit.gpgsign`/`gpg.format`) makes `git commit`
+    // land an UNSIGNED commit — which every peer then sees as Unverified — SILENTLY (confer succeeds
+    // quietly where plain git fails loudly). So verify the commit we just made carries a signature; if
+    // not, UNWIND it and fail loudly rather than emit an unverifiable message. Validate signability
+    // where #1 validates the hub — one field over.
+    if sign {
+        let signed = run_to(root, &["cat-file", "commit", "HEAD"], Duration::from_secs(5))
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.starts_with("gpgsig ")))
+            .unwrap_or(false);
+        if !signed {
+            // Undo the unsigned commit (it added exactly this message file) — no partial/unsigned state.
+            let _ = run_to(root, &["reset", "--hard", "HEAD~1"], Duration::from_secs(5));
+            return Err(anyhow!(
+                "refusing to emit an UNSIGNED message: a signing key is configured, so this message must \
+                 be signed for peers to verify it — but the commit came out unsigned. The signing agent \
+                 (e.g. 1Password) may be down, or this clone's commit.gpgsign/gpg.format drifted off. \
+                 Restore signing (`confer reconnect` re-asserts it) and retry — the message was NOT sent."
+            ));
+        }
+    }
     // From here the message is durably committed locally — a push failure only DEFERS it.
     match reconcile_push(root, fetched, Some(deadline)) {
         Ok(_) => Ok(Committed::Synced),
