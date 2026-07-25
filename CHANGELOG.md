@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.20
+
+*Signing robustness + hub-target validation + `confer sync`. Upgrade recommended for any fleet whose
+message signing could depend on an ambient agent.*
+
+- **Message signing is now self-contained (important).** `confer` signs each message commit with its
+  own key file + the real `ssh-keygen`, pinned via explicit `-c` (`gpg.format=ssh`, `user.signingkey`,
+  `gpg.ssh.program`, `commit.gpgsign=true`). It no longer inherits the clone's git config or an ambient
+  signing agent — so a global signer that can't hold confer's key (e.g. a 1Password `op-ssh-sign`), or a
+  drifted `commit.gpgsign`, can neither make a message land **unsigned** (which peers see as Unverified)
+  nor **block** posting. A role with no key still commits explicitly unsigned. Belt-and-braces: if a
+  message that should be signed somehow comes out unsigned, confer now **unwinds the commit and fails
+  loudly** rather than emit an unverifiable message silently.
+- **`confer sync`** — flush a locally-committed-but-unpushed message on demand (fetch → rebase → push).
+  A deferred send already self-heals on the next `poll`/`inbox`/`watch`; this is the explicit way to
+  clear it without touching git, and the deferred-send message now says so.
+- **Posting into a non-hub fails fast, with no partial write.** `$CONFER_HUB` is now validated the same
+  way the cwd is — a stale path (a clone whose `.git` is gone) fails on the first syscall instead of
+  after a message file was written and the commit failed, orphaning it. A hub with zero joined roles
+  leads the send warning with the wrong-hub signal.
+- **`append` / `watch-status` answer from the watch registry** when cwd/`$CONFER_HUB` can't resolve a
+  hub — naming your registered clones, so "where am I posting from" is answerable while misconfigured.
+- **`--from` now works on `inbox` and `show`** (alias of `--role`), matching `append`.
+
 ## 0.8.19
 
 *Stability + hardening batch — watch-lock races, arm/session ownership, presence leases, per-session
