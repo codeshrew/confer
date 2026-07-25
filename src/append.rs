@@ -947,12 +947,42 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     if !synced {
         // Non-zero exit so a hook/loop can distinguish committed-locally from
         // reached-the-hub (audit S2) — the id above still identifies the message.
+        // The commit is SAFE and append-only; it auto-flushes on the next confer command that syncs
+        // (poll/inbox/watch) or an explicit `confer sync`. Say so, so the caller doesn't reach for
+        // git by hand and inherit an ahead/behind merge to resolve themselves (Pipeline bug #5).
         return Err(anyhow!(
-            "message {} committed locally but not synced to the hub",
+            "message {} committed locally but not yet pushed to the hub (the hub was busy/offline). \
+             It's safe and will auto-sync on your next confer command, or run `confer sync` now — \
+             no git surgery needed.",
             short_id(&id)
         ));
     }
     Ok(())
+}
+
+/// `confer sync` — flush any locally-committed-but-unpushed messages to the hub (fetch → rebase →
+/// push, the same reconcile every read does), and pull peers' latest. The confer-native way to clear
+/// a "committed locally but not yet pushed" deferral WITHOUT touching git by hand (Pipeline bug #5).
+pub(crate) fn cmd_sync() -> Result<()> {
+    let root = config::repo_root().map_err(|e| match crate::autoheal::registered_hubs_hint(None) {
+        Some(h) => anyhow!("{e}\n{h}"),
+        None => e,
+    })?;
+    match gitcmd::integrate(&root) {
+        Ok(r) if r.pushed > 0 => {
+            eprintln!("confer sync: flushed {} local commit(s) to the hub.", r.pushed);
+            Ok(())
+        }
+        Ok(_) => {
+            eprintln!("confer sync: up to date — nothing to flush.");
+            Ok(())
+        }
+        // Still contended/offline — the commit stays safe locally and the next sync retries.
+        Err(e) => Err(anyhow!(
+            "confer sync: couldn't reach the hub ({e}). Your local commits are safe and will flush on \
+             the next successful sync — retry `confer sync` in a moment."
+        )),
+    }
 }
 
 #[cfg(test)]

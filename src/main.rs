@@ -819,6 +819,7 @@ fn run() -> Result<()> {
         Cmd::UninstallHook { project } => cmd_uninstall_hook(project),
         Cmd::SessionHeal => cmd_session_heal(),
         Cmd::SessionContext => cmd_session_context(),
+        Cmd::Sync => append::cmd_sync(),
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Hub { action, yes } => cmd_hub(action, yes),

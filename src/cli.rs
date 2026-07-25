@@ -576,6 +576,9 @@ pub(crate) enum Cmd {
     /// Print this session's confer context (safety kernel + fleet roster + any re-arm nudges) —
     /// the `/confer-watch` / `/confer-arm` skill runs this at session start. Harness-agnostic.
     SessionContext,
+    /// Flush locally-committed-but-unpushed messages to the hub (fetch → rebase → push) and pull
+    /// peers' latest — the confer-native way to clear a deferred send without touching git by hand.
+    Sync,
     /// Toggle/inspect auto-heal: `on` | `off` | `status` | `prune`.
     Autoheal {
         /// on | off | status | prune
