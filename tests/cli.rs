@@ -702,28 +702,34 @@ fn poll_emits_full_summary_but_read_clips_for_humans() {
     );
 }
 
-/// Pipeline JHZMD1: when a signing key IS configured (messages must be signed for peers to verify),
-/// confer must never SILENTLY emit an UNSIGNED commit — e.g. the signing agent (1Password) is down,
-/// or the clone's `commit.gpgsign` drifted off. It fails closed: refuse + unwind, never send unsigned.
+/// Pipeline JHZMD1: confer signs messages SELF-CONTAINED — its own key file + explicit ssh config —
+/// so a clone whose `commit.gpgsign` drifted off, or an ambient signing agent (1Password) that's
+/// down, can NEVER make a message land unsigned (which peers would see as Unverified) or block a
+/// post. Even with local `commit.gpgsign=false`, the message commit is signed and verifiable.
 #[cfg(unix)]
 #[test]
-fn refuses_to_send_an_unsigned_message_when_signing_is_expected() {
+fn signs_self_contained_even_when_local_gpgsign_is_off() {
     let hub = new_hub();
     let a = hub.clone("alpha");
-    let keydir = tmp("key-unsigned");
+    let keydir = tmp("key-selfcontained");
     let key = keydir.join("alpha");
     assert!(Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "alpha", "-q"])
         .status().unwrap().success(), "ssh-keygen");
     assert!(ok(&a.confer(&["join", "--role", "alpha", "--signing-key", key.to_str().unwrap()])), "join --signing-key");
-    // Simulate the signing agent being down / config drift: this clone now can't actually sign.
+    // Drift / agent-down proxy: turn the clone's default signing OFF. confer must still sign.
     git(&a.dir, &["config", "--local", "commit.gpgsign", "false"]);
-    let count = || std::fs::read_dir(a.dir.join("threads").join("general")).map(|d| d.count()).unwrap_or(0);
-    let before = count();
-    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "t"]);
-    assert!(!ok(&o), "must refuse to send an unsigned message: {}", out(&o));
-    assert!(err(&o).contains("UNSIGNED"), "clear refusal about the unsigned message: {}", err(&o));
-    assert_eq!(before, count(), "the unsigned message must be unwound, not left committed");
+    assert!(ok(&a.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "t"])),
+        "confer must self-sign + send despite local commit.gpgsign=false");
+    // The message commit carries a signature regardless of the clone's config.
+    let sha = String::from_utf8_lossy(
+        &Command::new("git").arg("-C").arg(&a.dir).args(["log", "-1", "--format=%H", "--", "threads/"]).output().unwrap().stdout
+    ).trim().to_string();
+    let obj = String::from_utf8_lossy(
+        &Command::new("git").arg("-C").arg(&a.dir).args(["cat-file", "commit", &sha]).output().unwrap().stdout
+    ).to_string();
+    assert!(obj.lines().any(|l| l.starts_with("gpgsig ")),
+        "the message commit must be signed despite local commit.gpgsign=false:\n{obj}");
 }
 
 #[cfg(unix)]

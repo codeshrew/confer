@@ -401,8 +401,22 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
     let name_cfg = format!("user.name={role}");
     let email_cfg = format!("user.email={role}@confer.local");
     let mut args: Vec<&str> = vec!["-c", name_cfg.as_str(), "-c", email_cfg.as_str()];
-    if !sign {
-        args.extend(["-c", "commit.gpgsign=false"]);
+    // Sign SELF-CONTAINED: pass confer's OWN key file + ssh format explicitly, never leaning on the
+    // clone's git config or an ambient signing agent (Pipeline JHZMD1). ssh-keygen reads the private
+    // key from the FILE, so an intermittent 1Password/gpg agent can neither make a message land
+    // unsigned nor block posting — the signature depends only on confer's key existing on disk. A
+    // role with no key file commits explicitly unsigned (keyless/legacy), never via an ambient config.
+    let key_path = if sign { crate::config::signing_key(root) } else { None };
+    let keygen = crate::ssh_keygen_path();
+    let (fmt_cfg, key_cfg, prog_cfg);
+    match &key_path {
+        Some(k) => {
+            fmt_cfg = "gpg.format=ssh".to_string();
+            key_cfg = format!("user.signingkey={}", k.display());
+            prog_cfg = format!("gpg.ssh.program={keygen}");
+            args.extend(["-c", &fmt_cfg, "-c", &key_cfg, "-c", &prog_cfg, "-c", "commit.gpgsign=true"]);
+        }
+        None => args.extend(["-c", "commit.gpgsign=false"]),
     }
     args.extend(["commit", "-q", "-m", msg]);
     check(root, &args)?;
