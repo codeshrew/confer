@@ -701,11 +701,36 @@ fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>)
             out.flush()?; // Monitor reads line-by-line over a pipe; flush each event
         }
     }
-    // Caught up: anchor the cursor at the last stable (pushed) ancestor of HEAD,
-    // not local HEAD — a rebased-away HEAD sha would later orphan the cursor and
-    // trigger a full re-emit (R3). We read up to HEAD above, so nothing is missed.
+    // Caught up: anchor the cursor at the last stable (pushed) ancestor of HEAD, not local HEAD — a
+    // rebased-away HEAD sha would later orphan the cursor and trigger a full re-emit (R3). We read up
+    // to HEAD above, so nothing is missed. BUT never advance PAST an in-history-but-unreadable message
+    // (M1): `safe_advance` holds the cursor at the last fully-delivered commit so a blobless/pruned/
+    // transient-FS message is retried, not silently skipped — with a loud, agent-visible held signal.
     if let Some(anchor) = gitcmd::cursor_anchor(root) {
-        *since = Some(anchor);
+        let (safe, undelivered) = store::safe_advance(root, since.as_deref(), &anchor);
+        if !undelivered.is_empty() {
+            let held = safe.as_deref().unwrap_or("(start)");
+            let short = &held[..held.len().min(10)];
+            if opts.json {
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({ "event": "delivery-held", "undelivered": undelivered.len(), "heldAt": short })
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "⚠ {} message(s) are in history but unreadable in the tree — delivery HELD at {short} so \
+                     they are NOT skipped (re-fetch, or `confer poll --advance --force` to move past).",
+                    undelivered.len()
+                )?;
+            }
+            out.flush()?;
+        }
+        // Advance only through the fully-delivered prefix; `None` holds at the current cursor.
+        if let Some(s) = safe {
+            *since = Some(s);
+        }
     }
     Ok(new.len())
 }

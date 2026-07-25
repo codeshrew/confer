@@ -16,6 +16,9 @@ pub(crate) struct PollArgs {
     pub(crate) role: Option<String>,
     pub(crate) all: bool,
     pub(crate) to_me: bool,
+    /// escape hatch (M1): advance the cursor PAST an in-history-but-unreadable message instead of
+    /// holding for it — accept losing that one message when it's permanently gone.
+    pub(crate) force: bool,
 }
 
 pub(crate) fn cmd_poll(p: PollArgs) -> Result<()> {
@@ -71,9 +74,23 @@ pub(crate) fn cmd_poll(p: PollArgs) -> Result<()> {
     // An unfiltered poll consumes the whole actionable stream, so it's caught up
     // to HEAD; non-actionable notes remain browsable via `read`/`--all` (B1).
     if p.advance {
-        // Anchor at the last stable pushed ancestor of HEAD, not local HEAD (R3).
+        // Anchor at the last stable pushed ancestor of HEAD, not local HEAD (R3) — but never advance
+        // PAST an in-history-but-unreadable message (M1 / grok PHEQ76): hold at the last fully-delivered
+        // commit so it's retried, not silently skipped. `--force` overrides the hold (accept losing that
+        // message and move on) — the operator escape hatch for a permanently-unreadable one.
         if let Some(anchor) = gitcmd::cursor_anchor(&root) {
-            cursor::save(&hub, &me, &anchor)?;
+            let (safe, undelivered) = store::safe_advance(&root, since.as_deref(), &anchor);
+            if !undelivered.is_empty() {
+                eprintln!(
+                    "confer: ⚠ {} message(s) in history but unreadable in the tree — cursor {} (re-fetch, or re-run with --force to move past). [M1]",
+                    undelivered.len(),
+                    if p.force { "advanced anyway (--force)" } else { "HELD, not advanced past them" }
+                );
+            }
+            let advance_to = if p.force { Some(anchor) } else { safe };
+            if let Some(s) = advance_to {
+                cursor::save(&hub, &me, &s)?;
+            }
         }
         // NOTE: poll advances the DELIVERY cursor only — it does NOT mark directly-addressed mail
         // read. Delivery ≠ read: a request stays in your inbox until you `show`/`ack` it, so a

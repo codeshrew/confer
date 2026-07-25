@@ -41,6 +41,36 @@ pub fn messages_since(root: &Path, since: Option<&str>) -> Result<Vec<Message>> 
     Ok(out)
 }
 
+/// The furthest commit the delivery cursor may SAFELY advance to, plus any undeliverable files that
+/// forced a hold (M1 / grok PHEQ76). Walks the added-message commits in `since..target`, advancing
+/// through each commit whose ENTIRE added-message set loads+parses, and STOPPING before the first
+/// commit that has an in-history-but-unreadable message — so that message is retried next cycle,
+/// never silently skipped past by the cursor. Returns the sha to advance to (`None` = HOLD at the
+/// current cursor, i.e. the very first new commit was holed) and the undeliverable files at the hold
+/// (empty = no hold, safe to advance fully to `target`).
+pub fn safe_advance(root: &Path, since: Option<&str>, target: &str) -> (Option<String>, Vec<PathBuf>) {
+    let groups = match crate::gitcmd::added_message_files_by_commit(root, since, target) {
+        Ok(g) => g,
+        Err(_) => return (Some(target.to_string()), Vec::new()), // can't analyze → advance as before
+    };
+    let mut last_good: Option<String> = None;
+    for (sha, files) in groups {
+        let bad: Vec<PathBuf> = files.into_iter().filter(|f| !deliverable(f)).collect();
+        if bad.is_empty() {
+            last_good = Some(sha);
+        } else {
+            return (last_good, bad); // HOLD before this commit
+        }
+    }
+    (Some(target.to_string()), Vec::new()) // no hole across the range → full advance
+}
+
+/// A message file is deliverable iff it both reads AND parses — the exact bar `messages_since` uses
+/// to EMIT it, so the cursor never advances past something delivery would have dropped.
+fn deliverable(f: &Path) -> bool {
+    std::fs::read_to_string(f).ok().and_then(|t| schema::parse_message(&t).ok()).is_some()
+}
+
 /// All messages across all threads, in **id order** (the message id is a ULID whose leading
 /// chars are a millisecond timestamp, so this is true time order — and correct for a last-wins
 /// fold, unlike the second-precision filename). Unparseable files are logged and skipped.

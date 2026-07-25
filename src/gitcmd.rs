@@ -351,6 +351,49 @@ pub fn added_message_files(root: &Path, since: Option<&str>) -> Result<Vec<PathB
     Ok(collect("HEAD").unwrap_or_default())
 }
 
+/// Message files added since `since` (exclusive) up to `until`, GROUPED by the commit that added
+/// them, in commit order. Powers the delivery-cursor HOLD (M1 / grok PHEQ76): the reactive loop can
+/// advance only through commits whose ENTIRE added-message set loaded, never skipping an
+/// in-history-but-unreadable message. `since` None → from the start. Best-effort: an unresolvable
+/// range yields an empty vec (the caller then advances normally, as before).
+pub fn added_message_files_by_commit(
+    root: &Path,
+    since: Option<&str>,
+    until: &str,
+) -> Result<Vec<(String, Vec<PathBuf>)>> {
+    let range = match since {
+        Some(c) if is_ancestor(root, c, until) => format!("{c}..{until}"),
+        Some(c) => match merge_base(root, c, until) {
+            Some(base) => format!("{base}..{until}"),
+            None => until.to_string(), // cursor unknown → whole history up to `until`
+        },
+        None => until.to_string(),
+    };
+    let o = output(
+        root,
+        &["log", "--reverse", "--diff-filter=A", "--name-only", "--format=%H", &range, "--", "threads"],
+    )?;
+    if !o.status.success() {
+        return Ok(Vec::new());
+    }
+    let mut groups: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    for line in String::from_utf8_lossy(&o.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("threads/") && line.ends_with(".md") {
+            if let Some(last) = groups.last_mut() {
+                last.1.push(root.join(line));
+            }
+        } else if line.len() >= 7 && line.chars().all(|c| c.is_ascii_hexdigit()) {
+            groups.push((line.to_string(), Vec::new())); // a `%H` commit line → new group
+        }
+    }
+    groups.retain(|(_, files)| !files.is_empty()); // a commit that added no message file can't hold
+    Ok(groups)
+}
+
 /// Is `a` an ancestor of `b`? (false if `a` is unknown / unrelated.) The reachability primitive the
 /// known_hubs pin verify reuses (design/35): a rewritten-history fork won't contain our pinned tip.
 pub(crate) fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {

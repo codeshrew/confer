@@ -326,6 +326,10 @@ pub(crate) enum Cmd {
         /// only messages where I am the addressee (to/cc)
         #[arg(long = "to-me")]
         to_me: bool,
+        /// with --advance: move the cursor PAST an in-history-but-unreadable message instead of
+        /// holding for it — the escape hatch for a permanently-unreadable one (accepts losing it).
+        #[arg(long)]
+        force: bool,
     },
     /// Print one full message (by id or id-prefix) — triage a summary, then open it.
     /// A REPORT: exits 0 once the message is printed.

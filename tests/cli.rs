@@ -4610,6 +4610,38 @@ fn append_into_a_non_git_hub_fails_early_without_writing() {
     assert_eq!(wrote, 0, "must NOT write a message file into a non-git hub (no partial send)");
 }
 
+/// M1 (grok PHEQ76): the delivery cursor must HOLD at an in-history-but-unreadable message, not skip
+/// past it (silent mail loss). A blobless/pruned/transient-FS message is retried until readable — with
+/// a loud held signal — and never silently lost.
+#[test]
+fn delivery_cursor_holds_at_an_unreadable_message() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.append(&["--type", "request", "--to", "beta", "--summary", "ALPHAONE", "--text", "1"])));
+    assert!(ok(&a.append(&["--type", "request", "--to", "beta", "--summary", "ALPHATWO", "--text", "2"])));
+    // Fetch both into beta's working tree WITHOUT advancing the cursor.
+    let _ = b.confer(&["poll", "--role", "beta"]);
+    // Make the second message (ALPHATWO) in-history-but-unreadable: delete it from the tree (still in
+    // git history). Select by CONTENT — same-second filenames tiebreak on the random ULID tail.
+    let dir = b.dir.join("threads").join("general");
+    let msg2 = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).map(|s| s.contains("ALPHATWO")).unwrap_or(false))
+        .expect("msg2 file present in beta's tree");
+    let saved = std::fs::read(&msg2).unwrap();
+    std::fs::remove_file(&msg2).unwrap();
+    // poll --advance: msg1 delivered, msg2 HELD (not skipped), loud held signal.
+    let o1 = b.confer(&["poll", "--role", "beta", "--advance"]);
+    assert!(out(&o1).contains("ALPHAONE"), "msg1 delivered: {}", out(&o1));
+    assert!(!out(&o1).contains("ALPHATWO"), "unreadable msg2 must NOT be delivered: {}", out(&o1));
+    assert!(err(&o1).contains("unreadable") || err(&o1).contains("HELD"), "loud held signal on stderr: {}", err(&o1));
+    // Proof it was HELD, not lost: restore the file, poll again → msg2 is delivered (never skipped).
+    std::fs::write(&msg2, &saved).unwrap();
+    let o2 = b.confer(&["poll", "--role", "beta", "--advance"]);
+    assert!(out(&o2).contains("ALPHATWO"), "msg2 delivered once readable — held, never lost: {}", out(&o2));
+}
+
 /// M3 (grok 9Q530H): the auto-heal registry records session ids, so its file must be owner-only —
 /// not the observed `rw-rw----` that leaks session ids to other local users.
 #[test]

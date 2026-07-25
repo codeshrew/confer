@@ -601,6 +601,7 @@ fn run() -> Result<()> {
             role,
             all,
             to_me,
+            force,
             ..
         } => {
             let r = pollcmd::cmd_poll(pollcmd::PollArgs {
@@ -611,6 +612,7 @@ fn run() -> Result<()> {
                 role,
                 all,
                 to_me,
+                force,
             });
             // Hook adapters are FAIL-OPEN: `poll --hook`'s own malfunction must NEVER block the agent's
             // Stop (a transient git/IO error would otherwise wedge the session). Swallow non-signal errors
