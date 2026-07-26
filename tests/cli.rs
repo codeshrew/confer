@@ -736,6 +736,33 @@ fn signs_self_contained_even_when_local_gpgsign_is_off() {
         "the message commit must be signed despite local commit.gpgsign=false:\n{obj}");
 }
 
+/// The Pipeline signing saga's product fix: a role that PUBLISHED a signing key but whose clone is
+/// KEYLESS (a plain re-clone / missing identity.json signing_key) commits UNSIGNED silently — peers
+/// see it Unverified. `append` must WARN loudly at send time so it's caught, not audited hours later.
+#[cfg(unix)]
+#[test]
+fn warns_when_a_keyed_role_sends_from_a_keyless_clone() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let keydir = tmp("key-keyless");
+    let key = keydir.join("alpha");
+    assert!(Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "alpha", "-q"])
+        .status().unwrap().success(), "ssh-keygen");
+    assert!(ok(&a.confer(&["join", "--role", "alpha", "--signing-key", key.to_str().unwrap()])), "keyed join");
+    // roles/alpha.md now publishes the pubkey. Simulate a keyless re-clone: drop signing_key from
+    // identity.json (the published card key stays), so this clone can no longer sign.
+    let idp = a.dir.join(".confer").join("identity.json");
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&idp).unwrap()).unwrap();
+    v.as_object_mut().unwrap().remove("signing_key");
+    std::fs::write(&idp, v.to_string()).unwrap();
+    // A send still succeeds but warns loudly that messages are going out unsigned/Unverified.
+    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "s", "--text", "t"]);
+    assert!(ok(&o), "send still succeeds (the warn is non-fatal): {}", err(&o));
+    assert!(err(&o).contains("UNSIGNED") || err(&o).contains("Unverified"),
+        "a keyed role sending from a keyless clone must warn: {}", err(&o));
+}
+
 #[cfg(unix)]
 #[test]
 fn signed_append_verifies_against_role_pubkey() {

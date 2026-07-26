@@ -447,6 +447,17 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Surface a silently-dead watch on the next active command: if you armed a watch but it isn't
     // running (backgrounded/reaped), you're not being woken — say so now rather than let you go dark.
     warn_if_watch_should_be_live(&root, &role);
+    // Integrity (the Pipeline signing saga): a role that PUBLISHED a signing key but whose clone has
+    // NO key registered — a plain re-clone, or a missing/empty `.confer/identity.json` signing_key —
+    // commits UNSIGNED, and peers then see EVERY message as Unverified, silently. Warn loudly at SEND
+    // so it's caught here, not discovered in an audit hours later.
+    if config::signing_key(&root).is_none() && roster::pubkey(&roster::load(&root), &role).is_some() {
+        crate::warn_safety(format!(
+            "role '{role}' published a signing key, but THIS clone has no key registered (its \
+             .confer/identity.json has no signing_key) — your messages are going out UNSIGNED and peers \
+             will see them as Unverified. Re-link your key: `confer reconnect --hub <this-hub>`."
+        ));
+    }
 
     if !TYPES.contains(&a.msg_type.as_str()) {
         return Err(anyhow!(
