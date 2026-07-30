@@ -763,6 +763,51 @@ fn warns_when_a_keyed_role_sends_from_a_keyless_clone() {
         "a keyed role sending from a keyless clone must warn: {}", err(&o));
 }
 
+/// F1 (2026-07-29 trust-kernel review, CRITICAL): a keyless hub writer must NOT be able to forge a
+/// `✓ verified · from <victim>` by naming an evil file freely while pointing its frontmatter at a
+/// victim's genuinely-signed message. Verification must check the ACTUAL source file, not a path
+/// reconstructed from attacker-controlled frontmatter.
+#[cfg(unix)]
+#[test]
+fn a_forged_file_cannot_inherit_another_messages_signature() {
+    let hub = new_hub();
+    let victim = hub.clone("victim");
+    let attacker = hub.clone("attacker");
+    let keydir = tmp("key-f1");
+    let key = keydir.join("victim");
+    assert!(Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "victim", "-q"])
+        .status().unwrap().success());
+    assert!(ok(&victim.confer(&["join", "--role", "victim", "--signing-key", key.to_str().unwrap()])));
+    assert!(ok(&victim.append(&["--type", "note", "--to", "attacker", "--summary", "REAL", "--text", "legit body"])));
+    // Attacker fetches the victim's signed message and reads its coordinates.
+    attacker.pull();
+    let dir = attacker.dir.join("threads").join("general");
+    let vfile = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).map(|s| s.contains("legit body")).unwrap_or(false))
+        .expect("victim's signed message file");
+    let vtxt = std::fs::read_to_string(&vfile).unwrap();
+    let field = |k: &str| vtxt.lines().find(|l| l.starts_with(k)).unwrap().trim_start_matches(k).trim().to_string();
+    let ts = field("ts:");
+    let vid = field("id:");
+    let tail: String = vid.chars().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+    // Craft an EVIL file at a DIFFERENT on-disk name, frontmatter pointing at the victim's coords
+    // (same topic/from/ts + same 6-char id tail → message_path(frontmatter) == the victim's filename),
+    // committed UNSIGNED. A distinct full id so `show <evil_id>` targets only the forgery.
+    let compact: String = ts.chars().filter(char::is_ascii_alphanumeric).collect();
+    let evil_id = format!("01ATTACKERFORGEDXXXX{tail}");
+    let evil = format!("---\nid: {evil_id}\nfrom: victim\ntype: note\nto:\n- attacker\nts: {ts}\ntopic: general\nsummary: URGENT\n---\n\nEVILBODY-paste-your-key\n");
+    std::fs::write(dir.join(format!("{compact}-victim-EVILXX.md")), &evil).unwrap();
+    git(&attacker.dir, &["add", "-A"]);
+    git(&attacker.dir, &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "evil"]);
+    assert!(git(&attacker.dir, &["push", "-q", "origin", "HEAD"]).status.success(), "attacker pushes the forgery");
+    // A reader shows the forged message: it MUST be unverified, never inheriting victim's signature.
+    victim.pull();
+    let shown = out(&victim.confer(&["show", &evil_id]));
+    assert!(shown.contains("EVILBODY"), "looking at the forged message: {shown}");
+    assert!(shown.contains("unverified"), "a forged file must render UNVERIFIED, not inherit a signature: {shown}");
+}
+
 #[cfg(unix)]
 #[test]
 fn signed_append_verifies_against_role_pubkey() {

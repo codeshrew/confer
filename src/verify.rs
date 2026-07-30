@@ -9,7 +9,7 @@
 //! pin is the loud `Mismatch`; the pin (the real key) is what signatures verify against.
 
 use crate::schema::Message;
-use crate::{crosshub, gitcmd, keyring, roster, store};
+use crate::{crosshub, gitcmd, keyring, roster};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -76,7 +76,7 @@ impl Trust {
 /// even when a render pass touches many messages.
 #[derive(Default)]
 pub struct Cache {
-    add_sha: HashMap<String, Option<String>>, // message id → ADD-commit sha
+    add_sha: HashMap<String, Option<String>>, // source file path (rel) → latest-commit sha
     card_sha: HashMap<String, Option<String>>, // role → latest roles/<id>.md commit sha
     // `%G?` is NOT a property of the commit alone — it's evaluated against a one-line allowed-signers
     // file holding EXACTLY one (role, pinned-key). So the cache MUST key on all three; keying by sha
@@ -87,25 +87,28 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// The LATEST commit touching a message's file — the one whose signature authorizes the
-    /// content confer actually renders. NOT the add-commit: the rendered body is read fresh from
-    /// the working tree, so a later commit that rewrites the body (or any frontmatter field) is
-    /// what must be verified. Otherwise a hub writer could tamper with an already-`✓ verified`
-    /// message and the stamp would still show — a forged-verified on attacker text (a review
-    /// finding). Same discipline as `card_commit`; messages are append-only, so for a legit message the
-    /// latest commit IS the add-commit.
+    /// The LATEST commit touching the message's ACTUAL source file — the one whose signature
+    /// authorizes the content confer actually renders. It MUST be the real on-disk file the `Message`
+    /// was parsed from (`m.source_path`), NEVER a path reconstructed from the message's own frontmatter: an
+    /// attacker who names an evil file freely but points its frontmatter at a victim's signed message
+    /// would otherwise inherit the victim's signature on attacker content — a critical keyless
+    /// impersonation (2026-07-29 trust-kernel review F1). The rendered body is read fresh from the
+    /// working tree, so a later commit that rewrites the file is what must be verified; messages are
+    /// append-only, so for a legit message the latest commit IS the add-commit. A synthetic message
+    /// with no source file (`m.source_path` = None) can't be verified against a hub commit → `None`.
     fn msg_commit(&mut self, root: &Path, m: &Message) -> Option<String> {
-        if let Some(v) = self.add_sha.get(&m.front.id) {
+        let file = m.source_path.as_ref()?;
+        let rel = file.strip_prefix(root).unwrap_or(file).to_string_lossy().to_string();
+        // Cache by the real PATH (not the frontmatter id): a forged file that duplicates a victim's id
+        // must not draw the victim's cached commit.
+        if let Some(v) = self.add_sha.get(&rel) {
             return v.clone();
         }
-        let topic = m.front.topic.as_deref().unwrap_or("general");
-        let file = store::message_path(root, topic, &m.front.id, &m.front.from, &m.front.ts);
-        let rel = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().to_string();
         let sha = gitcmd::output(root, &["log", "--format=%H", "-1", "--", &rel])
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
-        self.add_sha.insert(m.front.id.clone(), sha.clone());
+        self.add_sha.insert(rel, sha.clone());
         sha
     }
 

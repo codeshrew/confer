@@ -24,7 +24,12 @@ pub fn messages_since(root: &Path, since: Option<&str>) -> Result<Vec<Message>> 
     for f in crate::gitcmd::added_message_files(root, since)? {
         match std::fs::read_to_string(&f) {
             Ok(txt) => match schema::parse_message(&txt) {
-                Ok(m) => out.push(m),
+                // Stamp the REAL source file so verification checks THIS file's signature, never a
+                // frontmatter-reconstructed path (impersonation guard — 2026-07-29 review F1).
+                Ok(mut m) => {
+                    m.source_path = Some(f.clone());
+                    out.push(m);
+                }
                 Err(e) => eprintln!("confer: skipping {}: {e}", f.display()),
             },
             // Recorded in history but absent in the tree (sparse checkout, a concurrent GC, a partial
@@ -109,7 +114,12 @@ pub fn all_messages(root: &Path) -> Result<Vec<Message>> {
                 }
             };
             match schema::parse_message(&txt) {
-                Ok(m) => out.push(m),
+                // Stamp the REAL source file (see messages_since) so verification never trusts a
+                // frontmatter-reconstructed path (impersonation guard — 2026-07-29 review F1).
+                Ok(mut m) => {
+                    m.source_path = Some(f.clone());
+                    out.push(m);
+                }
                 Err(e) => eprintln!("confer: skipping {}: {e}", f.display()),
             }
         }

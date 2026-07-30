@@ -162,6 +162,13 @@ pub struct Frontmatter {
 pub struct Message {
     pub front: Frontmatter,
     pub body: String,
+    /// The ACTUAL on-disk file this message was parsed from, when it came from one (set by the store
+    /// ingest paths). Verification MUST use this — never a path reconstructed from the (attacker-
+    /// controlled) frontmatter — or a forged file can inherit a different file's signature (a critical
+    /// impersonation bug found in the 2026-07-29 trust-kernel review). `None` for synthetic messages
+    /// (projections, tests) that are never signature-verified against a hub commit. (Distinct from
+    /// `Frontmatter::src`, which is a message-authored ref field.)
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 impl Message {
@@ -236,6 +243,9 @@ pub fn parse_message(text: &str) -> Result<Message> {
     Ok(Message {
         front,
         body: body.trim().to_string(),
+        // The store ingest paths stamp the real source file after parsing; a bare parse (tests, a
+        // card body) has no verifiable source and stays `None` → Unverified against a hub commit.
+        source_path: None,
     })
 }
 
@@ -291,6 +301,7 @@ mod tests {
                 refs: vec![],
             },
             body: body.into(),
+            source_path: None,
         }
     }
 

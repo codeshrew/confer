@@ -869,6 +869,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             refs,
         },
         body,
+        source_path: None, // send path: composed for writing, never signature-verified here
     };
 
     let path = store::message_path(&root, &topic, &id, &role, &ts);

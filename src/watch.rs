@@ -763,6 +763,7 @@ mod tests {
                 refs: vec![],
             },
             body: String::new(),
+            source_path: None,
         }
     }
 
