@@ -1053,7 +1053,14 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         }
     };
 
-    let delivery = info.as_ref().and_then(|i| i.delivery.clone());
+    // The stamped delivery is `monitor` even on Codex (arm hardcodes it), but Codex has no idle wake
+    // (design/54) — so report it honestly as `poll` there, for machine readers too (codex field report).
+    let is_codex = crate::skills::detect_harness() == "codex";
+    let delivery = if is_codex {
+        Some("poll".to_string())
+    } else {
+        info.as_ref().and_then(|i| i.delivery.clone())
+    };
     if json {
         let obj = serde_json::json!({
             "role": me, "host": this_host, "state": state, "healthy": healthy,
@@ -1074,12 +1081,21 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         // streams to a place nobody reads. We can only affirm this from the self-declared stamp
         // (design/36); absent it, flag the ambiguity rather than imply healthy-means-delivering.
         if healthy {
-            match &delivery {
-                Some(m) => println!("  delivery: {m} — armed to deliver wakes."),
-                None => hint(
-                    "delivery method not recorded — if you didn't arm via /confer-watch (or another \
-                     event-delivering wrapper), this watcher may be RUNNING but not waking you. Re-arm via /confer-watch.",
-                ),
+            // Codex has NO idle-wake transport (design/54): a running watch keeps presence + streams,
+            // but never starts a new Codex turn when a peer posts — so the `monitor` stamp is a false
+            // positive here (codex field report 2026-08-03). Tell the truth regardless of the stamp.
+            if is_codex {
+                println!(
+                    "  delivery: heartbeat/streaming only — Codex has NO idle wake, so this does NOT wake you between turns. Poll each turn: /confer-poll (confer poll --advance)."
+                );
+            } else {
+                match &delivery {
+                    Some(m) => println!("  delivery: {m} — armed to deliver wakes."),
+                    None => hint(
+                        "delivery method not recorded — if you didn't arm via /confer-watch (or another \
+                         event-delivering wrapper), this watcher may be RUNNING but not waking you. Re-arm via /confer-watch.",
+                    ),
+                }
             }
         }
         if !rec.is_empty() {

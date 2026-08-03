@@ -387,10 +387,10 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
     }
     if skills_resynced.is_some() {
         sections.push(
-            "confer auto-refreshed your /confer-watch and /confer-poll skills to match a newly-updated \
-             binary (they're baked from it and had gone stale). No action needed — but if you'd re-armed \
-             your watch before this, the skill text you'll see now is the current one. Run `confer changelog` \
-             if you want to know what changed in this build."
+            "confer auto-refreshed your confer coordination skills to match a newly-updated binary \
+             (they're baked from it and had gone stale). No action needed — but if you'd re-armed your \
+             watch (or, on Codex, re-run /confer-poll) before this, the skill text you'll see now is the \
+             current one. Run `confer changelog` if you want to know what changed in this build."
                 .to_string(),
         );
     }

@@ -53,15 +53,17 @@ fn harness_skill_dir(home: &Path, harness: &str) -> Option<PathBuf> {
         .map(|(_, sub)| home.join(sub).join("skills"))
 }
 
-/// The harness running THIS process (design/52): Grok Build sets `GROK_AGENT`; Codex sets `CODEX_HOME`
-/// (best-effort — it's often UNSET in a live Codex turn, so explicit `--harness codex` is the reliable
-/// path; design/54 §5 open Q); default Claude Code. Auto-resync doesn't depend on this (it rewrites
-/// each installed harness dir by its own name), so a missed Codex auto-detect only affects `--harness
-/// auto`, never a codex dir that's already installed.
+/// The harness running THIS process (design/52): Grok Build sets `GROK_AGENT`; a live Codex turn sets
+/// `CODEX_THREAD_ID` (codex field-confirmed 2026-08-03 as the reliable marker — `CODEX_HOME` is often
+/// UNSET), with `CODEX_HOME` as a secondary signal; default Claude Code. Best-effort — explicit
+/// `--harness codex` always wins, and `CODEX_THREAD_ID` is undocumented so it's a heuristic, not an
+/// API. Auto-resync doesn't depend on this (it rewrites each installed harness dir by its own name),
+/// so a missed Codex auto-detect only affects `--harness auto`, never a codex dir that's installed.
 pub(crate) fn detect_harness() -> &'static str {
-    if std::env::var("GROK_AGENT").ok().filter(|s| !s.is_empty()).is_some() {
+    let set = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty()).is_some();
+    if set("GROK_AGENT") {
         "grok"
-    } else if std::env::var("CODEX_HOME").ok().filter(|s| !s.is_empty()).is_some() {
+    } else if set("CODEX_THREAD_ID") || set("CODEX_HOME") {
         "codex"
     } else {
         "claude"
