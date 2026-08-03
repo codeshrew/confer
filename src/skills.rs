@@ -6,18 +6,44 @@
 //! is the SessionStart-time counterpart: if skills already exist but were baked from a different build,
 //! silently re-derive them — never creating skills where none exist.
 
-use crate::templates::CONFER_SKILLS;
+use crate::templates::{CODEX_POLL_SKILL, CONFER_SKILLS};
 use crate::{
     autoheal, config,
-    hooks::{write_grok_hook, write_session_hook},
+    hooks::{write_codex_hook, write_grok_hook, write_session_hook},
     BUILD_SHA,
 };
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
-/// Agent harnesses confer installs skills for, and their global skills dir under $HOME (design/52
-/// axis 3). Extend this to add a harness — both install and resync read it.
-pub(crate) const HARNESS_SKILL_HOMES: &[(&str, &str)] = &[("claude", ".claude"), ("grok", ".grok")];
+/// Agent harnesses confer installs skills for, and their global SKILLS dir under $HOME (design/52
+/// axis 3). Extend this to add a harness — both install and resync read it. NOTE: Codex's skills live
+/// under `~/.agents/skills` (its 0.146 discovery table), a DIFFERENT root than its hooks
+/// (`~/.codex/hooks.json` — see `hooks::write_codex_hook`); design/54 axis 3b decouples the two.
+pub(crate) const HARNESS_SKILL_HOMES: &[(&str, &str)] =
+    &[("claude", ".claude"), ("grok", ".grok"), ("codex", ".agents")];
+
+/// The skill that every harness installs — used as the resync sentinel + build-marker holder. Codex
+/// omits the Monitor-based `confer-arm`/`confer-watch` (design/54), so `confer-watch` can't be the
+/// sentinel; `confer-poll` is present in every harness's set.
+fn sentinel_skill(harness: &str) -> &'static str {
+    if harness == "codex" { "confer-poll" } else { "confer-watch" }
+}
+
+/// The skills to install for `harness`, as (name, template). Delivery is a harness CAPABILITY
+/// (design/54 axis 10): Claude/Grok get the Monitor-reactive set; Codex has no idle wake, so it OMITS
+/// the Monitor-only `confer-arm` and the reactive `confer-watch`, and swaps in a poll-first
+/// `confer-poll`. All other skills are shared (rewritten per harness by `harness_rewrite`).
+fn skills_for(harness: &str) -> Vec<(&'static str, &'static str)> {
+    if harness == "codex" {
+        CONFER_SKILLS
+            .iter()
+            .filter(|(n, _)| *n != "confer-arm" && *n != "confer-watch")
+            .map(|(n, t)| if *n == "confer-poll" { (*n, CODEX_POLL_SKILL) } else { (*n, *t) })
+            .collect()
+    } else {
+        CONFER_SKILLS.to_vec()
+    }
+}
 
 /// The skills dir for `harness` under `home`, if it's a known harness.
 fn harness_skill_dir(home: &Path, harness: &str) -> Option<PathBuf> {
@@ -27,13 +53,36 @@ fn harness_skill_dir(home: &Path, harness: &str) -> Option<PathBuf> {
         .map(|(_, sub)| home.join(sub).join("skills"))
 }
 
-/// The harness running THIS process (design/52): Grok Build sets `GROK_AGENT`; default Claude Code.
+/// The harness running THIS process (design/52): Grok Build sets `GROK_AGENT`; Codex sets `CODEX_HOME`
+/// (best-effort — it's often UNSET in a live Codex turn, so explicit `--harness codex` is the reliable
+/// path; design/54 §5 open Q); default Claude Code. Auto-resync doesn't depend on this (it rewrites
+/// each installed harness dir by its own name), so a missed Codex auto-detect only affects `--harness
+/// auto`, never a codex dir that's already installed.
 pub(crate) fn detect_harness() -> &'static str {
     if std::env::var("GROK_AGENT").ok().filter(|s| !s.is_empty()).is_some() {
         "grok"
+    } else if std::env::var("CODEX_HOME").ok().filter(|s| !s.is_empty()).is_some() {
+        "codex"
     } else {
         "claude"
     }
+}
+
+/// Drop the `allowed-tools:` / `disallowed-tools:` frontmatter lines — Codex skill frontmatter takes
+/// only `name` + `description` (design/54 axis 4); the tool vocabulary lives in the body.
+fn strip_tool_frontmatter(text: &str) -> String {
+    let mut out = text
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with("allowed-tools:") && !t.starts_with("disallowed-tools:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Rewrite a (Claude-authored) skill for another harness's tool vocabulary + loop floor (design/52
@@ -54,6 +103,11 @@ fn harness_rewrite(text: &str, harness: &str) -> String {
             // Claude's `!`cmd`` auto-exec syntax is inert on Grok (field-confirmed) — neutralize it to
             // plain `cmd` inline code the agent runs itself.
             .replace("!`", "`"),
+        // Codex (design/54): frontmatter is name+description only (drop tool decls), and the Claude
+        // `!`cmd`` auto-exec is inert → plain inline code the agent runs via `exec_command`. Delivery
+        // skills are handled by `skills_for` (poll-first `confer-poll`; no Monitor `confer-arm`/watch),
+        // so no Monitor/`/loop` token-mangling is needed here.
+        "codex" => strip_tool_frontmatter(&text.replace("!`", "`")),
         _ => text.to_string(), // claude = the templates as authored (the identity)
     }
 }
@@ -62,14 +116,15 @@ fn harness_rewrite(text: &str, harness: &str) -> String {
 /// build. Returns whether it acted. Never creates skills where none exist; bails (role-blind safety)
 /// if a template unexpectedly bakes {ROLE}/{HUB}.
 fn resync_dir(dir: &Path, bin: &str, harness: &str) -> bool {
-    if !dir.join("confer-watch").join("SKILL.md").is_file() {
+    let sentinel = sentinel_skill(harness);
+    if !dir.join(sentinel).join("SKILL.md").is_file() {
         return false; // not installed here → not ours to create
     }
-    let marker = dir.join("confer-watch").join(".confer-build");
+    let marker = dir.join(sentinel).join(".confer-build");
     if std::fs::read_to_string(&marker).unwrap_or_default().trim() == BUILD_SHA {
         return false; // already current — cheap stat+read
     }
-    for (name, tmpl) in CONFER_SKILLS {
+    for (name, tmpl) in skills_for(harness) {
         let filled = harness_rewrite(&tmpl.replace("{CONFER}", bin), harness);
         if filled.contains("{ROLE}") || filled.contains("{HUB}") {
             return false; // role-blind resync must not write a role/hub-baked skill (design/32)
@@ -135,7 +190,7 @@ pub(crate) fn cmd_install_skill(
             want => match HARNESS_SKILL_HOMES.iter().find(|(h, _)| *h == want) {
                 Some((h, s)) => vec![(*h, home.join(s).join("skills"))],
                 None => {
-                    return Err(anyhow!("unknown --harness '{want}' — expected auto | claude | grok | all"))
+                    return Err(anyhow!("unknown --harness '{want}' — expected auto | claude | grok | codex | all"))
                 }
             },
         }
@@ -150,15 +205,16 @@ pub(crate) fn cmd_install_skill(
     // they run in), so co-resident agents don't clobber each other (design/32) — only {CONFER} (the
     // shared binary path) is baked. Written to each selected harness dir.
     for (harness, dir) in &targets {
-        for (name, tmpl) in CONFER_SKILLS {
+        let skills = skills_for(harness);
+        for (name, tmpl) in &skills {
             let d = dir.join(name);
             std::fs::create_dir_all(&d)?;
             std::fs::write(d.join("SKILL.md"), harness_rewrite(&base_fill(tmpl), harness))?;
         }
         // Stamp the build so the SessionStart tier-1 auto-heal can tell, cheaply, when a later binary
         // update left these stale and silently re-derive them.
-        let _ = std::fs::write(dir.join("confer-watch").join(".confer-build"), BUILD_SHA);
-        let names = CONFER_SKILLS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(",");
+        let _ = std::fs::write(dir.join(sentinel_skill(harness)).join(".confer-build"), BUILD_SHA);
+        let names = skills.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(",");
         println!("wrote {}/{{{names}}}/SKILL.md", dir.display());
         // Migrate OUR superseded skill dirs (pre-namespacing watch/check-blackboard + retired
         // fleet-ops/fleetop→/confer-fleet, norms→the safety-kernel hook) IN THIS dir. Only ones that
@@ -188,6 +244,9 @@ pub(crate) fn cmd_install_skill(
             let done = match h {
                 "grok" => write_grok_hook(&home, &cmd)
                     .map(|_| home.join(".grok").join("hooks").join("confer.json")),
+                // Codex merges into ~/.codex/hooks.json (a DIFFERENT root than its ~/.agents skills),
+                // and won't RUN the new hook until the human reviews + trusts it via `/hooks` (design/54).
+                "codex" => write_codex_hook(&home, &cmd),
                 _ => {
                     let s = home.join(".claude").join("settings.json");
                     write_session_hook(&s, &cmd).map(|_| s)
@@ -196,7 +255,11 @@ pub(crate) fn cmd_install_skill(
             match done {
                 Ok(p) => {
                     installed = true;
-                    println!("  auto-heal: installed {h} hook → {}", p.display());
+                    if h == "codex" {
+                        println!("  auto-heal: merged codex hook → {} — REVIEW + TRUST via /hooks in Codex, or it won't run", p.display());
+                    } else {
+                        println!("  auto-heal: installed {h} hook → {}", p.display());
+                    }
                 }
                 Err(e) => eprintln!("  auto-heal: {h} hook skipped ({e})"),
             }
@@ -206,11 +269,20 @@ pub(crate) fn cmd_install_skill(
             println!("  (confer autoheal off to disable)");
         }
     }
-    // Harness-aware final banner: Grok's /loop floor is 60s (Claude 45s), and every runtime picks up
-    // the session context from the file (design/52 #4/#6, grok banner-polish request).
-    let loop_secs = if targets.iter().any(|(h, _)| *h == "grok") { 60 } else { 45 };
-    println!(
-        "use: /confer-watch (reactive, hosted by your monitor tool) or /loop {loop_secs}s /confer-poll (poll fallback). Skills run `confer session-context` at session start."
-    );
+    // Harness-aware final banner. Codex has no idle-wake transport (design/54): poll-first, no
+    // Monitor/`/loop`. Claude/Grok get the reactive line (Grok's /loop floor is 60s, Claude 45s).
+    let has_reactive = targets.iter().any(|(h, _)| *h == "claude" || *h == "grok");
+    let has_codex = targets.iter().any(|(h, _)| *h == "codex");
+    if has_reactive {
+        let loop_secs = if targets.iter().any(|(h, _)| *h == "grok") { 60 } else { 45 };
+        println!(
+            "use: /confer-watch (reactive, hosted by your monitor tool) or /loop {loop_secs}s /confer-poll (poll fallback). Skills run `confer session-context` at session start."
+        );
+    }
+    if has_codex {
+        println!(
+            "codex: no idle wake — use /confer-poll at the start of each turn + after each human prompt (poll-first). The SessionStart hook runs `confer session-heal`."
+        );
+    }
     Ok(())
 }

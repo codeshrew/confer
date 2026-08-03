@@ -113,6 +113,9 @@ pub(crate) fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()
 pub(crate) fn confer_hook_installed(home: &std::path::Path, harness: &str) -> bool {
     match harness {
         "grok" => home.join(".grok").join("hooks").join("confer.json").exists(),
+        "codex" => std::fs::read_to_string(codex_home(home).join("hooks.json"))
+            .map(|s| s.contains("session-heal"))
+            .unwrap_or(false),
         _ => std::fs::read_to_string(home.join(".claude").join("settings.json"))
             .map(|s| s.contains("session-heal"))
             .unwrap_or(false),
@@ -126,6 +129,7 @@ pub(crate) fn confer_hook_installed(home: &std::path::Path, harness: &str) -> bo
 pub(crate) fn baked_hook_bin(home: &std::path::Path, harness: &str) -> Option<String> {
     let path = match harness {
         "grok" => home.join(".grok").join("hooks").join("confer.json"),
+        "codex" => codex_home(home).join("hooks.json"),
         _ => home.join(".claude").join("settings.json"),
     };
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
@@ -150,6 +154,63 @@ pub(crate) fn write_grok_hook(home: &std::path::Path, cmd: &str) -> Result<()> {
     });
     std::fs::write(dir.join("confer.json"), serde_json::to_string_pretty(&doc)?)?;
     Ok(())
+}
+
+/// Codex's config/hooks/state root: `$CODEX_HOME` if set (Codex requires it to already exist), else
+/// `~/.codex`. Distinct from Codex's SKILLS root (`~/.agents/skills`) — design/54 axis 3b.
+pub(crate) fn codex_home(home: &std::path::Path) -> std::path::PathBuf {
+    std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
+/// Merge confer's session-heal into Codex's `${CODEX_HOME:-~/.codex}/hooks.json` (design/54 axis 7/8).
+/// Codex SHARES this file with the user's own hooks, so we MERGE (preserving unrelated entries) and
+/// refresh only ours (`entry_is_confer` = command runs `session-heal`). Codex's shape mirrors Claude's:
+/// per-event arrays of `{matcher, hooks:[{type,command,timeout}]}` — SessionStart matchers
+/// `startup|resume|clear|compact`, Pre/PostCompact matchers `manual|auto`; multiple matching hooks run
+/// concurrently so we never replace the array. Codex will NOT run a newly added command hook until the
+/// human reviews + trusts it via `/hooks` (content-hash trust in config.toml); we never synthesize that
+/// hash. Returns the file path written.
+pub(crate) fn write_codex_hook(home: &std::path::Path, cmd: &str) -> Result<std::path::PathBuf> {
+    let path = codex_home(home).join("hooks.json");
+    let mut root: serde_json::Value = if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)?
+    } else {
+        serde_json::json!({})
+    };
+    let hooks = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("hooks.json is not a JSON object"))?
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("hooks.json .hooks is not an object"))?;
+    for (event, matchers) in [
+        ("SessionStart", &["startup", "resume", "clear", "compact"][..]),
+        ("PreCompact", &["manual", "auto"][..]),
+        ("PostCompact", &["manual", "auto"][..]),
+    ] {
+        let arr = hooks
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("hooks.{event} is not an array"))?;
+        arr.retain(|e| !entry_is_confer(e)); // refresh: drop our old entries, keep the user's
+        for m in matchers {
+            arr.push(serde_json::json!({
+                "matcher": m,
+                "hooks": [ { "type": "command", "command": cmd, "timeout": 30 } ],
+            }));
+        }
+    }
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&root)?)?;
+    Ok(path)
 }
 
 pub(crate) fn cmd_install_hook(project: Option<String>) -> Result<()> {

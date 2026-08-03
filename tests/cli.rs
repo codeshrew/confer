@@ -4533,6 +4533,74 @@ fn install_skill_ships_confer_serve_reframed() {
     let _ = std::fs::remove_dir_all(&sk);
 }
 
+/// design/54: the Codex harness. Skills land in ~/.agents/skills (Codex's discovery table), NOT
+/// ~/.codex; the hook merges into ~/.codex/hooks.json (a DIFFERENT root); Codex omits the Monitor-only
+/// confer-arm + reactive confer-watch and gets a poll-first confer-poll; skill frontmatter drops
+/// allowed-tools; and the installer NEVER writes a config.toml trust hash. The hook merge preserves a
+/// pre-existing user hook and is idempotent (no duplicate confer entries on re-run).
+#[test]
+fn install_skill_codex_paths_skillset_and_trust_safe_hook_merge() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+
+    // Pre-seed a user's own hooks.json + config.toml so we can prove we MERGE, not clobber, and never
+    // touch trust state.
+    let codex = a.home.join(".codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("hooks.json"),
+        r#"{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"my-own-tool"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(codex.join("config.toml"), "# user config\n").unwrap();
+    let config_before = std::fs::read_to_string(codex.join("config.toml")).unwrap();
+
+    assert!(ok(&a.confer(&["install-skill", "--harness", "codex", "--role", "alpha"])));
+
+    // Skills → ~/.agents/skills, NOT ~/.codex/skills.
+    let agents = a.home.join(".agents").join("skills");
+    assert!(agents.join("confer-poll").join("SKILL.md").is_file(), "codex skills land in ~/.agents/skills");
+    assert!(!a.home.join(".codex").join("skills").exists(), "must NOT write ~/.codex/skills");
+    // Poll-first skill set: no Monitor-based confer-arm / confer-watch.
+    assert!(!agents.join("confer-arm").exists(), "codex omits the Monitor-only confer-arm");
+    assert!(!agents.join("confer-watch").exists(), "codex omits the reactive confer-watch");
+    for s in ["confer-poll", "confer-board", "confer-fleet", "confer-post", "confer-serve"] {
+        assert!(agents.join(s).join("SKILL.md").is_file(), "codex must install {s}");
+    }
+
+    // confer-poll is the Codex-native, poll-first variant — not the Claude/Monitor one.
+    let poll = std::fs::read_to_string(agents.join("confer-poll").join("SKILL.md")).unwrap();
+    assert!(poll.contains("no reactive wake") || poll.contains("no idle-wake"), "codex poll skill is poll-first: {poll:?}");
+    assert!(!poll.contains("Monitor") && !poll.contains("/loop"), "no Monitor/loop in the codex poll skill: {poll:?}");
+    // Frontmatter is name+description only — allowed-tools stripped.
+    let board = std::fs::read_to_string(agents.join("confer-board").join("SKILL.md")).unwrap();
+    assert!(!board.contains("allowed-tools"), "codex skill frontmatter drops allowed-tools: {board:?}");
+    assert!(!board.contains("!`"), "codex neutralizes the Claude !`cmd` auto-exec");
+
+    // Hook merged into ~/.codex/hooks.json: all 3 events, the user's hook PRESERVED, config.toml untouched.
+    let hooks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
+    let h = &hooks["hooks"];
+    for ev in ["SessionStart", "PreCompact", "PostCompact"] {
+        assert!(h[ev].as_array().is_some(), "codex hook has {ev}");
+    }
+    let raw = serde_json::to_string(&hooks).unwrap();
+    assert!(raw.contains("my-own-tool"), "the user's own hook must survive the merge");
+    assert!(raw.contains("session-heal"), "confer's session-heal hook was added");
+    assert_eq!(
+        std::fs::read_to_string(codex.join("config.toml")).unwrap(),
+        config_before,
+        "installer must NEVER write a trust hash into config.toml (Codex trusts via /hooks)"
+    );
+
+    // Idempotent: a second install doesn't duplicate confer's entries (still exactly one session-heal
+    // per matcher across the 3 events = 4+2+2 = 8), and still keeps the user's hook.
+    assert!(ok(&a.confer(&["install-skill", "--harness", "codex", "--role", "alpha"])));
+    let raw2 = std::fs::read_to_string(codex.join("hooks.json")).unwrap();
+    assert_eq!(raw2.matches("session-heal").count(), 8, "re-install must refresh, not duplicate, confer hook entries");
+    assert!(raw2.contains("my-own-tool"), "the user's own hook still survives a re-install");
+}
+
 /// Phase 2 (design/52 axis 3): `install-skill --harness` targets the right global skills dir per
 /// harness — Grok's ~/.grok/skills, Claude's ~/.claude/skills, or all — so a Grok agent's skills land
 /// where Grok discovers them (not silently in ~/.claude/skills).
@@ -4565,11 +4633,16 @@ fn install_skill_harness_selects_the_right_dir() {
     .unwrap();
     assert!(!grok_poll.contains("!`"), "grok skills must not carry Claude !`cmd` bang-exec");
 
-    // --harness all → both known harness dirs, each with its own vocabulary.
+    // --harness all → every known harness dir, each with its own vocabulary (incl. Codex → ~/.agents,
+    // design/54). Codex has no confer-watch, so assert its own sentinel skill instead.
     assert!(ok(&a.confer(&["install-skill", "--harness", "all", "--role", "alpha", "--no-autoheal"])));
     assert!(
         grok_watch.is_file() && claude_watch.is_file(),
         "install-skill --harness all must write every known harness dir"
+    );
+    assert!(
+        a.home.join(".agents").join("skills").join("confer-poll").join("SKILL.md").is_file(),
+        "install-skill --harness all must also write the Codex dir (~/.agents/skills)"
     );
     let claude_txt = std::fs::read_to_string(&claude_watch).unwrap();
     assert!(claude_txt.contains("Monitor"), "claude skill keeps the Claude tool vocabulary");

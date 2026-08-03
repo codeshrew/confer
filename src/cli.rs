@@ -817,8 +817,9 @@ pub(crate) enum Cmd {
         #[arg(long)]
         dir: Option<String>,
         /// which harness's skill dir(s): auto (default — detected from the env: Grok if GROK_AGENT is
-        /// set, else Claude), claude (~/.claude/skills), grok (~/.grok/skills), or all (every known
-        /// harness). Ignored when --dir is given. (design/52)
+        /// set, Codex if CODEX_HOME is set, else Claude), claude (~/.claude/skills), grok
+        /// (~/.grok/skills), codex (~/.agents/skills + hooks in ~/.codex), or all (every known
+        /// harness). Ignored when --dir is given. (design/52, design/54)
         #[arg(long)]
         harness: Option<String>,
         /// hub working copy (default: the current repo)
