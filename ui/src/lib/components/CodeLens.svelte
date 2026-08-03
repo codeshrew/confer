@@ -76,10 +76,23 @@
   let repoHits = $state<RefHit[]>([]);
   const repoGroups = $derived(groupRefHitsByFile(repoHits));
 
+  // The Code view wants refs across every hub the server is serving, so it prefers
+  // allHubs=true. A server started WITHOUT --all-hubs now scopes that to its own served
+  // hubs (0.8.21) — but an older/mixed binary rejected allHubs=1 with a 400, which left
+  // Code view blank (grok/Jarvis 0.8.20 field report). Degrade gracefully: on any error
+  // from the allHubs call, retry scoped to the current hub so Code still hydrates.
+  async function getRefsForCode(hubId: string, target: string): Promise<RefHit[]> {
+    try {
+      return await api.getRefs(hubId, target, true);
+    } catch {
+      return await api.getRefs(hubId, target, false);
+    }
+  }
+
   async function loadRepoRollup(repo: string, hubId: string) {
     repoLoading = true;
     try {
-      const hits = await api.getRefs(hubId, repo, true);
+      const hits = await getRefsForCode(hubId, repo);
       repoHits = hits;
       onRepoRefs?.(repo, hits);
     } finally {
@@ -438,7 +451,7 @@
     try {
       // Refs first — the sha `getCode` renders at (the newest hit's pinned
       // sha, not a hardcoded 'HEAD') depends on knowing them.
-      const hits = await api.getRefs(hub, `${f.repo}:${f.path}`, true);
+      const hits = await getRefsForCode(hub, `${f.repo}:${f.path}`);
       const relevant = hits.filter((h) => h.repo === f.repo && h.path === f.path);
       fileRefs = relevant;
       onFileRefs?.({ repo: f.repo, path: f.path }, relevant);

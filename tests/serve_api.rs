@@ -1091,20 +1091,30 @@ fn refs_all_hubs_is_scoped_to_the_operators_own_choice_not_every_hub_on_the_mach
         "--ref", &format!("secretlib:secret.rs@{secret_sha}#L1-2"),
     ])));
 
-    // 1. `confer serve` started scoped to hub A ONLY (no --all-hubs). `allHubs=1` must
-    //    NOT reach hub B's content — the P0 leak. It must be rejected outright (400),
-    //    not silently narrowed, so a caller relying on fleet-wide results gets a loud
-    //    signal instead of a quietly-scoped-down 200.
+    // 1. `confer serve` started scoped to hub A ONLY (no --all-hubs). `allHubs=1` (which the
+    //    web Code view ALWAYS sends — a single-hub SPA can't know the operator's scope) must
+    //    still never reach hub B's content — the P0 leak. It is scoped to the operator's own
+    //    served hubs (a 200 carrying hub A's refs, never hub B's), NOT a 400: rejecting it
+    //    broke Code view on every non-`--all-hubs` serve (grok/Jarvis 0.8.20). The security
+    //    property under test is unchanged — an unserved hub's ref is unreachable — it's just
+    //    proven by an empty scoped result rather than a rejection.
     {
         let server = start_server(&alpha); // no --all-hubs
-        let (status, body) = http_get(&server.addr, "/api/refs?target=secretlib:secret.rs&allHubs=1");
-        assert_eq!(status, 400, "allHubs=1 against a NOT-all-hubs server must be rejected, not silently scoped: {body}");
 
-        // hub A's own content is unaffected and never carries hub B's secret ref.
-        let (s2, b2) = http_get(&server.addr, "/api/refs?target=mylib:lib.rs");
+        // Asking for hub B's secret ref by name, WITH allHubs=1, still returns nothing:
+        // hub B is not in this server's scope, so it's invisible — the leak stays closed.
+        let (status, body) = http_get(&server.addr, "/api/refs?target=secretlib:secret.rs&allHubs=1");
+        assert_eq!(status, 200, "allHubs=1 on a scoped server must succeed (not 400) so Code view works: {body}");
+        let leaked: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(leaked.as_array().unwrap().len(), 0, "hub B's secret ref must stay invisible to a hub-A-scoped server even under allHubs=1: {body}");
+        assert!(!body.contains("secretlib"), "no trace of the unserved hub's ref may leak: {body}");
+
+        // And allHubs=1 for hub A's OWN ref now works (the footgun is gone): it returns
+        // hub A's refs — exactly what Code view needs to hydrate.
+        let (s2, b2) = http_get(&server.addr, "/api/refs?target=mylib:lib.rs&allHubs=1");
         assert_eq!(s2, 200, "body: {b2}");
         let v2: serde_json::Value = serde_json::from_str(&b2).unwrap();
-        assert_eq!(v2.as_array().unwrap().len(), 1);
+        assert_eq!(v2.as_array().unwrap().len(), 1, "allHubs=1 must return the served hub's own refs: {b2}");
         assert!(!b2.contains("secretlib"), "hub A's own-scope query must never see hub B's ref: {b2}");
     }
 

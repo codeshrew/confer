@@ -739,10 +739,17 @@ fn refs(dirs: &[PathBuf], all_hubs: bool, q: &HashMap<String, String>) -> ApiRes
     // way `allowed_hubs()` is the only place that can reach `crosshub::hub_dirs()`.
     let requested_all_hubs = matches!(q.get("allHubs").map(String::as_str), Some("1") | Some("true"));
     let hubs: Vec<PathBuf> = if requested_all_hubs {
-        if !all_hubs {
-            return ApiResponse::err(400, "allHubs=1 requires the server to be started with --all-hubs");
-        }
-        allowed_hubs(dirs, true)
+        // `allHubs=1` means "search every hub THIS SERVER is serving" — NOT every hub on
+        // the machine. The web Code view always sends it (a single-hub SPA can't know the
+        // operator's startup scope), so it must not be a footgun: we honor it against the
+        // operator's OWN served `dirs` and never reach past them. `allowed_hubs` is the
+        // sole door to the fleet-wide set (`crosshub::hub_dirs()`) and it stays shut unless
+        // the operator started `--all-hubs` (`all_hubs`); so a scoped server answers with
+        // only its own hubs' refs and a leak of an unserved hub is impossible by
+        // construction (tests/boundary.rs), not merely rejected. (This used to 400, which
+        // broke the Code view on every serve started without `--all-hubs` — the
+        // grok/Jarvis 0.8.20 field report; the anti-leak invariant is unchanged.)
+        allowed_hubs(dirs, all_hubs)
     } else {
         match resolve_hub(dirs, q) {
             Some(d) => vec![d.clone()],

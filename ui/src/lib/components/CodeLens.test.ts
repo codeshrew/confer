@@ -126,6 +126,26 @@ describe('CodeLens', () => {
     await waitFor(() => expect(container.querySelector('.densefile .code')?.textContent).toContain('func assembleBundle'));
   });
 
+  it('falls back to a current-hub refs query when the allHubs=true call fails (old/scoped server that 400s allHubs)', async () => {
+    vi.mocked(api.getCodeFiles).mockResolvedValue(threeFiles);
+    vi.mocked(api.getCode).mockResolvedValue(plateBundleSnippet);
+    // A pre-0.8.21 (or otherwise scoped) server rejects allHubs=1; the Code view must
+    // retry scoped to the current hub instead of leaving the pane blank.
+    vi.mocked(api.getRefs).mockImplementation(async (_hub, _target, allHubs) => {
+      if (allHubs) throw new Error('400: allHubs=1 requires the server to be started with --all-hubs');
+      return [];
+    });
+
+    render(CodeLens, { hub: 'agent-coord' });
+
+    await waitFor(() =>
+      expect(api.getCode).toHaveBeenCalledWith('agent-coord', 'wealdlore', 'Sources/Reader/PlateBundle.swift', 'HEAD')
+    );
+    // Tried allHubs first, then degraded to the scoped query — both for the same target.
+    expect(api.getRefs).toHaveBeenCalledWith('agent-coord', 'wealdlore:Sources/Reader/PlateBundle.swift', true);
+    expect(api.getRefs).toHaveBeenCalledWith('agent-coord', 'wealdlore:Sources/Reader/PlateBundle.swift', false);
+  });
+
   it('shows the new empty state when the hub has no referenced code files', async () => {
     vi.mocked(api.getCodeFiles).mockResolvedValue([]);
 

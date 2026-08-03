@@ -409,6 +409,17 @@ pub fn run(dirs: Vec<PathBuf>, bind: &str, all_hubs: bool) -> Result<()> {
         .map(|s| s.port().to_string())
         .unwrap_or_else(|| bind.rsplit(':').next().unwrap_or("8422").to_string());
     eprintln!("confer serve: {n} hub(s), read-only, on:");
+    // A `cargo install` / plain `cargo build` (no `make ui` first) embeds the build-the-UI
+    // placeholder, so `/` renders "dashboard isn't built yet" and every view — Code included —
+    // looks broken with no obvious cause (grok/Jarvis 0.8.20 field report). Say so loudly at
+    // startup rather than letting the operator discover it as a blank page. GitHub release
+    // binaries build the UI in CI, so they never hit this.
+    if DASHBOARD.contains("dashboard isn't built yet") {
+        eprintln!("⚠ web dashboard NOT built into this binary — the UI will show a placeholder page.");
+        eprintln!("  This build skipped the UI step (a `cargo install`/plain `cargo build`).");
+        eprintln!("  Rebuild with the dashboard:  make ui && cargo build --release");
+        eprintln!("  (`/classic` and `/api/*` still work in the meantime.)");
+    }
     if is_non_loopback_bind(bind) {
         eprintln!(
             "⚠ LAN mode: this dashboard is unauthenticated — anyone on your network can read all hub content and code."
