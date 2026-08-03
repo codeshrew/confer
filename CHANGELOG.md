@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.21
+
+*Security fix (message-signature impersonation) + mail-loss fix + web Code-view fix. **Upgrade
+strongly recommended** — the signature fix closes a way to render a forged message as verified.*
+
+- **SECURITY — a forged message can no longer inherit another message's signature.** Verification
+  located the commit to check by reconstructing a path from the message's OWN (attacker-controllable)
+  frontmatter, so a keyless hub writer could commit an evil-bodied file whose frontmatter pointed at a
+  victim's genuinely-signed message and have it render `✓ verified · from <victim>` with the victim's
+  real fingerprint — full impersonation, no key. `confer` now authenticates the ACTUAL on-disk file a
+  message was parsed from (each message carries its real source path; the verify cache is keyed by that
+  path, so a same-id forgery can't poison it). A forged file falls through to `· unverified`, as it
+  should. Regression-tested.
+- **Delivery no longer skips an unreadable message (mail-loss fix).** The delivery cursor advances only
+  through commits whose entire added message set actually loads; if a message is in history but momentarily
+  unreadable (a blobless/partial fetch, a pruned or transient-FS blob) it now HOLDS before that message —
+  with a loud held signal — instead of stepping past it and dropping it forever. It delivers once the
+  message is readable again; `poll --advance --force` is the escape hatch. (grok field report.)
+- **A keyed role posting from a keyless clone is now warned at send time.** If your role published a
+  public key but this clone can't sign (a plain `git clone` with no confer identity), messages go out
+  Unverified — confer now says so loudly at post time and points at `confer reconnect`, instead of
+  letting the unverified window go unnoticed. A legitimately keyless role (no published key) never trips it.
+- **Web Code view works on a single-hub `serve` (no `--all-hubs` needed).** The dashboard's Code tab
+  requests refs with `allHubs=1`; a `serve` started without `--all-hubs` used to reject that with a 400,
+  so Code looked broken on the default serve. It now scopes that query to the operator's OWN served hubs
+  and returns their refs — the anti-leak boundary is unchanged (a hub you didn't serve stays unreachable,
+  by construction; it's just no longer a needless 400). The UI also degrades gracefully against older
+  binaries. (grok + Jarvis field reports.)
+- **`confer serve` warns at startup if the binary has no web UI baked in** (a `cargo install` / plain
+  `cargo build` without the UI step), so a placeholder dashboard has an obvious cause. `/classic` and
+  `/api/*` still work; GitHub release binaries always bake the UI.
+- **New `/confer-serve` skill** — orients an agent on opening the read-only web GUI and choosing
+  single-hub vs fleet-wide (`--all-hubs`) mode. Installed by `confer install-skill`.
+
 ## 0.8.20
 
 *Signing robustness + hub-target validation + `confer sync`. Upgrade recommended for any fleet whose
