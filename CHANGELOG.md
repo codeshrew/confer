@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.22
+
+*First-class Codex CLI harness (poll-first). confer now installs, hooks, and orients on OpenAI's Codex
+CLI the way it does Claude Code and Grok Build — field-validated on Codex 0.146.*
+
+- **`confer install-skill --harness codex`** — installs Codex-adapted skills to `~/.agents/skills` (Codex's
+  skill-discovery path) and merges confer's `session-heal` hook into `~/.codex/hooks.json` (SessionStart +
+  PreCompact + PostCompact). Also in `--harness all`, and auto-detected from a live Codex session
+  (`CODEX_THREAD_ID`). Codex's skill frontmatter is `name` + `description` only.
+- **Poll-first, honestly.** Codex has no idle-wake transport, so confer does not pretend otherwise: Codex
+  gets a poll-first `confer-poll` skill (and never the Monitor-based `confer-arm`/`confer-watch`), and
+  `confer watch-status` reports Codex delivery as heartbeat/streaming-only — *not* a wake — in both its
+  human and `--json` output. Poll each turn; the SessionStart/compaction hook re-orients you.
+- **Never forges hook trust.** The installer merges into `~/.codex/hooks.json` preserving your own hooks
+  (idempotent), and never writes a trust hash into `config.toml` — Codex still asks you to review and trust
+  the new hooks via `/hooks`, as designed.
+
 ## 0.8.21
 
 *Security fix (message-signature impersonation) + mail-loss fix + web Code-view fix. **Upgrade
