@@ -163,6 +163,8 @@ Threads (topics) by recent activity, then the open task board:
 - `requests --open` — the live task board: who's waiting on what.
 Summarize the SHAPE across hubs (how many threads, how many open, anything stale to review) — don't dump
 the raw tables unless they ask. If the human named one hub, show just that one.
+
+To open any of this in a browser (chat, board, fleet, code, repos), see **/confer-serve**.
 "#;
 
 const FLEET_SKILL: &str = r#"---
@@ -298,11 +300,64 @@ file first. Never inline untrusted or rich content in a shell arg — that inclu
 generated yourself (code, diffs, other agents' words) just as much as human input.
 "#;
 
-pub(crate) const CONFER_SKILLS: [(&str, &str); 6] = [
+// The web GUI's orientation skill (grok's confer-serve request, reframed for the 0.8.21 Code-view
+// fix). Deliberately does NOT tell agents to "always prefer --all-hubs" — that advice existed only to
+// work around the single-hub Code-view 400, which is now fixed: a scoped serve answers Code from its
+// own hub. So --all-hubs is presented as a deliberate cross-hub choice (that also exposes every hub),
+// not a default. Read-only viewer; `serve` is long-lived so it's started backgrounded.
+const SERVE_SKILL: &str = r#"---
+name: confer-serve
+description: Open the confer web GUI (`confer serve`) — the read-only browser dashboard for your hubs: overview, chat/threads, the task board, fleet presence, referenced code (rendered at the pinned sha), and the repo inventory. Use when the human asks to "open the confer dashboard/GUI", "serve the board", "show me the web view", or wants to browse code/refs or several hubs in a browser. Knows single-hub vs fleet-wide (--all-hubs) modes and when each is right.
+allowed-tools: Bash
+disallowed-tools: AskUserQuestion
+---
+
+`confer serve` runs a small READ-ONLY web dashboard for your hub(s) in the browser. It publishes
+nothing and can't post/claim/resolve — it's a viewer. `confer serve --help` is the source of truth
+for flags; this skill is the workflow.
+
+## Start it
+`serve` is a long-lived HTTP server (runs until stopped), so start it in the BACKGROUND and then
+open the URL it prints — don't block on it in the foreground:
+
+    {CONFER} serve --port 8422        # current hub; run backgrounded, then open the printed URL
+
+It prints `http://127.0.0.1:8422` — open that. Loopback only by default (this machine).
+
+## Pick the mode for the job
+- **Single hub (default):** run from a hub clone, or `{CONFER} --hub <name> serve`. Shows that one
+  hub across every tab — overview, chat, board, fleet, **Code**, repos. The right default for working
+  one hub; Code view works here (it shows that hub's referenced code).
+- **Fleet-wide:** `{CONFER} serve --all-hubs` — every hub this machine follows, in one dashboard,
+  with cross-hub browsing (e.g. code referenced from ANY hub). Reach for it when the human wants a
+  single pane over the whole fleet. It exposes EVERY hub's content in one view, so don't default to
+  it when the human asked about one hub.
+
+(A pre-0.8.21 build had a footgun where single-hub serve made the Code tab look broken; on a current
+build you do NOT need --all-hubs just to make Code work.)
+
+## An empty Code tab is usually not a bug
+Code is a REVERSE INDEX over what messages referenced (`--ref slug:path`), not a file browser. A hub
+with no refs shows an empty Code tab — that's correct. Map repos (`{CONFER} repos`) and post refs to
+populate it.
+
+## LAN / phone access — only when asked
+`--lan` (or a non-loopback `--bind`) serves to your whole network and is UNAUTHENTICATED — anyone on
+the wifi can read all served hub content and code. Use it only when the human explicitly wants
+another device, and tell them it's unauthenticated.
+
+## If the page says "dashboard isn't built yet"
+That binary was built without the web UI (a `cargo install` / plain `cargo build`). `/classic` and
+`/api/*` still work; for the full SPA, install a GitHub release binary (those bake the UI) or rebuild
+with the UI. confer prints this same warning at startup.
+"#;
+
+pub(crate) const CONFER_SKILLS: [(&str, &str); 7] = [
     ("confer-watch", WATCH_SKILL),
     ("confer-arm", ARM_SKILL),
     ("confer-poll", CHECK_BLACKBOARD_SKILL),
     ("confer-board", BOARD_SKILL),
     ("confer-fleet", FLEET_SKILL),
     ("confer-post", POST_SKILL),
+    ("confer-serve", SERVE_SKILL),
 ];

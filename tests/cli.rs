@@ -4504,6 +4504,35 @@ fn install_skill_is_generic_no_coresident_clobber() {
     let _ = std::fs::remove_dir_all(&sk);
 }
 
+/// The `/confer-serve` GUI-orientation skill ships and is reframed for the 0.8.21 Code-view fix:
+/// it documents BOTH serve modes but must NOT resurrect the old "always prefer --all-hubs" advice
+/// (that only ever existed to dodge the single-hub Code-view 400, now fixed). It stays a read-only
+/// viewer and is role-generic (no baked role/hub).
+#[test]
+fn install_skill_ships_confer_serve_reframed() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let sk = tmp("skills");
+    assert!(ok(&a.confer(&["install-skill", "--dir", sk.to_str().unwrap(), "--role", "alpha", "--no-autoheal"])));
+
+    let serve = std::fs::read_to_string(sk.join("confer-serve").join("SKILL.md"))
+        .expect("confer-serve skill is installed");
+    assert!(serve.contains("name: confer-serve"), "has the skill name");
+    assert!(serve.contains("--all-hubs"), "documents fleet-wide mode");
+    assert!(serve.contains("Single hub (default)"), "documents single-hub as the default mode");
+    assert!(
+        !serve.to_lowercase().contains("prefer") || !serve.to_lowercase().contains("prefer --all-hubs"),
+        "must NOT advise always preferring --all-hubs (the footgun is fixed): {serve:?}"
+    );
+    assert!(serve.contains("READ-ONLY"), "states the dashboard is read-only");
+    assert!(!serve.contains("--role alpha"), "role-generic, no baked role");
+
+    // And the board skill points at it (grok's one-liner ask).
+    let board = std::fs::read_to_string(sk.join("confer-board").join("SKILL.md")).unwrap();
+    assert!(board.contains("/confer-serve"), "confer-board points at /confer-serve");
+    let _ = std::fs::remove_dir_all(&sk);
+}
+
 /// Phase 2 (design/52 axis 3): `install-skill --harness` targets the right global skills dir per
 /// harness — Grok's ~/.grok/skills, Claude's ~/.claude/skills, or all — so a Grok agent's skills land
 /// where Grok discovers them (not silently in ~/.claude/skills).
