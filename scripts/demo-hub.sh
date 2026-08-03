@@ -24,7 +24,8 @@ export CONFER_NO_AUTOHEAL=1                            # don't install skills/ho
 unset CONFER_HUB
 # nest the bare hub as <org>/<repo> so its dashboard label reads like a real project ("acme/storefront")
 mkdir -p "$WORK/acme"; HUB="$WORK/acme/storefront.git"; git init --bare -q "$HUB"
-SHA="$(git -C "$REPO" rev-parse HEAD)"                 # pin code refs at a real public commit
+# pin code refs at a PUBLIC commit (origin/main), so a cloner of this hub can resolve them too
+SHA="$(git -C "$REPO" rev-parse origin/main 2>/dev/null || git -C "$REPO" rev-parse HEAD)"
 CLONES="$WORK/clones"; mkdir -p "$CLONES"
 
 echo "demo HOME:  $HOME"
@@ -56,6 +57,29 @@ done
 
 # map confer's own source so `--ref confer:…` resolves to real code for the Code view
 for r in backend frontend tester docs; do as "$r" repos map confer "$REPO" >/dev/null 2>&1 || true; done
+
+# register the confer code repo IN THE HUB (repos/confer.md) at its PUBLIC remote + durable root sha,
+# so the Code/Repos views resolve `confer:` for anyone who clones this hub — not just this machine's
+# local map. A plain signed-free metadata commit, authored as a synthetic demo role (no real identity).
+ROOT_SHA="$(git -C "$REPO" rev-list --max-parents=0 HEAD | tail -1)"
+mkdir -p "$CLONES/backend/repos"
+cat > "$CLONES/backend/repos/confer.md" <<EOF
+---
+role: code
+url: https://github.com/codeshrew/confer
+root_sha: $ROOT_SHA
+docs: docs/
+owner: codeshrew
+---
+
+confer — the git-native coordination substrate this hub runs on. The code conversations in this demo
+pin real files in confer's own source. Public: https://github.com/codeshrew/confer
+EOF
+( cd "$CLONES/backend" \
+  && git -c user.name=backend -c user.email=backend@confer.local -c commit.gpgsign=false add repos/confer.md \
+  && git -c user.name=backend -c user.email=backend@confer.local -c commit.gpgsign=false \
+       commit -q -m "register confer code repo (public remote) in the hub inventory" \
+  && git push -q origin HEAD ) >/dev/null 2>&1 || true
 
 B="$WORK/body"; mkdir -p "$B"
 w() { printf '%s\n' "$2" > "$B/$1"; }                 # w name "text"

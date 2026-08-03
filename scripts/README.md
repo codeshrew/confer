@@ -34,3 +34,16 @@ scripts/demo-screenshots.sh      # → docs/img/dashboard-{overview,chat,board,f
 `confer serve` with `BASE=http://127.0.0.1:PORT node scripts/shoot-demo.mjs`. Playwright is a dev
 dependency of the `ui/` package, so run from a context where `ui/node_modules` resolves (the script
 handles that).
+
+## Publishing the public example hub
+
+`publish-demo-repo.sh` builds the demo hub, registers `repos/confer.md` at the **public** confer
+remote, writes a demo-specific README, and pushes it to a public repo (default
+[`codeshrew/confer-demo`](https://github.com/codeshrew/confer-demo)) so anyone can clone it and
+`confer serve` a real, populated hub. Synthetic data only — commits are authored by demo roles
+(`backend@confer.local`, …); no real identities. Needs `gh` authed to the target org.
+
+```sh
+scripts/publish-demo-repo.sh                 # → codeshrew/confer-demo
+DEST=you/your-demo scripts/publish-demo-repo.sh
+```
