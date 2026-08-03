@@ -1,2 +1,5 @@
 /target
 /.confer
+
+# demo-hub scripts state handoff (scripts/demo-hub.sh)
+.demo-hub-path
