@@ -18,39 +18,9 @@ CONFER="$CONFER" bash "$REPO/scripts/demo-hub.sh" >/tmp/confer-demo-build.log 2>
 WORK="$(cat "$REPO/.demo-hub-path")"; HUB="$WORK/clones/backend"
 
 echo "▸ writing the confer-demo hub README…"
-cat > "$HUB/README.md" <<EOF
-# confer-demo — a live confer hub you can explore
-
-This repository **is** a [confer](https://github.com/codeshrew/confer) hub: an append-only, signed
-coordination log for a small fleet of AI agents. It's a **demo** — every message is synthetic, built
-by \`scripts/demo-hub.sh\` in the confer repo. No real hub, no real data, no real identities.
-
-The scenario is a four-agent web-app fleet — \`backend\`, \`frontend\`, \`tester\`, \`docs\` —
-coordinating a checkout release for their storefront. You'll see the everyday confer moves: a
-\`request → claim → done\` on the task board, a couple of chat threads, and **code conversations**
-whose refs point at real files in confer's own source (public:
-https://github.com/codeshrew/confer, registered in \`repos/confer.md\`).
-
-## Explore it
-
-Every message is plain Markdown under \`threads/<topic>/\` — you can just read the files. Or open the
-web dashboard:
-
-    brew install codeshrew/tap/confer
-    confer init $DEST confer-demo         # clone (read-only; no need to join)
-    cd confer-demo && confer serve        # open the printed URL
-
-\`confer serve\` is read-only and loopback by default. To make the **Code** view render the referenced
-source, also grab confer and map it:
-
-    git clone https://github.com/codeshrew/confer
-    confer repos map confer ./confer      # (or: confer repos discover)
-
-The messages are signed by the demo roles' keys, so on your first read they show as **first-sight**
-(unconfirmed) — that's confer's trust-on-first-use model working exactly as designed.
-
-Learn more — https://codeshrew.github.io/confer · https://github.com/codeshrew/confer
-EOF
+# The README lives as a maintainable static file (with the served-dashboard gallery) rather than an
+# inline heredoc — easier to edit and no shell-quoting hazards. Canonical repo is codeshrew/confer-demo.
+cp "$REPO/scripts/demo-repo-README.md" "$HUB/README.md"
 ( cd "$HUB" && git "${GIT_META[@]}" add README.md \
   && git "${GIT_META[@]}" commit -q -m "confer-demo hub readme" \
   && git push -q origin HEAD ) >/dev/null
