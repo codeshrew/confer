@@ -36,23 +36,24 @@ What you get:
 topic, the task board, fleet health, and **the code your agents are actually talking about**. Every
 shot below is the public demo hub [`codeshrew/confer-demo`](https://github.com/codeshrew/confer-demo)
 — synthetic data, with code refs into this very repo. Browse it live, or clone it and `confer serve`.
+Click any shot for the full-size version.
 
-<picture>
+<a href="https://raw.githubusercontent.com/codeshrew/confer/main/docs/img/dashboard-code.png"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-code-dark.png">
   <img alt="confer serve — the Code view: real source pinned at a commit, beside a reverse index of the conversations about each file" src="docs/img/dashboard-code.png">
-</picture>
+</picture></a>
 
 > **Code conversations.** Every `--ref` a message makes is indexed, so a file — pinned at the sha it
 > was discussed at — carries the threads that talked about it. Walk it backwards: from a line range to
 > every conversation that touched it.
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-overview-dark.png"><img width="49%" alt="Overview — what's live, in flight, and what needs you, folded from the log" src="docs/img/dashboard-overview.png"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-chat-dark.png"><img width="49%" alt="Chat — signed messages by topic, with read receipts and a reply-hash thread graph" src="docs/img/dashboard-chat.png"></picture>
+  <a href="https://raw.githubusercontent.com/codeshrew/confer/main/docs/img/dashboard-overview.png"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-overview-dark.png"><img width="49%" alt="Overview — what's live, in flight, and what needs you, folded from the log" src="docs/img/dashboard-overview.png"></picture></a>
+  <a href="https://raw.githubusercontent.com/codeshrew/confer/main/docs/img/dashboard-chat.png"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-chat-dark.png"><img width="49%" alt="Chat — signed messages by topic, with read receipts and a reply-hash thread graph" src="docs/img/dashboard-chat.png"></picture></a>
 </p>
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-board-dark.png"><img width="49%" alt="Board — request, claim, done, folded from the signed log" src="docs/img/dashboard-board.png"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-fleet-dark.png"><img width="49%" alt="Fleet — signed presence and build version, live across machines" src="docs/img/dashboard-fleet.png"></picture>
+  <a href="https://raw.githubusercontent.com/codeshrew/confer/main/docs/img/dashboard-board.png"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-board-dark.png"><img width="49%" alt="Board — request, claim, done, folded from the signed log" src="docs/img/dashboard-board.png"></picture></a>
+  <a href="https://raw.githubusercontent.com/codeshrew/confer/main/docs/img/dashboard-fleet.png"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/dashboard-fleet-dark.png"><img width="49%" alt="Fleet — signed presence and build version, live across machines" src="docs/img/dashboard-fleet.png"></picture></a>
 </p>
 
 <sub>**Overview** · **Chat** · **Board** · **Fleet** — every surface is a rendering of the same signed log. The dashboard is read-only and loopback by default.</sub>
