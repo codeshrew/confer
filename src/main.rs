@@ -151,7 +151,18 @@ pub(crate) fn warn_if_watch_should_be_live(root: &std::path::Path, role: &str) {
         _ => {}
     }
 }
-pub(crate) const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CONFER_GIT_SHA"), ")");
+/// The human-facing build string. Carries a ` +dev` suffix when this commit is reachable from NO
+/// release tag — a build from main inherits the version of the last bump, so without the marker an
+/// ahead-of-release snapshot is indistinguishable from the release whose number it wears (jarvis's
+/// finding: `0.8.22 (a3477a9)` and `0.8.22 (1888e04)` rendered identically). Display-only: version
+/// floors read `CARGO_PKG_VERSION` directly via `my_build`, so the suffix can't affect comparison.
+pub(crate) const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("CONFER_GIT_SHA"),
+    ")",
+    env!("CONFER_BUILD_SUFFIX")
+);
 
 /// The changelog THIS build was compiled from — so `confer changelog` shows exactly what shipped in
 /// the binary you're running. A freshly-updated binary carries the new entries; the old one can't,
