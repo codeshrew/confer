@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.23
+
+*Two multi-agent correctness fixes, both found by agents dogfooding confer in a live fleet: a
+multi-hub agent could be told it had nothing to re-arm, and resolving a request could silently seize
+a teammate's claim.*
+
+- **`confer rewatch` no longer goes blind on harnesses that hide the session id.** Ownership was
+  resolved from the session id or `$CONFER_ROLE` alone. A harness that exposes its session id only to
+  hooks (Grok Build) leaves the first unset, and `$CONFER_ROLE` is unset for most agents — so a live
+  agent standing *inside its own clone*, holding two healthy watch locks, was told
+  `no watch targets for this session`. `rewatch` now resolves the role the way `confer arm` already
+  did (explicit `--role` → the clone you're standing in → `$CONFER_ROLE`), so **being in your clone is
+  enough, on any harness**, and a new `--role` names you when nothing is auto-detectable.
+- **…and it says "I can't tell" instead of "you own nothing".** With no session id, no role, and no
+  clone in cwd, ownership is *undetermined*, not empty. Printing the empty-set line there reads as
+  "nothing to re-arm" — exactly how a multi-hub agent silently ends up unwatched. It now says so and
+  lists the roles that do have registered targets.
+- **`done`/`error`/`blocked` no longer seize a request another role holds.** Auto-claim-on-resolve
+  fired whenever *you* had no claim — including when a teammate already owned the request — and only
+  reported the takeover afterwards. Reporting a result on a peer's ticket silently became a contested
+  claim. Unclaimed requests still auto-claim (unchanged); a request claimed by **someone else** now
+  refuses, naming both the owner and the note path (`append --type note --reply-to <id>`). A
+  deliberate handoff or cleanup stays available with `--force` — it just has to be said out loud.
+- **Skills teach multi-hub.** `confer-arm` gains "More than one hub? One Monitor EACH" (a watcher
+  covers exactly one hub; `rewatch` prints the set), and `confer-watch` names a re-arm trigger the
+  skills never had: **a host max-runtime / task cap ends your watch with no compaction signal**, so
+  `watch-status` is the ground truth — not "did I just compact".
+
+Reported and field-verified by `grok` (Grok Build) on a live two-hub, two-session box.
+
 ## 0.8.22
 
 *First-class Codex CLI harness (poll-first). confer now installs, hooks, and orients on OpenAI's Codex
