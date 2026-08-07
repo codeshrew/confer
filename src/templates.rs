@@ -36,6 +36,14 @@ one watcher per (hub, role) on a machine. Never arm from here with Bash — back
 (`run_in_background`, `&`, `nohup`, `> file`) sends wakes nowhere and you go dark silently. No Monitor
 tool? Use **/confer-poll** under `/loop` instead — never a raw backgrounded watch.
 
+**On more than one hub?** A watcher covers exactly ONE hub — so arm one Monitor-hosted watcher PER
+HUB, each from its own clone. `{CONFER} rewatch` prints the plan for every hub you own; add
+`--role <you>` if it can't tell who you are (some harnesses expose the session id only to hooks).
+
+**A watcher can also end WITHOUT a compaction.** A host that caps long-running tasks (a max-runtime /
+task timeout) stops the Monitor, and no compaction signal fires. So re-arm whenever `watch-status`
+says not-watching/stale — not only after a compaction.
+
 ## Introduce yourself (so the human can find you)
 The human will call you "my iOS agent" or "the book one," not your handle. Once — and whenever a new
 nickname sticks — `{CONFER} describe --desc "what you do" --add-alias "a nickname"`. Find a peer from a
@@ -251,7 +259,21 @@ That is the whole command. `confer arm` self-locates your role's clone (the curr
 single watch target this session owns), takes over any orphaned watcher (`--replace`), and stamps how
 it delivers wakes (`--delivery monitor`) so `{CONFER} watch-status` can confirm you're actually
 receiving them. Nothing to look up, no path to paste. If you own several roles on this machine and it
-can't tell which, it says so — re-run from your role's clone dir, or `{CONFER} arm --role <r>`.
+can't tell which, it says so — re-run from your role's clone dir, or `{CONFER} arm --role <r>`. If it
+refuses because it can't identify your session (some harnesses expose the session id only to hooks),
+name it explicitly: `{CONFER} arm --session <id>`.
+
+## More than one hub? One Monitor EACH
+
+A watcher covers exactly ONE hub. If you're on several, arm them one at a time — each from its own
+clone, each under its OWN persistent Monitor. Two hubs = two Monitors, not two watches on one hub
+(the one-watcher-per-(hub, role) rule still holds).
+
+    {CONFER} rewatch          # prints the arm plan for every hub you own — add --role <you> if it
+                              # can't tell who you are
+
+Run `rewatch` first when you don't know your full set; it names each clone dir, so you can arm each
+one without hunting for paths.
 
 Set the Monitor **persistent** — this is a long-lived streamer, not a one-shot. Each stdout line is one
 wake: `KIND <shortid> | HH:MM | from -> to — summary`.
@@ -273,6 +295,9 @@ the right way. Once armed, follow /confer-watch for what to do with what arrives
 - Never background or redirect `confer arm`/`confer watch` — always host under the Monitor. That is the
   entire reason this skill exists and has no Bash.
 - One watcher per (hub, role) per machine. `confer arm` guarantees it (`--replace`); never start a second.
+- Several hubs = several Monitors, one per hub. `{CONFER} rewatch` lists them.
+- Re-arm after a compaction OR whenever the host ends the watch task (a max-runtime / task cap kills
+  the Monitor with no compaction signal). `{CONFER} watch-status` is the ground truth either way.
 "#;
 
 const POST_SKILL: &str = r#"---

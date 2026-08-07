@@ -627,6 +627,10 @@ pub(crate) enum Cmd {
         /// limit to one hub (by name, or a clone-path substring)
         #[arg(long)]
         only: Option<String>,
+        /// plan the targets for THIS role (use when the harness hides the session id — e.g. Grok
+        /// Build — so ownership can't be auto-detected). Default: the current clone / $CONFER_ROLE.
+        #[arg(long)]
+        role: Option<String>,
     },
     /// Your cross-hub identity: your signing-key fingerprint and where else the
     /// SAME key appears (the same agent across hubs you've joined). F3.

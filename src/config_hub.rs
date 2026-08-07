@@ -241,10 +241,19 @@ pub(crate) fn hub_watch_mode(cfg: &machineconfig::Config, path: &std::path::Path
 /// `watch` mode. confer can't host a watch (the harness/Monitor does), so it emits the plan; the agent
 /// arms the reactive ones. Scoped by `owned_by_session`, so a co-resident peer's watcher is never
 /// included (following its `--replace` would hijack the peer).
-pub(crate) fn cmd_rewatch(only: Option<String>) -> Result<()> {
+pub(crate) fn cmd_rewatch(only: Option<String>, role: Option<String>) -> Result<()> {
     let reg = autoheal::load();
     let me_session = autoheal::current_session();
-    let me_role = std::env::var("CONFER_ROLE").ok().filter(|s| !s.is_empty());
+    // Ownership identity, widest-first. A harness that hides the session id from this process (Grok
+    // Build: exposed only to hooks) leaves `me_session` None, and `$CONFER_ROLE` is unset for most
+    // agents — so session+env alone made `rewatch` blind exactly where `arm` works. Resolve the role
+    // the same way `arm` self-locates: explicit `--role` → the clone we're standing in → $CONFER_ROLE.
+    let me_role = role.filter(|s| !s.is_empty()).or_else(|| {
+        config::repo_root()
+            .ok()
+            .and_then(|root| config::resolve_role(None, &root).ok())
+            .or_else(|| std::env::var("CONFER_ROLE").ok().filter(|s| !s.is_empty()))
+    });
     let cfg = machineconfig::load();
     let (mut reactive, mut other) = (0usize, 0usize);
     for t in &reg.targets {
@@ -300,7 +309,26 @@ pub(crate) fn cmd_rewatch(only: Option<String>) -> Result<()> {
         }
     }
     if reactive + other == 0 {
-        println!("(no watch targets for this session — arm one with `confer watch --role <you> --replace`, or set `hubs.<name>.watch`)");
+        // Distinguish "you own nothing" from "I can't tell what you own". With neither a session id
+        // nor a role, ownership is UNDETERMINED — and printing the empty-set line reads as "nothing
+        // to re-arm", which is how a live multi-hub agent silently ends up unwatched. Say so instead,
+        // and show what IS registered so the agent can name itself.
+        if me_session.is_none() && me_role.is_none() {
+            println!(
+                "⚠ can't determine which watch targets are yours — no session id (this harness may \
+                 expose it only to hooks), no $CONFER_ROLE, and this directory isn't a hub clone.\n  \
+                 This is NOT the same as owning none. Re-run from your hub clone, or name yourself: \
+                 `confer rewatch --role <you>`."
+            );
+            let mut seen: Vec<&str> = reg.targets.iter().map(|t| t.role.as_str()).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            if !seen.is_empty() {
+                println!("  roles with registered watch targets on this machine: {}", seen.join(", "));
+            }
+        } else {
+            println!("(no watch targets for this session — arm one with `confer watch --role <you> --replace`, or set `hubs.<name>.watch`)");
+        }
     } else if reactive > 0 {
         println!("\narm the reactive one(s) under the Monitor tool — never background bash (it gets reaped). See /confer-watch.");
     }

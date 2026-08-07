@@ -825,7 +825,7 @@ fn run() -> Result<()> {
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Hub { action, yes } => cmd_hub(action, yes),
-        Cmd::Rewatch { only } => cmd_rewatch(only),
+        Cmd::Rewatch { only, role } => cmd_rewatch(only, role),
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
