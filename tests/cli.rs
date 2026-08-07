@@ -3735,6 +3735,37 @@ fn done_after_a_manual_claim_never_double_claims() {
     );
 }
 
+/// Auto-claim must not SEIZE a request another role already owns. Field-reported by grok (EBSN1R):
+/// two agents resolved the same request seconds apart, and the reporter's `done` silently converted
+/// "I'm reporting a result" into a contested claim they never asked for. Refusing by default (with
+/// the note path named, and `--force` for a deliberate handoff) makes the common intent the easy one.
+#[test]
+fn done_on_a_request_claimed_by_another_role_refuses_without_force() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let g = hub.clone("gamma");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    assert!(ok(&b.confer(&["claim", "--of", &r])), "beta claims it");
+    g.pull();
+    // gamma reports a result on a ticket beta owns — must be refused, not silently claimed.
+    let d = g.confer(&["done", "--of", &r, "--summary", "field-test passed"]);
+    assert!(!ok(&d), "must refuse to resolve a request another role holds: {}", err(&d));
+    let e = err(&d);
+    assert!(e.contains("claimed by beta"), "must name the current owner: {e}");
+    assert!(e.contains("--type note"), "must name the note path (the usual intent): {e}");
+    assert!(e.contains("--force"), "must name the override for a deliberate handoff: {e}");
+    // Nothing landed: no claim, no done — the refusal is total, not partial.
+    a.pull();
+    let events = thread_events(&a, &r);
+    let claims: Vec<&str> = events.iter().filter(|(t, _)| t == "claim").map(|(_, f)| f.as_str()).collect();
+    assert_eq!(claims, vec!["beta"], "a refused done must not leave a claim behind: {events:?}");
+    assert!(!events.iter().any(|(t, _)| t == "done"), "a refused done must not close it: {events:?}");
+}
+
 #[test]
 fn auto_claim_is_attributed_to_the_resolver_never_another_role() {
     let hub = new_hub();
@@ -3759,11 +3790,11 @@ fn auto_claim_is_attributed_to_the_resolver_never_another_role() {
     let _ = g; // only needed to exist in the hub, never acted on
 }
 
-/// Contested/handoff case: gamma resolves a request beta already claimed. gamma
-/// has no claim of its own, so it auto-claims too — `claimants()` is a list
-/// (head = owner, tail = contested), so gamma joining as a second claimant
-/// doesn't steal or overwrite beta's (first/owner) attribution; it just
-/// truthfully records that gamma also touched the request while closing it.
+/// Contested/handoff case: gamma resolves a request beta already claimed. This now requires an
+/// explicit `--force` (the default refuses — see the test above), because a bare `done` here used to
+/// silently turn "I'm reporting a result" into a seizure. Once forced, the ATTRIBUTION rule is
+/// unchanged and still the point: `claimants()` is a list (head = owner, tail = contested), so gamma
+/// joins as a second claimant rather than overwriting beta's (first/owner) attribution.
 #[test]
 fn done_by_a_different_role_adds_its_own_claim_without_overwriting_the_existing_one() {
     let hub = new_hub();
@@ -3776,11 +3807,12 @@ fn done_by_a_different_role_adds_its_own_claim_without_overwriting_the_existing_
     b.pull();
     assert!(ok(&b.confer(&["claim", "--of", &r])));
     g.pull();
-    let d = g.confer(&["done", "--of", &r, "--summary", "cleaning up for beta"]);
+    let d = g.confer(&["done", "--of", &r, "--summary", "cleaning up for beta", "--force"]);
     assert!(ok(&d), "done: {}", err(&d));
     assert!(
-        err(&d).contains("auto-claimed"),
-        "gamma has no claim of its own on this request, so it must auto-claim too: {}",
+        err(&d).contains("auto-claimed") && err(&d).contains("was claimed by beta"),
+        "gamma has no claim of its own, so a forced resolve must auto-claim AND stay truthful \
+         about whose claim it joined: {}",
         err(&d)
     );
     a.pull();

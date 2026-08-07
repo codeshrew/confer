@@ -268,11 +268,14 @@ pub(crate) fn cmd_lifecycle(
     // yet, fire a real `claim` — same msg_type, same append path as a hand-run
     // `{CONFER} claim --of <id>` — attributed to self, BEFORE the resolve lands.
     //
-    // This covers both the common case (nobody has claimed it) and the handoff case
-    // (a DIFFERENT role holds the claim): `claimants()` is a list, not a single
-    // owner slot — head = owner, tail = contested/handoff — so adding the resolver
-    // as an additional claimant doesn't steal or overwrite the existing claim's
-    // attribution, it just records (truthfully) that the resolver also touched it.
+    // Auto-claim is right when NOBODY holds the claim — that's the common case, and it keeps the
+    // board honest about who worked what. It is NOT right when a DIFFERENT role already holds it:
+    // there it silently converts "I'm reporting a result" into "I'm taking this from you", which is
+    // a contested claim the caller never asked for (field-reported by grok on EBSN1R, where two
+    // agents resolved the same request seconds apart and the reporter had to apologise for a
+    // seizure the TOOL performed). Two agents resolving concurrently is normal in a fleet, so the
+    // common intent — report, don't seize — must be the easy one. Handoff/cleanup is still
+    // reachable, but it now has to be said out loud with `--force`.
     // Never claim on behalf of anyone but self, and never double-claim if the
     // resolver already has one.
     if matches!(msg_type, "done" | "error" | "blocked") && !a.of.trim().is_empty() {
@@ -289,6 +292,22 @@ pub(crate) fn cmd_lifecycle(
         };
         if let Some(req_id) = canonical {
             let prior = claimants(&all, &req_id);
+            // Someone ELSE owns this and I'm not already a claimant → refuse by default. Naming the
+            // note path matters as much as the refusal: the caller almost always wanted to report a
+            // result, and without an obvious alternative a hard error just invites a blind --force.
+            if let Some(owner) = prior.first().filter(|_| !prior.iter().any(|c| c == &role)) {
+                if !a.force {
+                    return Err(anyhow!(
+                        "{} is claimed by {} — resolving it would also claim it for you (contested).\n  \
+                         Reporting a result rather than taking the ticket? Post a note instead:\n    \
+                         confer append --type note --reply-to {} --summary \"...\"\n  \
+                         Deliberate handoff or cleanup? Re-run with --force.",
+                        short_id(&req_id),
+                        owner,
+                        short_id(&req_id)
+                    ));
+                }
+            }
             if !prior.iter().any(|c| c == &role) {
                 cmd_append(AppendArgs {
                     msg_type: "claim".to_string(),

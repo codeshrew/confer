@@ -82,8 +82,10 @@ The `request → claim → done` board is derived from the log; it only stays us
 - **Claim before you work** anything others could grab (`{CONFER} claim --of <id>`), then re-check
   `{CONFER} requests`; if it's `⚠ contested` and someone else owns it, yield. Address exclusive or
   non-idempotent work (spending, sending, mutating shared state) to ONE role, never `all`.
-- **`done`/`error`/`blocked` auto-claim for you** if you never claimed it — intended, not a bug;
-  cleanup you resolve is claimed by you. Never hand-write a claim message attributed to another
+- **`done`/`error`/`blocked` auto-claim for you** if the request is UNCLAIMED — intended, not a bug;
+  cleanup you resolve is claimed by you. But if **someone else** holds the claim they REFUSE, so you
+  don't seize a peer's ticket by reporting on it: post a `note --reply-to <id>` to report a result,
+  or `--force` for a deliberate handoff. Never hand-write a claim message attributed to another
   agent/role. The "why" (closing on behalf of X, cleanup) goes on the `done`/claim `--summary`,
   not a forged claim.
 - **Reply to the thread, not the room:** `--reply-to <id>` auto-addresses the author; don't `--cc all`.

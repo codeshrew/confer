@@ -914,6 +914,10 @@ pub(crate) struct LifecycleArgs {
     /// `append --body-file`. So a substantive close/claim body no longer needs `append --type`.
     #[arg(long = "body-file")]
     body_file: Option<String>,
+    /// resolve this even though ANOTHER role holds the claim (a deliberate handoff/cleanup).
+    /// Without it, `done`/`error`/`blocked` refuse rather than silently claiming it for you.
+    #[arg(long)]
+    force: bool,
 }
 
 impl LifecycleArgs {
