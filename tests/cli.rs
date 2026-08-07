@@ -2908,26 +2908,18 @@ fn a_reply_that_resolves_to_no_audience_warns_it_wakes_nobody() {
 fn watch_warns_when_its_output_is_discarded() {
     // Arming a watch with stdout going to a discard (here /dev/null via Stdio::null) means the wakes
     // go nowhere — the watch must say so, loudly, at startup (the "> /dev/null" footgun).
-    use std::io::Read;
     let hub = new_hub();
     let a = hub.clone("alpha");
     assert!(ok(&a.confer(&["join", "--role", "alpha"])));
-    let mut child = Command::new(BIN)
-        .env("HOME", &a.home)
-        .env("CONFER_HUB", &a.dir)
-        .env("CONFER_ROLE", "alpha")
-        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
-        .stdout(Stdio::null()) // discarded output — the bad setup
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(1200));
-    let _ = child.kill();
-    let mut s = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut s);
-    }
-    let _ = child.wait();
+    // stdout discarded (Stdio::null) is the bad setup under test; the warning lands on stderr.
+    let s = spawn_and_capture(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+        false,
+        &["will NOT see any wakes", "output is going to"],
+    );
     assert!(
         s.contains("will NOT see any wakes") || s.contains("output is going to"),
         "watch must warn when its output is discarded: {s}"
@@ -2980,7 +2972,6 @@ fn a_dead_watch_is_surfaced_on_the_next_command_only_after_arming() {
 fn watch_notifies_of_a_newer_hub_version_and_can_be_silenced() {
     // A long-lived watcher should learn when a newer confer lands on the hub (drift that appears
     // AFTER startup) — a one-shot, opt-out wake. Default on; `--no-version-notice` silences it.
-    use std::io::Read;
     let hub = new_hub();
     // Plant a hub version pin newer than this test binary.
     let setter = hub.clone("setter");
@@ -2992,33 +2983,19 @@ fn watch_notifies_of_a_newer_hub_version_and_can_be_silenced() {
     let a = hub.clone("alpha");
     assert!(ok(&a.confer(&["join", "--role", "alpha"])));
 
-    let run = |extra: &[&str]| -> String {
+    // The ON case can wait for the marker; the OFF case is asserting ABSENCE, so it has no marker to
+    // wait for and must use the settle window (an early return would prove nothing).
+    let run = |extra: &[&str], markers: &[&str]| -> String {
         let mut args = vec!["watch", "--role", "alpha", "--replace", "--poll", "1"];
         args.extend_from_slice(extra);
-        let mut child = Command::new(BIN)
-            .env("HOME", &a.home)
-            .env("CONFER_HUB", &a.dir)
-            .env("CONFER_ROLE", "alpha")
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(1600));
-        let _ = child.kill();
-        let mut s = String::new();
-        if let Some(mut o) = child.stdout.take() {
-            let _ = o.read_to_string(&mut s);
-        }
-        let _ = child.wait();
-        s
+        spawn_and_capture(&a.home, &a.dir, "alpha", &args, true, markers)
     };
-    let on = run(&[]);
+    let on = run(&[], &["UPDATE", "newer confer"]);
     assert!(
         on.contains("UPDATE") || on.to_lowercase().contains("newer confer"),
         "watch must notify of a newer hub version: {on}"
     );
-    let off = run(&["--no-version-notice"]);
+    let off = run(&["--no-version-notice"], &[]);
     assert!(
         !off.contains("UPDATE") && !off.to_lowercase().contains("newer confer"),
         "--no-version-notice must silence the version wake: {off}"
@@ -5560,6 +5537,58 @@ fn watch_status_is_a_report_zero_but_check_gates_one() {
     );
 }
 
+/// `update --check` must be able to say "I don't know". The dist install receipt is MACHINE-GLOBAL
+/// (`~/.config/confer-cli/…-receipt.json`) and lives outside every install prefix, so its existence
+/// proves only that SOME dist install happened on this box — not that this binary is that install.
+/// Before the fix, any stray receipt routed every confer on the machine into the self-update branch,
+/// where axoupdater's `is_update_needed_sync() == false` (meaning "I won't manage this") was rendered
+/// as "confer is up to date" — a binary answering about ITSELF using a peer's record. Field-reported
+/// by jarvis on a multi-agent box; reproduced here by pointing a receipt at a different prefix.
+#[test]
+fn update_check_says_cannot_determine_for_a_receipt_describing_another_install() {
+    let root = tmp("foreign-receipt");
+    let xdg = root.join("xdg");
+    std::fs::create_dir_all(xdg.join("confer-cli")).unwrap();
+    let other_prefix = root.join("someone-elses-install");
+    std::fs::create_dir_all(other_prefix.join("bin")).unwrap();
+    // A syntactically valid cargo-dist receipt whose install_prefix is NOT where this exe lives.
+    std::fs::write(
+        xdg.join("confer-cli").join("confer-cli-receipt.json"),
+        format!(
+            r#"{{"binaries":["confer"],"install_prefix":"{}","provider":{{"source":"cargo-dist","version":"0.28.0"}},"source":{{"app_name":"confer","name":"confer-cli","owner":"codeshrew","release_type":"github"}},"version":"0.0.1"}}"#,
+            other_prefix.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let o = Command::new(BIN)
+        .env("HOME", &root)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["update", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&o),
+        2,
+        "a receipt for a DIFFERENT install must yield cannot-determine (2), never up-to-date (0) \
+         or newer-available (1): {}{}",
+        out(&o),
+        err(&o)
+    );
+    let text = format!("{}{}", out(&o), err(&o));
+    assert!(
+        text.contains("cannot determine"),
+        "must say so in words, not just in the exit code: {text}"
+    );
+    assert!(
+        text.contains("DIFFERENT install"),
+        "must name WHY it can't tell — a foreign receipt is otherwise invisible: {text}"
+    );
+    assert!(
+        !text.contains("up to date"),
+        "must never claim currency it cannot establish: {text}"
+    );
+}
+
 #[test]
 fn verify_unsigned_is_predicate_false_one_not_error_three() {
     // F6: `verify` is a predicate. Test-hub messages are unsigned → Unverified → exit 1 (a valid
@@ -7609,27 +7638,81 @@ fn append_requires_summary_or_summary_file() {
 
 // ── design/51 §6/Phase B: per-(hub, role) watch preferences persist in machine config ──────────
 
-/// Spawn `confer <args>` briefly (long enough to pass the startup hints, before the poll loop),
-/// kill it, and return its stderr — where `--wake-on`'s floor hint (or its absence) is emitted.
-fn spawn_and_capture_stderr(home: &Path, hub_dir: &Path, role: &str, args: &[&str]) -> String {
+/// Spawn `confer <args>`, wait until its stderr shows what the caller is looking for (or a generous
+/// deadline passes), then kill it and return everything captured.
+///
+/// A fixed `sleep(N)` then `kill` is a RACE: on a loaded machine (a parallel build, a busy CI runner)
+/// the child may not have emitted yet when it's killed, and the test fails for a reason unrelated to
+/// the behaviour under test. That produced a genuine intermittent failure — three watch tests going
+/// red together in one run out of ten, always under load. Polling for the expected marker is both
+/// more robust AND usually faster than the fixed sleep, since it returns the moment the text appears.
+/// Pass the markers the assertion will look for; an empty list keeps the old "just wait" semantics.
+fn spawn_and_capture(
+    home: &Path,
+    hub_dir: &Path,
+    role: &str,
+    args: &[&str],
+    pipe_stdout: bool,
+    markers: &[&str],
+) -> String {
     use std::io::Read;
-    let mut child = Command::new(BIN)
-        .env("HOME", home)
-        .env("CONFER_HUB", hub_dir)
-        .env("CONFER_ROLE", role)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(1200));
-    let _ = child.kill();
-    let mut s = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut s);
+    use std::sync::{Arc, Mutex};
+    let mut cmd = Command::new(BIN);
+    cmd.env("HOME", home).env("CONFER_HUB", hub_dir).env("CONFER_ROLE", role).args(args);
+    if pipe_stdout {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     }
+    let mut child = cmd.spawn().unwrap();
+    // Drain the pipe on a thread: `read_to_string` on the main thread would block until the child
+    // exits, so we couldn't poll for the marker while it's still running.
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = buf.clone();
+    let stream: Option<Box<dyn Read + Send>> = if pipe_stdout {
+        child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>)
+    } else {
+        child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)
+    };
+    if let Some(mut stream) = stream {
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = sink.lock() {
+                    g.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                }
+            }
+        });
+    }
+    let deadline = Duration::from_secs(20);
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline {
+        let seen = buf.lock().map(|g| g.clone()).unwrap_or_default();
+        // No markers → fall back to a minimum settle window (old behaviour, generous deadline).
+        let done = if markers.is_empty() {
+            started.elapsed() >= Duration::from_millis(1200)
+        } else {
+            markers.iter().any(|m| seen.contains(m))
+        };
+        if done {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // Single exit path, so the child is always reaped (no zombie on any branch).
+    let _ = child.kill();
     let _ = child.wait();
-    s
+    // Give the drain thread a moment to flush whatever arrived just before the kill.
+    std::thread::sleep(Duration::from_millis(50));
+    buf.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Stderr-capturing shorthand — `--wake-on`'s floor hint (or its absence) lands there.
+fn spawn_and_capture_stderr(home: &Path, hub_dir: &Path, role: &str, args: &[&str]) -> String {
+    spawn_and_capture(home, hub_dir, role, args, false, &["alert (act-now only", "notice"])
 }
 
 #[test]

@@ -426,6 +426,20 @@ impl std::fmt::Display for AlreadyLanded {
 }
 impl std::error::Error for AlreadyLanded {}
 
+/// A predicate command's "I cannot determine this" verdict — currently `update --check` when the
+/// running binary isn't dist-managed (no receipt, or a receipt describing a DIFFERENT install). It is
+/// neither YES nor NO: reporting it as either is the bug this exists to prevent (an instrument that
+/// can't say "I don't know" reports a confident wrong answer). Gets its own code (2) rather than
+/// overloading `PredicateFalse`'s 1, exactly as `apply --check`'s "already landed" does.
+#[derive(Debug)]
+pub(crate) struct Indeterminate;
+impl std::fmt::Display for Indeterminate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cannot determine")
+    }
+}
+impl std::error::Error for Indeterminate {}
+
 /// Exit-code contract (DESIGN.md): 0 = success / report produced / predicate YES; 1 = predicate NO (a
 /// valid negative, ONLY from predicate commands); 2 = usage (clap), the Stop-hook block, or `confer
 /// apply --check`'s "already landed" verdict; 3 = execution/environment error. Codes return UP
@@ -437,6 +451,7 @@ fn main() -> std::process::ExitCode {
         Err(e) if e.is::<PredicateFalse>() => ExitCode::from(1),
         Err(e) if e.is::<StopHookBlock>() => ExitCode::from(2),
         Err(e) if e.is::<AlreadyLanded>() => ExitCode::from(2),
+        Err(e) if e.is::<Indeterminate>() => ExitCode::from(2),
         Err(e) => {
             // Match Rust's default Result-termination output so error TEXT is unchanged; only the CODE
             // moves (1 → 3), decoupling "confer failed" from a predicate's "the answer is no".

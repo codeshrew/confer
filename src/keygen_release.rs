@@ -212,8 +212,28 @@ pub(crate) fn cmd_update(check_only: bool) -> Result<()> {
     // install HAS a receipt → we self-replace. The receipt is the discriminator, so we must look
     // for it under the right name.
     let mut updater = AxoUpdater::new_for("confer-cli");
-    if updater.load_receipt().is_err() {
-        return delegate_to_package_manager();
+    // The receipt is MACHINE-GLOBAL (`~/.config/confer-cli/…-receipt.json`) — ONE file for the whole
+    // box, living outside every install prefix. So `load_receipt().is_ok()` proves only "some dist
+    // install happened on this machine", NOT "this binary is the install it describes". On a
+    // multi-agent box that's last-installer-wins: without the second check a binary answers about
+    // ITSELF using a peer's receipt, and the honest delegate path below becomes unreachable
+    // (field-reported by jarvis, whose cargo-installed confer read a /tmp-prefixed receipt and
+    // reported "up to date"). `check_receipt_is_for_this_executable` compares the receipt's
+    // install_prefix against the current exe — the discriminator we actually meant all along.
+    let unmanaged = if updater.load_receipt().is_err() {
+        Some(Unmanaged::NoReceipt)
+    } else if !updater.check_receipt_is_for_this_executable().unwrap_or(false) {
+        Some(Unmanaged::ForeignReceipt)
+    } else {
+        None
+    };
+    if let Some(why) = unmanaged {
+        // `--check` must be able to say "I don't know". Reporting an unmanaged install as either
+        // up-to-date or newer-available is a confident wrong answer about a question we cannot
+        // answer: axoupdater's `is_update_needed_sync()` returns false for an install it won't
+        // manage, which is "won't/can't", not "current". Still route through the delegate so the
+        // caller keeps the actionable part — WHICH command updates this binary.
+        return delegate_to_package_manager(why, check_only);
     }
     // Optionally use a token to dodge GitHub API rate limits for agents that update often.
     if let Ok(tok) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
@@ -223,12 +243,15 @@ pub(crate) fn cmd_update(check_only: bool) -> Result<()> {
     }
     // STANDALONE: the only self-replace path. axoupdater fetches the latest GH Release, verifies
     // the checksum dist embedded, and swaps atomically.
+    // Three states, three exit codes, so a script can gate on the answer instead of scraping text:
+    // 0 = current, 1 = newer available (action needed, same shape as `watch-status --check`),
+    // 2 = cannot determine (above). Reached only when the receipt genuinely describes THIS binary.
     if check_only {
         if updater.is_update_needed_sync()? {
             println!("a newer confer is available — run `confer update`.");
-        } else {
-            println!("confer is up to date.");
+            return Err(crate::PredicateFalse.into());
         }
+        println!("confer is up to date.");
         return Ok(());
     }
     // Serialize the self-replace across co-resident agents: they share one installed binary, so two
@@ -263,9 +286,53 @@ fn print_post_update_steps() {
     println!("  3. see what changed (may ask something of you):   confer changelog");
 }
 
-/// No dist receipt → a package manager owns this binary. Detect which from the running exe and
-/// print the precise upgrade command; never self-replace.
-fn delegate_to_package_manager() -> Result<()> {
+/// Why confer won't self-replace this binary. Shapes the message AND (for `--check`) the verdict —
+/// the two cases are genuinely different and conflating them is what made the bug invisible.
+#[derive(Clone, Copy)]
+enum Unmanaged {
+    /// No dist receipt anywhere — a package manager (or a hand build) owns this binary.
+    NoReceipt,
+    /// A receipt EXISTS but describes a different install (different prefix). The machine-global
+    /// receipt path means this is the normal case on a box running several agents.
+    ForeignReceipt,
+}
+
+impl Unmanaged {
+    /// State the reason in the caller's terms. Being specific matters here: "no receipt" and
+    /// "someone else's receipt" lead to different next actions, and the second is otherwise
+    /// invisible — it looks like a working self-update right up until it answers about the wrong
+    /// binary.
+    fn explain(self) {
+        match self {
+            Self::NoReceipt => {
+                println!("  this binary has no dist install receipt, so confer can't self-replace it");
+                println!("  (that's normal for brew, cargo, or a build from source).");
+            }
+            Self::ForeignReceipt => {
+                println!("  a dist install receipt exists on this machine, but it describes a");
+                println!("  DIFFERENT install — not this binary. The receipt is machine-global");
+                println!("  (~/.config/confer-cli/), so on a box running several agents the last");
+                println!("  dist installer wins it. Trusting it would mean answering about this");
+                println!("  binary using another install's record.");
+            }
+        }
+    }
+}
+
+/// Not ours to self-replace → a package manager (or another install) owns this binary. Detect which
+/// from the running exe and print the precise upgrade command; never self-replace.
+fn delegate_to_package_manager(why: Unmanaged, check_only: bool) -> Result<()> {
+    // Under `--check` the verdict comes FIRST — the caller asked a yes/no question and the honest
+    // answer is neither. The upgrade guidance below still prints, so "I can't tell" never costs the
+    // caller the actionable part.
+    if check_only {
+        println!("cannot determine whether this confer is current.");
+    }
+    // A receipt belonging to a DIFFERENT install is the surprising case (and the one that used to be
+    // invisible), so always name it — even when the package-manager hint alone would be actionable.
+    if matches!(why, Unmanaged::ForeignReceipt) {
+        why.explain();
+    }
     // Canonicalize: a Homebrew install exposes the binary as a SYMLINK (e.g.
     // /usr/local/bin/confer -> ../Cellar/confer/<v>/bin/confer on Intel macOS), and
     // `current_exe()` returns the unresolved symlink, which wouldn't contain `/Cellar/`.
@@ -290,11 +357,16 @@ fn delegate_to_package_manager() -> Result<()> {
             println!("  (tip: `cargo binstall confer-cli --force` is much faster, if you install cargo-binstall)");
         }
     } else {
-        println!(
-            "confer has no dist install receipt and isn't in a recognized package-manager path,"
-        );
-        println!("so `confer update` can't safely replace it. Reinstall via the shell installer");
-        println!("(curl … | sh) for self-update, or update through your package manager.");
+        println!("`confer update` can't safely replace this binary:");
+        if matches!(why, Unmanaged::NoReceipt) {
+            why.explain();
+        }
+        println!("Reinstall via the shell installer (curl … | sh) for self-update, or update");
+        println!("through your package manager.");
+    }
+    if check_only {
+        println!("\ninstalled version: {}", crate::VERSION);
+        return Err(crate::Indeterminate.into());
     }
     // Whichever way they update the binary, the watch + skills must be refreshed afterward.
     print_post_update_steps();
