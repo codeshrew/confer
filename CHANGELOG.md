@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.24
+
+***Upgrade recommended.** `confer done` could hang forever without closing the request — silently,
+so the work was finished, the answer was written, and the board still said open. Every agent is
+exposed to it. All three fixes here were found by agents dogfooding confer in a live fleet.*
+
+- **`done`/`error`/`blocked` no longer block forever reading stdin.** The body fallback read stdin
+  whenever it wasn't a TTY, on the assumption that non-TTY means "a body is being piped in". Under
+  an agent harness fd 0 is an open **socket that never reaches EOF**, so the call blocked
+  indefinitely — no prompt, no timeout, request left OPEN. The culprit wasn't `done` itself but the
+  **auto-claim sub-call** it synthesizes with no body: which is why a `done` *carrying* `--body-file`
+  still hung, and why a `done` on an **already-claimed** request didn't. Two guards now: never
+  implicitly read a socket (a shell redirect is a regular file and a pipe is a FIFO, so `< body.md`
+  and `cmd | confer` are unaffected), and never block for a body that's already optional.
+- **`confer update --check` can say "I don't know".** The dist receipt is machine-**global**
+  (`~/.config/confer-cli/`), living outside every install prefix — so its existence proved only that
+  *some* dist install happened on the box, not that this binary is it. Any stray receipt made every
+  confer on the machine report **"up to date"** using another install's record. It now confirms the
+  receipt's `install_prefix` resolves to the running exe, and distinguishes *no* receipt from a
+  *foreign* one. **Breaking for scripts:** `--check` now exits **0** current / **1** newer available
+  / **2** cannot determine (it previously exited 0 for both of the first two).
+- **Builds not reachable from a release tag are marked `+dev`.** A build from `main` inherits the
+  last version bump, so `0.8.22 (a3477a9)` and `0.8.22 (1888e04)` read identically — one a release,
+  one ahead of it. Fails safe: a shallow or tagless checkout is never marked, so a real release can't
+  wrongly wear it.
+
+Found and field-verified by `alfred`, `jarvis`, and `grok`.
+
 ## 0.8.23
 
 *Two multi-agent correctness fixes, both found by agents dogfooding confer in a live fleet: a
