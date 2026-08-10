@@ -3712,6 +3712,49 @@ fn done_after_a_manual_claim_never_double_claims() {
     );
 }
 
+/// A lifecycle verb must never block waiting for a body it doesn't need. `done`/`error`/`blocked`
+/// synthesize an auto-claim sub-call with no --text and no --body-file; the old implicit "stdin isn't
+/// a TTY, so slurp it" rule then read fd 0 to EOF. Under an agent harness fd 0 is an open socket that
+/// never EOFs, so the call hung forever — silently, leaving the request OPEN on the board while the
+/// work was actually finished (alfred: two hangs in one day, one ~30 minutes). Proven directly with a
+/// socket on fd 0: pre-fix blocked indefinitely, fixed returns in well under a second.
+///
+/// A socket can't be handed to a child from a plain integration test, so this locks down the guard
+/// that fixes it: when an empty body is already acceptable, stdin is not consumed at all.
+#[test]
+fn a_lifecycle_verb_does_not_swallow_stdin_as_its_body() {
+    use std::io::Write;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    let r = a.send(&[
+        "--type", "request", "--to", "beta", "--summary", "do it", "--allow-empty-body",
+    ]);
+    b.pull();
+    let mut child = Command::new(BIN)
+        .env("HOME", &b.home)
+        .env("CONFER_HUB", &b.dir)
+        .env("CONFER_ROLE", "beta")
+        .args(["done", "--of", &r, "--summary", "did it"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Data waiting on stdin that the verb must ignore rather than adopt as its body.
+    child.stdin.take().unwrap().write_all(b"STDIN_MUST_NOT_BECOME_THE_BODY\n").unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "done must succeed: {}", String::from_utf8_lossy(&o.stderr));
+    a.pull();
+    let body = out(&a.confer(&["show", &r]));
+    let thread = out(&a.confer(&["thread", &r]));
+    assert!(
+        !body.contains("STDIN_MUST_NOT_BECOME_THE_BODY")
+            && !thread.contains("STDIN_MUST_NOT_BECOME_THE_BODY"),
+        "a lifecycle verb must not consume stdin as its body: {thread}"
+    );
+}
+
 /// Auto-claim must not SEIZE a request another role already owns. Field-reported by grok (EBSN1R):
 /// two agents resolved the same request seconds apart, and the reporter's `done` silently converted
 /// "I'm reporting a result" into a contested claim they never asked for. Refusing by default (with

@@ -3,6 +3,23 @@
 
 use anyhow::{anyhow, Result};
 use std::io::{IsTerminal, Read};
+
+/// Is stdin a socket? An agent harness hands its child an open socket on fd 0 that never reaches
+/// EOF, so reading it to EOF hangs forever. A shell redirect is a regular file and a pipe is a FIFO;
+/// neither is a socket, so the documented `< body.md` and `cmd | confer` paths are unaffected.
+/// Non-Unix has no equivalent footgun here, so it answers `false` rather than guessing.
+#[cfg(unix)]
+fn stdin_is_socket() -> bool {
+    // SAFETY: fstat on a borrowed fd we neither take ownership of nor close.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        libc::fstat(libc::STDIN_FILENO, &mut st) == 0 && (st.st_mode & libc::S_IFMT) == libc::S_IFSOCK
+    }
+}
+#[cfg(not(unix))]
+fn stdin_is_socket() -> bool {
+    false
+}
 use std::path::Path;
 
 use crate::append_ref;
@@ -796,7 +813,26 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     };
     // --body-file NEVER falls through to stdin — it is the one blessed shell-free path, and
     // combining it with piped stdin would silently pick a winner instead of failing clearly.
-    if a.body_file.is_none() && body.is_empty() && !std::io::stdin().is_terminal() {
+    //
+    // The `!is_terminal()` test ALONE is not enough to mean "a body is being piped in". Under an
+    // agent harness stdin is an open SOCKET that never reaches EOF, so `read_to_string` blocks
+    // forever — silently, with no prompt and no timeout, so a wedged call and a slow network look
+    // identical from the caller's side. Field-reported by alfred after two hangs in one day (one for
+    // ~30 minutes) with the request left OPEN on the board: exactly the failure shape where the work
+    // is done, the answer is written, and the board still says nothing happened.
+    //
+    // Two guards, each independently sufficient for the observed case:
+    //   1. Never implicitly slurp a SOCKET. A shell redirect (`< body.md`) is a regular file and a
+    //      pipe (`cmd | confer`) is a FIFO — both EOF normally, so both documented interfaces still
+    //      work. A socket is a harness's stdin, never a body.
+    //   2. Never block for a body that is already optional. `allow_empty_body` says an empty body is
+    //      acceptable — waiting for one we don't need is pure downside. This covers the actual
+    //      culprit: `done`/`error`/`blocked` synthesize an auto-claim sub-call with no text and no
+    //      body-file, and THAT is what hung (which is why a `done` carrying --body-file still hung,
+    //      and why a `done` on an already-claimed request did not — it never auto-claims).
+    let stdin_may_hold_a_body =
+        !std::io::stdin().is_terminal() && !stdin_is_socket() && !a.allow_empty_body;
+    if a.body_file.is_none() && body.is_empty() && stdin_may_hold_a_body {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s)?;
         body = s.trim_end().to_string();
