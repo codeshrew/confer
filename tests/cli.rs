@@ -7876,3 +7876,53 @@ fn bare_watch_with_nothing_saved_defaults_to_notice() {
         "with nothing ever saved, the built-in default (notice) must apply — no floor hint: {s}"
     );
 }
+
+/// A BARE `confer reconnect` must repair a clone that has no confer signing key — because confer's
+/// own fail-closed error tells operators to run exactly that to restore signing. Before the fix the
+/// entire signing-identity block was gated on `--role` being passed, so the bare invocation (what
+/// almost everyone runs, and what the error message names) did nothing and the clone kept shipping
+/// UNSIGNED. Reported by orbit/graph: raw `git commit` honoured their local `commit.gpgsign=true`
+/// and signed, while confer's own commits silently did not, and only an explicit
+/// `join --role X --signing-key <path>` bridged it.
+///
+/// Also locks the guard: the role is resolved from THE CLONE's own identity, never `$CONFER_ROLE`.
+/// In a clone owned by alpha with `CONFER_ROLE=mallory` set, an env fallback would re-role the clone
+/// and turn a repair command into a clobber.
+#[test]
+fn bare_reconnect_restores_a_missing_signing_key_without_re_roling_the_clone() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])), "join");
+    let id_path = a.dir.join(".confer").join("identity.json");
+    // A plain `join --role X` (no --signing-key) leaves the clone KEYLESS — exactly the state orbit
+    // was in, and why their raw git commits signed while confer's own did not.
+    let before = std::fs::read_to_string(&id_path).unwrap();
+    assert!(
+        !before.contains("signing_key"),
+        "precondition: a bare join leaves no confer signing key: {before}"
+    );
+
+    // BARE reconnect — no --role — with a hostile CONFER_ROLE in the environment.
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "mallory")
+        .args(["reconnect"])
+        .output()
+        .unwrap();
+    assert!(ok(&o), "bare reconnect: {}{}", out(&o), err(&o));
+
+    let after = std::fs::read_to_string(&id_path).unwrap();
+    assert!(
+        after.contains("signing_key"),
+        "a bare reconnect must restore the signing key its own error message promises: {after}"
+    );
+    assert!(
+        after.contains("alpha"),
+        "the clone must still belong to alpha: {after}"
+    );
+    assert!(
+        !after.contains("mallory"),
+        "$CONFER_ROLE must never re-role the clone: {after}"
+    );
+}

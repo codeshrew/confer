@@ -163,6 +163,21 @@ pub fn audit(root: &Path) -> Vec<Finding> {
                 fix: Some("adopt an agent key: `confer join --role <you> --signing-key <path>`.".into()),
             }),
         }
+        // The cohabiting-mechanisms trap (orbit/graph, DZTQYK + JNASFF). Git config and confer's own
+        // signer are SEPARATE mechanisms living in one clone. With `commit.gpgsign=true` a raw
+        // `git commit` here signs — so an operator watches their commits go up signed and reasonably
+        // concludes "this clone signs". But confer signs SELF-CONTAINED from `.confer/identity.json`'s
+        // `signing_key`, and when that field is empty confer's own messages go out UNSIGNED — it even
+        // passes `-c commit.gpgsign=false`, overriding the very setting the operator just turned on.
+        // Nothing reconciles the two and nothing says they disagree. This is the state in which an
+        // operator is MOST confident and MOST wrong, and it costs two cheap reads to catch.
+        if signing_on && crate::config::signing_key(root).is_none() {
+            f.push(Finding {
+                level: Level::Warn,
+                title: "commit.gpgsign is ON, but this clone has no confer signing key (.confer/identity.json has no `signing_key`) — raw `git commit`s sign while confer's OWN messages go out UNSIGNED.".into(),
+                fix: Some("adopt one by discovery: `confer reconnect` (resolves this clone's role and picks up ~/.confer/keys/<role>), or `confer join --role <you> --signing-key <path>`.".into()),
+            });
+        }
         if let Some((scope, mail)) = &email {
             if *scope != Scope::Local {
                 f.push(Finding {

@@ -85,6 +85,27 @@ pub(crate) fn cmd_reconnect(
         );
     }
 
+    // A BARE `confer reconnect` (no --role) used to skip the whole signing-identity block below,
+    // because it is gated on `role` being Some. So a clone whose `identity.json` has no
+    // `signing_key` stayed keyless and silently UNSIGNED — while confer's own fail-closed error
+    // told the operator to run exactly this command to repair it ("`confer reconnect` re-asserts
+    // it"). The tool pointed at a command that, as almost everyone invokes it, did nothing.
+    // Reported by orbit/graph (DZTQYK / JNASFF): raw `git commit` honoured their local
+    // `commit.gpgsign=true` and signed, while confer's own commits did not, and `reconnect` would
+    // not bridge the two — only `join --role X --signing-key <path>` did, by hand.
+    //
+    // Resolve the role from THE CLONE ITSELF when it wasn't passed. Deliberately NOT
+    // `config::resolve_role`, which falls back to `$CONFER_ROLE`: in a clone belonging to role A
+    // with `$CONFER_ROLE=B` in the environment, that would re-role the clone to B — turning a
+    // repair command into a clobber. Only the clone's own recorded identity is safe here.
+    let role = role.or_else(|| {
+        std::fs::read_to_string(root.join(".confer").join("identity.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(String::from))
+            .filter(|r| !r.is_empty())
+    });
+
     // 2. Refresh + (re)join with the requested host (idempotent).
     let _ = gitcmd::integrate(&root); // pull latest, best-effort
     if let Some(r) = &role {
