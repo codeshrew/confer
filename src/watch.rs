@@ -36,6 +36,8 @@ pub struct WatchOpts {
     /// `min_priority`/addressing (design/51). Below-floor events still land (poll/inbox), same
     /// land-vs-wake split as `min_priority`. Default: `Notice` (mutes only claim/ack/defer).
     pub wake_on: WakeRung,
+    /// Wake on cc'd messages? Default false — see `groups::cc_only`.
+    pub wake_on_cc: bool,
     /// suppress the one-shot "a newer confer is on this hub — update" wake. On by default; set to
     /// true (`--no-version-notice`) if you don't want the watch to nudge you about version drift.
     pub no_version_notice: bool,
@@ -174,7 +176,8 @@ pub fn resolve_watch_prefs(
     cli_min_priority: Option<&str>,
     cli_topic: Option<&str>,
     cli_all: bool,
-) -> Result<(WakeRung, u8, Option<String>, bool)> {
+    cli_wake_on_cc: bool,
+) -> Result<(WakeRung, u8, Option<String>, bool, bool)> {
     let saved = machineconfig::get_watch_prefs(hub_key, role);
 
     let wake_on_str = cli_wake_on
@@ -189,11 +192,18 @@ pub fn resolve_watch_prefs(
     // A bool store-true flag can never be explicitly "false" — its only explicit state is present/true —
     // so folding cli_all into the baseline before parsing is the correct (and only possible) resolution.
     let all_baseline = cli_all || saved.all.unwrap_or(false);
+    // Same store-true resolution as `all`: present means true, absent means "fall back to saved".
+    // Default OFF — a cc lands and surfaces at inbox/poll/session-start, it just does not interrupt.
+    let wake_on_cc = cli_wake_on_cc || saved.wake_on_cc.unwrap_or(false);
 
     let min_priority = parse_min_priority(&min_priority_str)?;
     let (wake_on, all) = parse_wake_on(&wake_on_str, all_baseline)?;
 
-    let explicit = cli_wake_on.is_some() || cli_min_priority.is_some() || cli_topic.is_some() || cli_all;
+    let explicit = cli_wake_on.is_some()
+        || cli_min_priority.is_some()
+        || cli_topic.is_some()
+        || cli_all
+        || cli_wake_on_cc;
     if explicit {
         let _ = machineconfig::save_watch_prefs(
             hub_key,
@@ -203,11 +213,12 @@ pub fn resolve_watch_prefs(
                 min_priority: Some(min_priority_str),
                 topic: topic.clone(),
                 all: Some(all),
+                wake_on_cc: Some(wake_on_cc),
                 extra: Default::default(),
             },
         );
     }
-    Ok((wake_on, min_priority, topic, all))
+    Ok((wake_on, min_priority, topic, all, wake_on_cc))
 }
 
 pub fn run(opts: WatchOpts) -> Result<()> {
@@ -580,6 +591,7 @@ fn should_wake(
     topic: Option<&str>,
     min_priority: u8,
     wake_on: WakeRung,
+    wake_on_cc: bool,
     all_msgs: &[Message],
 ) -> bool {
     if m.front.from.as_str() == me {
@@ -595,6 +607,15 @@ fn should_wake(
     }
     if wake_rung(m, me, grps, all_msgs) < wake_on {
         return false; // below the wake-rung floor — still readable via poll/sweep (design/51)
+    }
+    // cc is awareness unless this role said otherwise. It still LANDS — inbox, poll and
+    // session-context all show it — it just does not interrupt. `--priority high` breaks through,
+    // which is the sender's escape hatch for the case they genuinely know is urgent.
+    if !wake_on_cc
+        && priority_rank(m.front.priority.as_deref()) < 2
+        && crate::groups::cc_only(m, me, grps)
+    {
+        return false;
     }
     crate::groups::addressed(m, me, grps) || (firehose && is_actionable(m))
 }
@@ -671,6 +692,7 @@ fn emit_new(root: &Path, me: &str, opts: &WatchOpts, since: &mut Option<String>)
                 opts.topic.as_deref(),
                 opts.min_priority,
                 opts.wake_on,
+                opts.wake_on_cc,
                 &all_msgs,
             )
         })
@@ -798,7 +820,7 @@ mod tests {
     /// log needed" — the pre-design/51 test surface below only exercises addressing/topic/firehose.
     #[allow(clippy::too_many_arguments)]
     fn sw(m: &Message, me: &str, g: &crate::groups::Groups, firehose: bool, topic: Option<&str>, min_priority: u8) -> bool {
-        should_wake(m, me, g, firehose, topic, min_priority, WakeRung::Transactional, &[])
+        should_wake(m, me, g, firehose, topic, min_priority, WakeRung::Transactional, false, &[])
     }
 
     #[test]
@@ -927,22 +949,22 @@ mod tests {
         // default floor = notice
         let claim = m("bob", "claim", &["alice"]);
         assert!(
-            !should_wake(&claim, "alice", &g, false, None, 0, WakeRung::Notice, &all),
+            !should_wake(&claim, "alice", &g, false, None, 0, WakeRung::Notice, false, &all),
             "claim must NOT wake at default (notice) floor"
         );
         let ack = m("bob", "ack", &["alice"]);
-        assert!(!should_wake(&ack, "alice", &g, false, None, 0, WakeRung::Notice, &all));
+        assert!(!should_wake(&ack, "alice", &g, false, None, 0, WakeRung::Notice, false, &all));
         let defer = m("bob", "defer", &["alice"]);
-        assert!(!should_wake(&defer, "alice", &g, false, None, 0, WakeRung::Notice, &all));
+        assert!(!should_wake(&defer, "alice", &g, false, None, 0, WakeRung::Notice, false, &all));
 
         // a note to me and a done on MY request DO wake at the default.
         let note = m("bob", "note", &["alice"]);
-        assert!(should_wake(&note, "alice", &g, false, None, 0, WakeRung::Notice, &all), "note must wake at notice floor");
+        assert!(should_wake(&note, "alice", &g, false, None, 0, WakeRung::Notice, false, &all), "note must wake at notice floor");
 
         let (req_mine, done_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "done", "alice");
         let all_with_mine = vec![req_mine];
         assert!(
-            should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Notice, &all_with_mine),
+            should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Notice, false, &all_with_mine),
             "done on my request must wake at notice floor"
         );
     }
@@ -954,17 +976,17 @@ mod tests {
         let (req_mine, done_mine) = req_and_reply("alice", "01J8Z9K3QH7Z", "bob", "done", "alice");
         let all_with_mine = vec![req_mine];
         assert!(
-            !should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Alert, &all_with_mine),
+            !should_wake(&done_mine, "alice", &g, false, None, 0, WakeRung::Alert, false, &all_with_mine),
             "done on my request must NOT wake at alert floor"
         );
         // …but a request to me and an error on my request DO.
         let req_to_me = m("bob", "request", &["alice"]);
-        assert!(should_wake(&req_to_me, "alice", &g, false, None, 0, WakeRung::Alert, &[]), "request to me wakes at alert floor");
+        assert!(should_wake(&req_to_me, "alice", &g, false, None, 0, WakeRung::Alert, false, &[]), "request to me wakes at alert floor");
 
         let (req2, error_mine) = req_and_reply("alice", "01J8Z9K3QH81", "bob", "error", "alice");
         let all_with_error = vec![req2];
         assert!(
-            should_wake(&error_mine, "alice", &g, false, None, 0, WakeRung::Alert, &all_with_error),
+            should_wake(&error_mine, "alice", &g, false, None, 0, WakeRung::Alert, false, &all_with_error),
             "error on my request wakes at alert floor"
         );
     }
@@ -977,7 +999,7 @@ mod tests {
         let mut high_claim = m("bob", "claim", &["alice"]);
         high_claim.front.priority = Some("high".into());
         assert!(
-            should_wake(&high_claim, "alice", &g, false, None, 0, WakeRung::Alert, &[]),
+            should_wake(&high_claim, "alice", &g, false, None, 0, WakeRung::Alert, false, &[]),
             "priority high must break through even --wake-on alert"
         );
     }

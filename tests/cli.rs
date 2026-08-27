@@ -8065,3 +8065,53 @@ fn a_first_arm_starts_current_but_still_surfaces_unread_mail() {
         "a first arm must not swallow unread mail addressed to the newcomer: {ib}"
     );
 }
+
+/// A `cc` carries two intents that want opposite handling — "you are party to this, act" and "you
+/// should know this, read later" — and they produced an identical wake. So a sender who meant the
+/// second had to choose between interrupting and silence, chose interrupting, and the recipient read
+/// obligation off arrival. Sender-declared priority can't fix it (the sender can't see the
+/// recipient's context) and thread-participation can't either (it reads a decaying truth as a
+/// binary). The recipient is the only party that knows whether it is heads-down or overseeing, so
+/// the recipient declares it — default OFF, persisted per (hub, role) like the other watch prefs.
+///
+/// What must NOT change: `to` still wakes, an `all` broadcast is a deliberate announcement and still
+/// wakes, and `--priority high` still breaks through. And a silenced cc must still LAND.
+#[test]
+fn cc_does_not_wake_by_default_but_still_lands_and_high_breaks_through() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    a.pull();
+    let _ = b.send(&["--type", "note", "--to", "alpha", "--summary", "TOALPHA", "--text", "x"]);
+    let _ = b.send(&["--type", "note", "--to", "beta", "--cc", "alpha", "--summary", "CCPLAIN", "--text", "x"]);
+    let _ = b.send(&[
+        "--type", "note", "--to", "beta", "--cc", "alpha", "--priority", "high", "--summary",
+        "CCHIGH", "--text", "x",
+    ]);
+    let _ = b.send(&["--type", "note", "--to", "all", "--summary", "BCAST", "--text", "x"]);
+
+    let s = spawn_and_capture(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+        true,
+        &["BCAST"],
+    );
+    assert!(s.contains("TOALPHA"), "a `to` addressee must still wake: {s}");
+    assert!(s.contains("CCHIGH"), "--priority high must break through the cc gate: {s}");
+    assert!(s.contains("BCAST"), "an `all` broadcast is an announcement, not an FYI copy: {s}");
+    assert!(
+        !s.contains("CCPLAIN"),
+        "a plain cc must NOT wake by default — it lands and surfaces later: {s}"
+    );
+
+    // Landed, not lost: the silenced cc is still readable.
+    let read = out(&a.confer(&["read", "--last", "20"]));
+    assert!(
+        read.contains("CCPLAIN"),
+        "a silenced cc must still LAND on the board — nothing is dropped: {read}"
+    );
+}

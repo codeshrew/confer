@@ -746,6 +746,7 @@ fn run() -> Result<()> {
             all,
             min_priority,
             wake_on,
+            wake_on_cc,
             no_version_notice,
             delivery,
             session,
@@ -757,13 +758,14 @@ fn run() -> Result<()> {
             let root = config::repo_root()?;
             let hub_key = config::hub_key(&root);
             let resolved_role = config::resolve_role(role.clone(), &root).unwrap_or_default();
-            let (wake_on, min_priority, topic, all) = watch::resolve_watch_prefs(
+            let (wake_on, min_priority, topic, all, wake_on_cc) = watch::resolve_watch_prefs(
                 &hub_key,
                 &resolved_role,
                 wake_on.as_deref(),
                 min_priority.as_deref(),
                 topic.as_deref(),
                 all,
+                wake_on_cc,
             )?;
             watch::run(watch::WatchOpts {
                 topic,
@@ -775,13 +777,14 @@ fn run() -> Result<()> {
                 all,
                 min_priority,
                 wake_on,
+                wake_on_cc,
                 no_version_notice,
                 delivery,
                 session,
             })
         }
-        Cmd::Arm { role, topic, all, min_priority, wake_on, session, force } => {
-            arm::run(role, topic, all, min_priority, wake_on, session, force)
+        Cmd::Arm { role, topic, all, min_priority, wake_on, wake_on_cc, session, force } => {
+            arm::run(role, topic, all, min_priority, wake_on, wake_on_cc, session, force)
         }
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),

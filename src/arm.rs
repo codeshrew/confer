@@ -69,6 +69,7 @@ pub fn run(
     all: bool,
     min_priority: Option<String>,
     wake_on: Option<String>,
+    wake_on_cc: bool,
     session: Option<String>,
     force: bool,
 ) -> Result<()> {
@@ -106,13 +107,14 @@ pub fn run(
             ));
         }
     }
-    let (wake_on, min_priority, topic, all) = watch::resolve_watch_prefs(
+    let (wake_on, min_priority, topic, all, wake_on_cc) = watch::resolve_watch_prefs(
         &hub_key,
         &resolved_role,
         wake_on.as_deref(),
         min_priority.as_deref(),
         topic.as_deref(),
         all,
+        wake_on_cc,
     )?;
     // The one right way, baked in so it can't be forgotten: take over any orphan (`--replace`),
     // and stamp the delivery method so `watch-status` can affirm we actually deliver wakes. Every
@@ -127,6 +129,7 @@ pub fn run(
         all,
         min_priority,
         wake_on,
+        wake_on_cc,
         no_version_notice: false,
         delivery: Some("monitor".to_string()),
         session,

@@ -440,6 +440,12 @@ pub(crate) enum Cmd {
         /// (design/51 §6); passing this explicitly saves it for next time.
         #[arg(long = "min-priority")]
         min_priority: Option<String>,
+        /// also wake on messages where you are only CC'd. Default OFF: a cc is awareness, so it
+        /// LANDS (inbox / poll / session-context) without interrupting you. Turn it on for an
+        /// overseer role that wants everything; leave it off when heads-down. Saved per (hub, role)
+        /// like the other watch preferences. `--priority high` breaks through either way.
+        #[arg(long = "wake-on-cc")]
+        wake_on_cc: bool,
         /// only wake on events at/above this intrinsic wake-rung: alert (act-now
         /// only) | notice (default — mutes only board mechanics: claim/ack/defer)
         /// | all (today's behavior — every event addressed to you) | verbose (the
@@ -486,6 +492,12 @@ pub(crate) enum Cmd {
         /// any, else `low`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
         #[arg(long = "min-priority")]
         min_priority: Option<String>,
+        /// also wake on messages where you are only CC'd. Default OFF: a cc is awareness, so it
+        /// LANDS (inbox / poll / session-context) without interrupting you. Turn it on for an
+        /// overseer role that wants everything; leave it off when heads-down. Saved per (hub, role)
+        /// like the other watch preferences. `--priority high` breaks through either way.
+        #[arg(long = "wake-on-cc")]
+        wake_on_cc: bool,
         /// same as `watch --wake-on` — unset uses the saved per-(hub,role) preference if any,
         /// else `notice`. Passing this explicitly saves it for the next bare `arm` (design/51 §6).
         #[arg(long = "wake-on")]

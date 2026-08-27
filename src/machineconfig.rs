@@ -172,6 +172,11 @@ pub struct WatchPrefs {
     pub topic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<bool>,
+    /// Wake on messages where this role is only `cc`'d? Default OFF: a cc is awareness, and the
+    /// recipient is the only party that knows whether it is heads-down or overseeing. An overseer
+    /// opts in; `--priority high` breaks through regardless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_on_cc: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

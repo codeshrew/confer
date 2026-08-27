@@ -70,6 +70,34 @@ pub fn addressed(m: &Message, me: &str, groups: &Groups) -> bool {
 /// excluding `cc` (optional/FYI) and pure `all` broadcasts? This is the "my inbox"
 /// test: mail a sender explicitly put on me to act on. The unread-nag uses it so
 /// broadcasts and FYIs don't re-surface forever (`inbox.rs`).
+/// Is `me` reached ONLY as a `cc` — not named in `to`, not in a group named in `to`, and not swept
+/// up by a broadcast in `to`?
+///
+/// `cc` carries two intents that want opposite handling: "you are party to this, act" and "you should
+/// know this, read it later". They produce an identical wake today, so a sender who means the second
+/// must choose between interrupting and staying silent — and picks interrupting, because the
+/// alternative is worse. The recipient then reads obligation off arrival.
+///
+/// The wake ladder resolves it by asking the ONE party that has the information. A sender cannot know
+/// whether the recipient is heads-down or overseeing, and the system cannot infer it from thread
+/// history without treating a decaying truth as a binary. The recipient knows, so the recipient
+/// declares it (`--wake-on-cc`, persisted per (hub, role) like the other watch preferences).
+///
+/// A `to` addressee, a group in `to`, and an `all` broadcast are all unaffected: a broadcast is a
+/// deliberate announcement, not an FYI copy.
+pub fn cc_only(m: &Message, me: &str, groups: &Groups) -> bool {
+    if directly_addressed(m, me, groups) {
+        return false;
+    }
+    if m.front.to.iter().any(|t| crate::is_reserved_name(t)) {
+        return false; // a broadcast in `to` reaches everyone on purpose
+    }
+    m.front
+        .cc
+        .iter()
+        .any(|t| t == me || groups.get(t).is_some_and(|mem| mem.iter().any(|x| x == me)))
+}
+
 pub fn directly_addressed(m: &Message, me: &str, groups: &Groups) -> bool {
     m.front
         .to
