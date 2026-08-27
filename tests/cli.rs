@@ -8012,3 +8012,56 @@ fn managed_clone_stages_around_a_leftover_dir_instead_of_refusing() {
         "the clone must end up under ~/.confer/clones/"
     );
 }
+
+/// A FIRST-EVER arm for a (hub, role) has no cursor, so "everything since your cursor" means the
+/// hub's entire history — which streamed as individual live wakes with nothing marking it old.
+/// argus watched July onboarding hellos and a long-closed request arrive as if current; an agent
+/// following "act only on what's addressed to you" can easily answer months-dead mail. A RE-ARM
+/// after downtime should still replay (that is what the cursor is for); a first join has missed
+/// nothing.
+///
+/// The balance that matters: history is not replayed, but genuinely unread mail ADDRESSED to the
+/// newcomer must still surface — that path is the read frontier, which this must not touch.
+#[test]
+fn a_first_arm_starts_current_but_still_surfaces_unread_mail() {
+    let hub = new_hub();
+    let old = hub.clone("oldtimer");
+    assert!(ok(&old.confer(&["join", "--role", "oldtimer"])));
+    for i in 0..4 {
+        let _ = old.send(&[
+            "--type", "note", "--to", "all", "--summary", &format!("historic {i}"), "--text", "old",
+        ]);
+    }
+    // One historic item genuinely addressed to the newcomer — must NOT be lost.
+    let _addressed = old.send(&[
+        "--type", "note", "--to", "newcomer", "--summary", "old mail for the newcomer", "--text", "x",
+    ]);
+
+    let new = hub.clone("newcomer");
+    assert!(ok(&new.confer(&["join", "--role", "newcomer"])));
+    let s = spawn_and_capture(
+        &new.home,
+        &new.dir,
+        "newcomer",
+        &["watch", "--role", "newcomer", "--replace", "--poll", "1"],
+        false,
+        &["unread for you"],
+    );
+    assert!(
+        s.contains("starting from NOW") && s.contains("not replaying"),
+        "a first arm must say it is starting current instead of replaying history: {s}"
+    );
+    assert!(
+        !s.contains("historic 0") && !s.contains("historic 3"),
+        "historic broadcasts must NOT stream as live wakes on a first arm: {s}"
+    );
+    // The guarantee that matters: not replaying history must not LOSE anything. The historic note
+    // addressed to the newcomer is still unread and still reachable, because the read frontier is
+    // separate state from the delivery cursor this changed. (Asserted via `inbox` rather than the
+    // watch's own footer, which prints on stdout while the first-arm notice prints on stderr.)
+    let ib = out(&new.confer(&["inbox", "--peek"]));
+    assert!(
+        ib.contains("old mail for the newcomer"),
+        "a first arm must not swallow unread mail addressed to the newcomer: {ib}"
+    );
+}

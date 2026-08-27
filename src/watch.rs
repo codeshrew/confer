@@ -263,6 +263,33 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     // A topic-filtered watch must not persist the shared cursor (would skip
     // other topics on the next unfiltered read) — like poll (B1).
     let persist = opts.advance && opts.topic.is_none();
+    // FIRST-ARM catch-up. A brand-new (hub, role) has NO cursor, so "everything since your cursor"
+    // means the entire history of the hub — and it streams as individual live wakes with nothing
+    // marking it old. argus watched July onboarding hellos and a long-closed request arrive as if
+    // current; an agent following "act only on what's addressed to you" can easily answer
+    // months-dead mail, and argus is the second newcomer to nearly do it. (The existing
+    // backlog-coalesce only fires above COALESCE_THRESHOLD, so a handful of historic items slips
+    // straight through it.)
+    //
+    // A RE-ARM after downtime should replay — that is what the cursor is for. A FIRST join has
+    // missed nothing, so it is owed nothing. Start current and say what exists instead. Unread mail
+    // addressed to this role still surfaces: the "⚠ N unread for you" footer is driven by the READ
+    // frontier, which this does not touch.
+    let first_arm = since.is_none() && persist;
+    if first_arm {
+        if let Some(anchor) = gitcmd::cursor_anchor(&root) {
+            let backlog = store::messages_since(&root, None).map(|m| m.len()).unwrap_or(0);
+            cursor::save(&hub, &me, &anchor)?;
+            since = Some(anchor);
+            if backlog > 0 {
+                eprintln!(
+                    "confer: first watch for '{me}' on this hub — starting from NOW, not replaying \n\
+                     {backlog} historic message(s) as if they were new. Browse them with `confer read`; \n\
+                     anything unread and addressed to you still shows up via `confer inbox`."
+                );
+            }
+        }
+    }
     eprintln!(
         "confer watch: streaming new items for '{}' (every {}s, + on-change){}",
         if me.is_empty() { "<all>" } else { &me },
