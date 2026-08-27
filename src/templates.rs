@@ -261,14 +261,19 @@ const ARM_SKILL: &str = r#"---
 name: confer-arm
 description: Arm (or re-arm) your confer watcher the ONE correct way — as a persistent Monitor that reads the watcher's output and delivers each peer message to you as a wake. Use at session start, right after a compaction, or whenever watch-status / the session-heal hook says your watcher is not healthy. This is the deterministic setup operation; there is exactly one right way and this skill is it.
 allowed-tools: Monitor
-disallowed-tools: Bash, AskUserQuestion
 ---
 
 Arm your confer watcher. There is exactly one correct way, and this skill removes every other one:
 the watcher runs under the **Monitor** tool, which reads its stdout and delivers each peer message to
-you as a wake. This skill has **no Bash** on purpose — so you cannot background `confer watch`
-(`run_in_background`, a trailing `&`, `nohup`) or redirect it to a file, which sends your wakes nowhere
-and makes you go dark with no error. The wrong way is made unavailable, not merely discouraged.
+you as a wake. This skill declares **only Monitor** on purpose — so you cannot background `confer
+watch` (`run_in_background`, a trailing `&`, `nohup`) or redirect it to a file, which sends your wakes
+nowhere and makes you go dark with no error.
+
+That guarantee comes from `allowed-tools` alone. It deliberately does NOT also list Bash under
+`disallowed-tools`: an agent reported a harness where that line took its shell away beyond this
+skill's own turn, and losing your shell is a far worse failure than the one it was guarding against.
+The guard does not depend on it either way — `confer watch` checks its OWN stdout at runtime and says
+so loudly if it is going nowhere, on every harness, which is where the mistake is actually detectable.
 
 ## Arm it (persistent Monitor, always)
 
