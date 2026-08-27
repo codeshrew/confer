@@ -71,9 +71,40 @@ pub(crate) fn cmd_poll(p: PollArgs) -> Result<()> {
     }
     drop(out);
 
+    // M6 (grok 9Q530H), field-demonstrated by codex: `watch` and `poll --advance` advance the SAME
+    // delivery cursor. When a healthy watcher is running for this (hub, role) it consumes that cursor
+    // as mail arrives, so a later poll truthfully reports NOTHING NEW while unread mail is waiting —
+    // and the caller reads that empty result as "no news". codex followed both documented
+    // instructions (hold a watch, poll each turn) and sat on four unread addressed messages while
+    // poll said nothing. The empty case is the dangerous one, so say it loudest exactly then.
+    let watcher_owns_cursor = matches!(
+        crate::watchlock::classify(&crate::watchlock::inspect(&hub, &me, 90), crate::BUILD_SHA),
+        crate::watchlock::WatchState::Healthy
+    );
+    if watcher_owns_cursor && !p.hook {
+        if new.is_empty() {
+            eprintln!(
+                "confer: a healthy watcher for '{me}' is consuming this delivery stream, so an empty \n\
+                 poll here does NOT mean an empty mailbox — the watcher already advanced past anything \n\
+                 that arrived. Unread mail addressed to you: `confer inbox`."
+            );
+        } else {
+            eprintln!(
+                "confer: note — a watcher for '{me}' is also consuming this stream; these items may \n\
+                 already have been delivered to it as wakes."
+            );
+        }
+    }
+
     // An unfiltered poll consumes the whole actionable stream, so it's caught up
     // to HEAD; non-actionable notes remain browsable via `read`/`--all` (B1).
-    if p.advance {
+    if p.advance && watcher_owns_cursor && !p.force {
+        // Don't fight the watcher for the cursor. Refusing the ADVANCE (not the read) keeps this a
+        // useful report while removing the race, and `--force` preserves a deliberate manual drain.
+        eprintln!(
+            "confer: not advancing the cursor — the watcher owns it (re-run with --force to advance anyway)."
+        );
+    } else if p.advance {
         // Anchor at the last stable pushed ancestor of HEAD, not local HEAD (R3) — but never advance
         // PAST an in-history-but-unreadable message (M1 / grok PHEQ76): hold at the last fully-delivered
         // commit so it's retried, not silently skipped. `--force` overrides the hold (accept losing that

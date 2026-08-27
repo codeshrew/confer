@@ -219,6 +219,10 @@ pub(crate) enum Cmd {
         /// cap. Above THAT, the change is branch-scale: push a branch and --ref the commit.
         #[arg(long = "allow-large-patch")]
         allow_large_patch: bool,
+        /// send even though `--from` names a role this clone has no identity for — the message will
+        /// NOT verify as that sender. For a deliberate, knowingly-unverifiable post only.
+        #[arg(long)]
+        force: bool,
     },
     /// Open a new tracked request (a ticket). Sugar for `append --type request`.
     /// note = chat, request = ticket: use this when the thing needs someone to DO

@@ -7926,3 +7926,49 @@ fn bare_reconnect_restores_a_missing_signing_key_without_re_roling_the_clone() {
         "$CONFER_ROLE must never re-role the clone: {after}"
     );
 }
+
+/// `--from <role>` must not ship mail that cannot verify as that sender. The signing key belongs to
+/// the CLONE; `--from` only sets the sender field on the message, and nothing bound the two — so
+/// posting `--from alice` out of bob's clone went out signed by BOB's key (peers render "signed, but
+/// not by alice's pinned key") or unsigned outright, with only a warning. Filed by grok as M5 on
+/// theory; hit twice in the field by orbit, minutes apart, in both flavours.
+#[test]
+fn from_another_role_out_of_this_clone_is_refused_unless_forced() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    b.pull();
+
+    // beta's clone, claiming to be alpha — the impersonation shape.
+    let o = b.confer(&[
+        "append", "--type", "note", "--to", "alpha", "--from", "alpha", "--summary", "x", "--text", "y",
+    ]);
+    assert!(!ok(&o), "must refuse: {}{}", out(&o), err(&o));
+    let e = err(&o);
+    assert!(e.contains("this clone belongs to 'beta'"), "must name the clone's real owner: {e}");
+    assert!(e.contains("--force"), "must name the deliberate escape hatch: {e}");
+    assert!(
+        e.contains("could not verify"),
+        "must say WHY it is refused, not just that it is: {e}"
+    );
+
+    // The deliberate case still works, and says so out loud.
+    let f = b.confer(&[
+        "append", "--type", "note", "--to", "alpha", "--from", "alpha", "--summary", "x", "--text",
+        "y", "--force",
+    ]);
+    assert!(ok(&f), "--force must proceed: {}{}", out(&f), err(&f));
+    assert!(
+        err(&f).contains("NOT verify"),
+        "a forced send must warn that the result is unverifiable: {}",
+        err(&f)
+    );
+
+    // Sending as your OWN role is untouched.
+    assert!(
+        ok(&b.confer(&["append", "--type", "note", "--to", "alpha", "--summary", "ok", "--text", "z"])),
+        "a normal send from its own clone must be unaffected"
+    );
+}

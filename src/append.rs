@@ -68,6 +68,9 @@ pub(crate) struct AppendArgs {
     pub(crate) patch_repo: Option<String>,
     /// raise `patch`'s size gate to the hard cap (design/45 §1.2).
     pub(crate) allow_large_patch: bool,
+    /// send anyway when `--from` names a role this clone has no identity for (M5), or resolve a
+    /// request another role holds. "I mean it" — never a default.
+    pub(crate) force: bool,
 }
 
 /// Warn (non-fatally) when a message's addressees can't receive it in THIS hub:
@@ -354,6 +357,7 @@ pub(crate) fn cmd_lifecycle(
                     patch: None,
                     patch_repo: None,
                     allow_large_patch: false,
+                    force: a.force,
                 })?;
                 // Keep the notice truthful: "was unclaimed" only when nobody held
                 // it; in the handoff case name the prior owner (we add our own
@@ -407,6 +411,7 @@ pub(crate) fn cmd_lifecycle(
         patch: None,
         patch_repo: None,
         allow_large_patch: false,
+        force: a.force,
     })
 }
 
@@ -441,6 +446,7 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
         patch: a.patch,
         patch_repo: a.patch_repo,
         allow_large_patch: a.allow_large_patch,
+        force: a.force,
     })
 }
 
@@ -479,7 +485,32 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         Some(h) => anyhow!("{e}\n{h}"),
         None => e,
     })?;
+    // M5 (grok, 9Q530H) — independently confirmed twice in the field by orbit. `--from` names the
+    // SENDER on the message, but the SIGNING KEY is a property of the CLONE. Nothing bound the two,
+    // so `--from other-role` out of a clone holding a different role's key shipped mail that was
+    // either signed by the WRONG key (peers render "signed, but not by <role>'s pinned key") or
+    // unsigned outright. Confer warned and sent anyway. Warning-and-shipping is the wrong default
+    // when the product is unverifiable mail attributed to somebody else, so refuse and make the
+    // deliberate case say so out loud — the same shape as the lifecycle claim-seizure guard.
+    let claimed_from = a.from.clone();
     let role = config::resolve_role(a.from, &root)?;
+    if let Some(claimed) = claimed_from.as_deref().filter(|s| !s.is_empty()) {
+        if let Some(owner) = config::clone_role(&root).filter(|o| o != claimed) {
+            if !a.force {
+                return Err(anyhow!(
+                    "--from '{claimed}' but this clone belongs to '{owner}' — its signing key is \
+                     {owner}'s, so the message would go out signed by the wrong key (or unsigned) and \
+                     peers could not verify it came from {claimed}.\n  \
+                     Send as this clone's role: drop --from (or use --from {owner}).\n  \
+                     Acting for {claimed} for real? Use ITS clone — `confer clones` lists them.\n  \
+                     Deliberately sending unverifiable mail anyway? Re-run with --force."
+                ));
+            }
+            crate::warn_safety(format!(
+                "--from '{claimed}' from '{owner}'s clone (--force): this message will NOT verify as {claimed}."
+            ));
+        }
+    }
     // Surface a silently-dead watch on the next active command: if you armed a watch but it isn't
     // running (backgrounded/reaped), you're not being woken — say so now rather than let you go dark.
     warn_if_watch_should_be_live(&root, &role);

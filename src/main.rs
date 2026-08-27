@@ -569,6 +569,7 @@ fn run() -> Result<()> {
             patch,
             patch_repo,
             allow_large_patch,
+            force,
         } => cmd_append(AppendArgs {
             msg_type,
             text,
@@ -594,6 +595,7 @@ fn run() -> Result<()> {
             patch,
             patch_repo,
             allow_large_patch,
+            force,
         }),
         Cmd::Request { args, reply_to } => cmd_create("request", args, reply_to),
         Cmd::Note { args } => cmd_create("note", args, None),
@@ -1027,6 +1029,10 @@ pub(crate) struct CreateArgs {
     /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
     #[arg(long = "allow-large-patch")]
     allow_large_patch: bool,
+    /// send even though `--from` names a role this clone has no identity for — the message will
+    /// NOT verify as that sender. For a deliberate, knowingly-unverifiable post only.
+    #[arg(long)]
+    force: bool,
     /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
     /// `append --body-file` (mutually exclusive with --text).
     #[arg(long = "body-file")]

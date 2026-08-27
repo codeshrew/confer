@@ -185,6 +185,18 @@ pub fn signing_key(root: &Path) -> Option<PathBuf> {
     (!p.is_empty()).then(|| PathBuf::from(p))
 }
 
+/// The role this clone was JOINED as, read straight from its own `.confer/identity.json`.
+///
+/// Deliberately NOT `resolve_role`, which falls back to `$CONFER_ROLE`. Callers here are asking
+/// "who owns this clone?", not "who does the caller want to act as" — and that question must never
+/// be answered by an environment variable, or a stray `CONFER_ROLE` re-roles someone else's clone.
+pub fn clone_role(root: &Path) -> Option<String> {
+    let txt = std::fs::read_to_string(root.join(".confer").join("identity.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let r = v.get("role")?.as_str()?;
+    (!r.is_empty()).then(|| r.to_string())
+}
+
 pub fn home() -> Result<PathBuf> {
     std::env::var("HOME")
         .map(PathBuf::from)

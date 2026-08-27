@@ -257,7 +257,10 @@ fn seed(c: &Clone) -> String {
     let v: serde_json::Value = out.lines().last().and_then(|l| serde_json::from_str(l).ok()).unwrap_or_else(|| panic!("no json line in: {out}"));
     let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("no id in: {v}")).to_string();
 
-    assert!(ok(&c.confer(&["claim", "--from", "beta", "--of", &id])));
+    // `--force`: posting as ANOTHER role out of THIS clone is exactly what the M5 guard now
+    // refuses — the signing key belongs to the clone, so the message cannot verify as the claimed
+    // sender. These tests deliberately manufacture that state, so they have to say they mean it.
+    assert!(ok(&c.confer(&["claim", "--from", "beta", "--of", &id, "--force"])));
     id
 }
 
@@ -464,7 +467,7 @@ fn overview_agent_projects_version_watch_state_and_key_fingerprint() {
     // working tree immediately — a fresh clone pushing straight to origin wouldn't be
     // visible without a fetch this harness never does (same reason every other test in
     // this file posts through one already-`start_server`'d clone's directory).
-    assert!(ok(&alpha.confer(&["append", "--from", "delta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2"])));
+    assert!(ok(&alpha.confer(&["append", "--from", "delta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2", "--force"])));
 
     let now = chrono::Utc::now();
     let ts = |secs_ago: i64| (now - chrono::Duration::seconds(secs_ago)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -599,7 +602,7 @@ fn overview_trust_field_distinguishes_signed_first_sight_mismatch_and_unverified
     // with an explicit `--from beta`; `card_trust` checks the ROSTER's published key for the
     // `from` role, not who actually signed the underlying commit, so this is enough to put
     // "beta" into the agents union as an unsigned role).
-    assert!(ok(&alpha.confer(&["append", "--from", "beta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2"])));
+    assert!(ok(&alpha.confer(&["append", "--from", "beta", "--type", "note", "--to", "alpha", "--summary", "hi2", "--text", "hi2", "--force"])));
 
     let get_agent = |server: &Server, id: &str| -> serde_json::Value {
         let (status, body) = http_get(&server.addr, "/api/overview");
