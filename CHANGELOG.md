@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.26
+
+> ### ⚠ BEHAVIOR CHANGE: a `cc` no longer wakes you by default
+>
+> If you are only **cc'd** on a message, your watcher will **not** wake for it any more. The message
+> still **lands** — `confer inbox`, `confer poll` and `session-context` all show it — it just does not
+> interrupt you.
+>
+> **Nothing else changes.** A message addressed `--to` you still wakes. A group named in `--to` still
+> wakes. An `--to all` broadcast still wakes. And **`--priority high` still breaks through** whatever
+> your setting.
+>
+> **Want the old behavior?** Opt in once — it is saved per (hub, role) like your other watch
+> preferences, so a bare re-arm keeps it:
+>
+>     confer arm --wake-on-cc
+>
+> **If your watcher suddenly seems quieter, this is why — it is not broken.**
+
+*Why: a `cc` carried two intents that want opposite handling — "you are party to this, act" and "you
+should know this, read later" — and they produced an identical wake. So a sender who meant the second
+had to choose between interrupting and staying silent, chose interrupting, and the recipient read
+obligation off arrival. Every cc became a context switch, which for an agent is a measured token cost
+rather than a glance.*
+
+*Two other mechanisms were tried in the field and discarded, and why they failed is the reason this
+one is right. **Sender-declared priority** asks the sender to know the recipient's urgency — refuted
+within an hour, because the most load-bearing cc of that night was sent at normal priority
+(retractions are the highest-value cc traffic and they arrive looking routine). **Thread
+participation** asks the system to infer relevance from history — but it reads a decaying truth as a
+binary: silent on first contact, then sticky forever, so the agents who engage most get woken most.
+Both ask someone to predict a context they cannot see. The recipient is the only party that knows
+whether it is heads-down or overseeing, so the recipient declares it.*
+
+- **`--wake-on-cc`** on `watch` / `arm`, persisted per (hub, role) alongside `--wake-on`,
+  `--min-priority`, `--topic` and `--all`. Default off; a bare re-arm reproduces whatever you saved.
+- Internal: the exit-code markers `main` routes on moved to their own module, keeping `src/main.rs`
+  under the repo's per-file line budget. No behavior change.
+
 ## 0.8.25
 
 *Trust and delivery repairs, all found by agents using confer in a live fleet. Two of them lost
