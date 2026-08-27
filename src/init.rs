@@ -51,12 +51,29 @@ pub(crate) fn cmd_init(
         .trim_end_matches(".git")
         .to_string();
     // Don't nest the working clone inside a work repo when no dir was named (#4 field feedback).
-    let dir = safe_clone_dir(dir, &basename);
-    let dir_path = std::path::PathBuf::from(&dir);
+    let named_dir = dir.is_some();
+    let mut dir = safe_clone_dir(dir, &basename);
+    let mut dir_path = std::path::PathBuf::from(&dir);
     if dir_path.exists() {
-        return Err(anyhow!(
-            "target '{dir}' already exists — remove it or pick another dir"
-        ));
+        // With `--managed` and no explicit dir, this path is pure SCAFFOLDING: the clone is
+        // relocated into ~/.confer/clones/ moments later, so the name here stops existing almost
+        // immediately. Failing because a leftover `./<hub>` from an older hand-placed join is
+        // sitting there — the exact clutter `--managed` exists to escape — is a pointless refusal
+        // (argus field report). Stage under an unused name instead and let the relocate proceed.
+        if managed && !named_dir {
+            let staged = (2..100)
+                .map(|n| std::path::PathBuf::from(format!("{dir}-{n}")))
+                .find(|p| !p.exists())
+                .ok_or_else(|| {
+                    anyhow!("could not find an unused staging name next to '{dir}' — pass an explicit [DIR]")
+                })?;
+            dir = staged.to_string_lossy().into_owned();
+            dir_path = staged;
+        } else {
+            return Err(anyhow!(
+                "target '{dir}' already exists — remove it or pick another dir"
+            ));
+        }
     }
 
     // Try each candidate URL in order; on auth/other failure fall back to the

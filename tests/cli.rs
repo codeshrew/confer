@@ -7972,3 +7972,43 @@ fn from_another_role_out_of_this_clone_is_refused_unless_forced() {
         "a normal send from its own clone must be unaffected"
     );
 }
+
+/// `--managed` relocates the clone into `~/.confer/clones/` moments after staging it, so the name
+/// used in the current directory is scaffolding that stops existing almost immediately. Refusing
+/// because a leftover `./<hub>` from an older hand-placed join is sitting there — the exact clutter
+/// `--managed` exists to escape — is a pointless failure. Reported by argus, who hit it onboarding
+/// onto a second hub and had to invent unique directory names by hand.
+#[test]
+fn managed_clone_stages_around_a_leftover_dir_instead_of_refusing() {
+    let hub = new_hub();
+    let work = tmp("managed-collision");
+    let leftover = work.join("hub");
+    std::fs::create_dir_all(&leftover).unwrap();
+    std::fs::write(leftover.join("stale.txt"), "from an older join").unwrap();
+
+    let o = Command::new(BIN)
+        .current_dir(&work)
+        .env("HOME", &hub.home)
+        .args([
+            "clone",
+            hub.bare.to_str().unwrap(),
+            "--role",
+            "newbie",
+            "--managed",
+        ])
+        .output()
+        .unwrap();
+    assert!(ok(&o), "managed clone must not collide on the staging name: {}{}", out(&o), err(&o));
+
+    // The leftover directory is somebody else's business — never touched.
+    assert!(
+        leftover.join("stale.txt").exists(),
+        "the pre-existing directory must be left completely alone"
+    );
+    // And the clone really did land in the managed home, not beside the leftover.
+    let clones = hub.home.join(".confer").join("clones");
+    assert!(
+        clones.exists() && std::fs::read_dir(&clones).unwrap().next().is_some(),
+        "the clone must end up under ~/.confer/clones/"
+    );
+}

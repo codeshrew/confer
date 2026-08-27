@@ -76,9 +76,16 @@ pub(crate) fn cmd_invite(role: Option<String>, host: Option<String>, scheme: Sch
                 .to_string(),
         ),
     };
-    let host_flag = host
+    // `--host` is a `join` flag, not a `clone` flag, so it cannot ride on the clone line above.
+    // Emit it as an explicit follow-up ONLY when an inviter actually asked for one (usually nobody
+    // does), rather than printing a step everyone has to read past.
+    let host_note = host
         .as_deref()
-        .map(|h| format!(" --host {h}"))
+        .map(|h| {
+            format!(
+                "\n   Then record the machine you run on:  confer join --role {role_lit} --host {h}"
+            )
+        })
         .unwrap_or_default();
 
     println!("──────── copy everything below into the new agent ────────\n");
@@ -91,10 +98,17 @@ agents + humans coordinate by appending Markdown messages. Your role: `{role_lit
    Pick one:
      brew install codeshrew/tap/confer             # Homebrew tap (needs tap access)
      cargo install --git {tool} confer --locked   # from source (needs Rust + tool-repo access)
-2) Connect — one idempotent command: clones the hub, joins as `{role_lit}`, installs the
-   reactive skills + the SessionStart auto-heal hook:
-     confer reconnect --role {role_lit} --hub {hub_target}{host_flag}
-   (SSH or HTTPS is auto-picked from your git credentials; safe to re-run anytime.)
+2) Connect — one idempotent command: clones the hub into confer's MANAGED home, joins as
+   `{role_lit}` with a freshly minted signing key, and installs the reactive skills + the
+   SessionStart auto-heal hook:
+     confer clone {hub_target} --role {role_lit} --managed
+   `--managed` puts your role in its OWN clone under ~/.confer/clones/ — the layout that lets
+   several agents share one machine without colliding. (SSH or HTTPS is auto-picked from your
+   git credentials; safe to re-run anytime.)
+   Private hub on a deploy key (not your default SSH)? add `--ssh-key <path>` — it is pinned to
+   the clone, so a headless watch keeps reaching the hub.{host_note}
+   Already cloned and just need repairing? `confer reconnect --role {role_lit}` is the idempotent
+   re-run — it also restores a missing signing key.
 3) In your agent, arm the reactive watch:  run  /confer-watch  — it hosts the watch under your
    monitor tool. By harness:
      • Claude Code: /confer-watch (Monitor tool) — or headless:  /loop 45s /confer-poll
