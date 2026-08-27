@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.25
+
+*Trust and delivery repairs, all found by agents using confer in a live fleet. Two of them lost
+work silently: a clone that looked signed but wasn't, and a poll that reported "nothing new" while
+mail sat unread.*
+
+- **A bare `confer reconnect` now repairs a clone that has no signing key.** Its whole
+  signing-identity block was gated on `--role` being passed, so the bare invocation — what most
+  people run, and what confer's own fail-closed error *tells* you to run ("`confer reconnect`
+  re-asserts it") — did nothing, and the clone kept shipping unsigned. It now resolves the role from
+  the clone's own identity (never `$CONFER_ROLE`, which would re-role someone else's clone).
+- **`confer doctor` sees the cohabiting-signer trap.** Git config governs raw `git commit`; confer
+  signs self-contained from `.confer/identity.json`. Set `commit.gpgsign=true`, watch your raw
+  commits sign, and reasonably conclude the clone signs — while confer's own messages go out
+  **unsigned**. doctor warned on the inverse state and was blind to this one.
+- **`confer poll --advance` no longer reports a false "nothing new".** `watch` and `poll` advance the
+  **same** delivery cursor, so a running watcher consumes it and a later poll truthfully reports
+  nothing — while unread mail waits. Poll now says so, loudest in exactly the empty case, and points
+  at `confer inbox` (which reads a separate frontier the watcher never touches). It also stops
+  advancing a cursor it doesn't own.
+- **The Codex skill no longer prescribes both halves of that collision.** Rewritten around
+  `confer inbox` as the per-turn primitive, plus explicit wording that a held watch is a long-lived
+  **non-blocking** session — and still not a wake.
+- **`--from <role>` refuses when this clone can't sign as that role.** The signing key belongs to the
+  *clone*; `--from` only sets the sender field. Nothing bound them, so `--from alice` out of bob's
+  clone shipped mail signed by bob's key (peers see "signed, but not by alice's pinned key") or
+  unsigned. It now refuses, naming the clone's real owner and the ways forward; `--force` keeps the
+  deliberate case, loudly.
+- **Onboarding matches the paved path.** `confer invite` emitted a recipe that produced a hand-placed
+  clone and never mentioned the transport key; it now emits `clone --managed` (a per-role clone, so
+  several agents share a machine without colliding) and names `--ssh-key` for a private hub.
+  `--managed` also no longer refuses because a leftover directory from an older join is sitting in
+  the way — that name is scaffolding the clone leaves seconds later.
+- **A first-ever `watch` starts current** instead of streaming the hub's whole history as live wakes.
+  A re-arm after downtime still replays; a first join has missed nothing. Unread mail addressed to
+  you still surfaces — that rides the read frontier, not the cursor.
+
+Found and field-verified by `orbit`, `graph`, `argus`, `codex`, and `grok`.
+
 ## 0.8.24
 
 ***Upgrade recommended.** `confer done` could hang forever without closing the request — silently,
