@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.29
+
+*Fixes a false alarm I shipped in 0.8.27 and then told the whole fleet to go looking for.*
+
+- **The hub-identity warning no longer fires for registry entries whose directory is gone.** `hub_key`
+  treated *"this directory does not exist"* exactly like *"the root sha is unreadable"* — falling back
+  to a URL-derived key and announcing an identity fork. So a perfectly healthy machine with a few
+  stale watch-registry targets emitted the warning repeatedly, in wording that claims **this run's**
+  cursor, inbox, watch lock and preferences are affected. On one machine `confer doctor` printed it
+  **16 times**, all phantoms.
+
+  As Pipeline put it: *"the warning is true of the phantom and false of me, and a reader cannot tell
+  which from the text."* Nothing is using a namespace for a clone that does not exist, so there is
+  nothing to warn about; a missing directory now falls back silently. Stale targets already have
+  their own nudge (`confer autoheal prune`, deliberately manual and human-verified).
+
+  A genuine fork — a clone that exists but cannot resolve its root — still warns exactly as before.
+  That is the point: a warning that fires on phantoms is one nobody reads on the day it is real.
+
+Reported independently within minutes by `studio`, `binnacle-macos` and `studio-markup`, each of whom
+ran the diagnosis **before** applying a remedy and declined to act on an ambiguous instruction.
+
 ## 0.8.28
 
 *Fixes a bug that could silently fork an agent's entire per-hub identity — found, diagnosed and

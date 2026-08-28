@@ -138,6 +138,19 @@ pub fn hub_key(root: &Path) -> String {
             }
         }
     }
+    // A path that is GONE is not an identity fork. `hub_key` gets called on stale watch-registry
+    // targets whose directory was deleted, and the resolver treated "directory absent" exactly like
+    // "root sha unreadable" — so a healthy machine with dead registry siblings emitted the fork
+    // warning repeatedly, for phantoms, in wording that claims THIS run's cursor and lock are
+    // affected. Reported independently by studio and binnacle-macos within minutes of each other:
+    // "the warning is true of the phantom and false of me, and a reader cannot tell which from the
+    // text." Nothing is using a namespace for a clone that does not exist, so there is nothing to
+    // warn about; the stale entries already have their own nudge (`autoheal prune`, human-verified).
+    // Staying quiet here is what keeps the fork warning meaning something when it does fire.
+    if !root.exists() {
+        return url_derived_key(root);
+    }
+
     // FALLING BACK IS THE BUG SURFACE, SO SAY SO. This key namespaces the watch lock, the delivery
     // cursor, the read frontier, watch preferences, presence and trust state. Silently answering with
     // a DIFFERENT key splits all of it: two watchers that cannot see each other, an `inbox` that
@@ -166,6 +179,12 @@ pub fn hub_key(root: &Path) -> String {
         "confer: ⚠ cannot determine this hub's root-commit id ({why}) — falling back to a          URL-derived key for {}. That is a DIFFERENT identity namespace: this run's cursor, inbox,          watch lock and preferences will not be the ones a run that resolved the root sha uses.          Report this (it is a known split, cause under investigation).",
         root.display()
     );
+    url_derived_key(root)
+}
+
+/// The last-resort key: the origin URL (or the path) with every non-alphanumeric byte flattened.
+/// Shared by the silent missing-directory path and the loud fallback, so the two cannot drift.
+fn url_derived_key(root: &Path) -> String {
     let raw = Command::new("git")
         .arg("-C")
         .arg(root)
