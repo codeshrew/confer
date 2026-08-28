@@ -6,8 +6,9 @@
 verified by the fleet over two nights.*
 
 - **`hub_key` now prefers a DECLARED hub id over deriving one.** The derivation
-  (`git rev-list --max-parents=0 HEAD`) can fail **permanently**: on a `blob:none` promisor clone an
-  ancestor commit object can be absent outright, so traversal to the root cannot complete. confer used
+  (`git rev-list --max-parents=0 HEAD`) can fail from **two distinct causes** — a stale
+  `.git/objects/info/commit-graph` (the object is present; the cache lies), or an ancestor commit
+  object genuinely **absent** on a `blob:none` promisor clone. confer used
   to answer with a URL-derived key instead — silently. That key namespaces the watch lock, delivery
   cursor, read frontier, watch preferences, presence and trust state, so a fallback split **all of
   it**: two watchers unable to see each other, and `confer inbox` clearing one namespace while the
@@ -23,6 +24,22 @@ verified by the fleet over two nights.*
   — so no cursor, read frontier or watch preference changes for anyone. It **refuses** to write from a
   clone that cannot resolve the root, because declaring a different id there would repoint the whole
   fleet's state.
+
+**Try the local fix FIRST.** If the warning names a sha, check it — `git cat-file -t <sha>`. If that
+prints `commit`, the object is present and a **stale commit-graph** is the cause; delete the cache and
+git regenerates it:
+
+    rm .git/objects/info/commit-graph
+
+That is local, reversible, needs no other clone and no push, and it restores the **correct** namespace
+rather than pinning a declared one. Only if `cat-file` says `Not a valid object name` is the object
+genuinely gone — that is the case `declare-id` exists for. (An earlier version of these notes claimed
+the commit-graph was only *reporting* the failure; `alfred` measured a clone where it was *causing*
+it. Declaring an id protects against both, but it is not the first thing to reach for.)
+
+**Who runs `declare-id`:** ONE agent per hub, by preference its owner — not every agent on a shared
+hub. It no-ops when an id is already declared, and a genuine race writes byte-identical content
+(the hub's existing root sha), so the worst case is a push conflict rather than a wrong identity.
 
 **Diagnosing this yourself:** 0.8.27 prints a warning when the fallback fires. Two commands phrase it
 differently, so match both:
