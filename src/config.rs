@@ -108,6 +108,34 @@ pub fn hub_key(root: &Path) -> String {
             }
         }
     }
+    // FALLING BACK IS THE BUG SURFACE, SO SAY SO. This key namespaces the watch lock, the delivery
+    // cursor, the read frontier, watch preferences, presence and trust state. Silently answering with
+    // a DIFFERENT key splits all of it: two watchers that cannot see each other, an `inbox` that
+    // clears one namespace while the watcher counts the other, and a backlog whose count can never go
+    // down — every command reporting success about the namespace it happened to touch.
+    //
+    // jarvis measured the same build on one box writing BOTH forms on the same day, so the choice
+    // varies per invocation and nothing in the output ever said which was chosen. We do not yet know
+    // what decides it (a promisor boundary where the root is unreachable is one confirmed cause; it is
+    // not the only one, and concurrent git load reproduces nothing here). Until the key is declared
+    // rather than derived, the least confer can do is refuse to fork identity in silence.
+    let why = match Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--max-parents=0", "HEAD"])
+        .output()
+    {
+        Err(e) => format!("could not run git ({e})"),
+        Ok(o) if !o.status.success() => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            format!("git failed: {}", err.lines().next().unwrap_or("(no stderr)").trim())
+        }
+        Ok(_) => "git succeeded but reported no root commit (a promisor boundary can hide it)".to_string(),
+    };
+    eprintln!(
+        "confer: ⚠ cannot determine this hub's root-commit id ({why}) — falling back to a          URL-derived key for {}. That is a DIFFERENT identity namespace: this run's cursor, inbox,          watch lock and preferences will not be the ones a run that resolved the root sha uses.          Report this (it is a known split, cause under investigation).",
+        root.display()
+    );
     let raw = Command::new("git")
         .arg("-C")
         .arg(root)
