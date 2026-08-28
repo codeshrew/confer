@@ -201,6 +201,43 @@ pub(crate) fn cmd_hub(action: HubAction, yes: bool) -> Result<()> {
             println!("✓ pinned '{name}'.");
             Ok(())
         }
+        HubAction::DeclareId => {
+            let root = config::repo_root()?;
+            let path = root.join(".confer-hub-id");
+            if let Some(existing) = config::declared_hub_id(&root) {
+                println!("already declared: {existing}\n  ({} — nothing to do)", path.display());
+                return Ok(());
+            }
+            // MUST be the root-commit sha, not a fresh id. Every cursor, read frontier, watch
+            // preference and lock on the fleet is filed under the DERIVED value; declaring anything
+            // else would silently repoint all of it — the same damage as the bug being fixed. So this
+            // only runs where the derivation still works, which is why it says "from a healthy clone".
+            let out = gitcmd::output(&root, &["rev-list", "--max-parents=0", "HEAD"])
+                .map_err(|e| anyhow!("could not read this hub's root commit: {e}"))?;
+            let sha = String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if sha.len() != 40 {
+                return Err(anyhow!(
+                    "this clone cannot resolve the hub's root commit, so it must NOT declare one — \
+                     declaring a different id here would repoint every cursor and preference on the \
+                     fleet. Run `confer hub declare-id` from a clone where `git rev-list \
+                     --max-parents=0 HEAD` works (a full clone, or one that has fetched the missing \
+                     objects), then push."
+                ));
+            }
+            std::fs::write(&path, format!("{sha}\n"))?;
+            println!("declared this hub's id: {sha}");
+            println!("  wrote {}", path.display());
+            println!("\nThis is the SAME id the derivation already produces, so no agent's cursor,");
+            println!("read frontier or watch preference changes. Clones that can no longer traverse");
+            println!("to the root will now read it instead of silently forking to a URL-derived key.");
+            println!("\nnext: commit and push it, so every clone gets it:");
+            println!("  git add .confer-hub-id && git commit -m 'confer: declare hub id' && git push");
+            Ok(())
+        }
         HubAction::Prune => {
             let keep: std::collections::BTreeSet<String> =
                 machineconfig::load().hubs.keys().cloned().collect();

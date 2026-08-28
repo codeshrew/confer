@@ -41,6 +41,12 @@ pub(crate) enum HubAction {
     Status,
     Repin,
     Prune,
+    /// Write this hub's identity into `.confer-hub-id` so every clone reads it instead of deriving
+    /// it. Run ONCE per hub, from a HEALTHY clone, then commit and push. Derivation can fail
+    /// permanently on a partial clone whose ancestor objects were pruned, and the old failure mode
+    /// was a silent fork of the whole per-hub namespace.
+    #[value(alias = "declare")]
+    DeclareId,
 }
 
 /// `confer repos <action>` — `map` records THIS machine's clone of a repo (design/40 layer 2:

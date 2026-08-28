@@ -95,7 +95,37 @@ pub fn resolve_role(explicit: Option<String>, root: &Path) -> Result<String> {
 /// A stable, topology-proof key identifying this hub: the root-commit SHA
 /// (survives remote-URL changes and URL-form differences). Falls back to a
 /// sanitized origin URL / repo path if there's no commit yet.
+/// The hub's DECLARED identity, read from `.confer-hub-id` in the working tree.
+///
+/// `hub_key` derived this from `git rev-list --max-parents=0 HEAD`, and that derivation can fail
+/// permanently: on a `blob:none` promisor clone an ancestor commit object can be absent outright
+/// (`Not a valid object name`), so traversal to the root cannot complete no matter how it is asked —
+/// bypassing the commit-graph does not help, because the graph was reporting the failure, not causing
+/// it. When that happens the old code silently answered with a URL-derived key instead, which forks
+/// the whole per-hub identity namespace: watch lock, delivery cursor, read frontier, watch
+/// preferences, presence and trust state. Two watchers that cannot see each other, an `inbox` that
+/// clears one namespace while the watcher counts the other.
+///
+/// A DECLARED id needs no traversal, so nothing about the local object database can break it. It is
+/// a plain checked-out file: present or absent, and absent is unambiguous.
+///
+/// MIGRATION SAFETY: the declared value for an existing hub MUST be its root-commit sha — the same
+/// string the derivation already produces. Declaring anything else would silently repoint every
+/// cursor, frontier and preference on the fleet, which is the same damage as the bug. `confer hub
+/// declare-id` computes it from a healthy clone for exactly that reason.
+pub fn declared_hub_id(root: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(root.join(".confer-hub-id")).ok()?;
+    let id = raw.split_whitespace().next()?.to_string();
+    // Only accept what this function is for: a git object id. Anything else is a corrupted or
+    // hand-edited file, and guessing at it would reintroduce the silent-fork failure by another door.
+    (id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
+}
+
 pub fn hub_key(root: &Path) -> String {
+    // Declared beats derived: a checked-out file cannot fail the way a traversal can.
+    if let Some(id) = declared_hub_id(root) {
+        return id;
+    }
     if let Ok(o) = Command::new("git")
         .arg("-C")
         .arg(root)
