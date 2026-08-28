@@ -252,6 +252,17 @@ pub(crate) fn cmd_uninstall_hook(project: Option<String>) -> Result<()> {
 /// The SessionStart hook target: if auto-heal is enabled, check each registered
 /// (hub, role) and inject a re-arm nudge for any that's not healthy. ALWAYS exits
 /// 0 (never break a session start) and is silent when disabled or all-healthy.
+/// Unread mail addressed to `role` on this hub, for the resume nudge. Best-effort and deliberately
+/// quiet: a hub we cannot read (missing, mid-clone, permissions) yields `None` and the nudge simply
+/// omits the count rather than claiming zero — "I could not look" and "nothing is waiting" must not
+/// render the same, which is the failure this whole line exists to fix.
+fn count_unread(hub: &std::path::Path, hub_key: &str, role: &str) -> Option<usize> {
+    let msgs = crate::store::all_messages(hub).ok()?;
+    let groups = crate::groups::load(hub);
+    let st = crate::inbox::load_state(hub_key, role);
+    Some(crate::inbox::unread_for_me(&msgs, role, &groups, &st).len())
+}
+
 pub(crate) fn cmd_session_heal() -> Result<()> {
     // Best-effort read of the hook's stdin JSON, for `source` (e.g. compact) and — primary —
     // the SessionStart payload's `session_id`, which is more reliable than the env var (the hook
@@ -326,9 +337,22 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
                     .unwrap_or_else(|| "?".into())
             ),
         };
+        // Say what is WAITING, not just what the watcher is doing. "stale" is a process fact about
+        // this machine; "104 unread" is a fact about the agent — and only the second is a reason to
+        // act on. jarvis sat on a hub for 25 days reading "stale (a compaction orphan)" at every
+        // resume, skimmed past it because it was always there, and armed it only by accident — to
+        // find 104 unread waiting, including four release announcements and two BEHAVIOR CHANGE
+        // notices. confer knew the count the whole time and printed it the instant the watch armed;
+        // the resume path simply never surfaced it. A warning that is usually noise gets ignored on
+        // the day it is real, so give it the number that makes it un-skimmable.
+        let waiting = count_unread(std::path::Path::new(&t.hub), &hub_key, &t.role);
+        let waiting = match waiting {
+            Some(n) if n > 0 => format!(" — {n} unread waiting"),
+            _ => String::new(),
+        };
         nudges.push(format!(
-            "• role '{}' @ {}: {reason} → re-arm with the /confer-arm skill (hosts it under the \
-             Monitor; do NOT background confer watch). manual: cd {} && confer arm",
+            "• role '{}' @ {}: {reason}{waiting} → re-arm with the /confer-arm skill (hosts it under \
+             the Monitor; do NOT background confer watch). manual: cd {} && confer arm",
             t.role, t.hub, t.hub
         ));
     }
