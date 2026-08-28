@@ -360,7 +360,7 @@ fn harness_findings() -> Vec<doctor::Finding> {
 /// A live lock with no `delivery` stamp is the silent-death trap (a backgrounded watch whose wakes go
 /// nowhere) → a ⚠ line. Report-only (like the per-role liveness line above): it's runtime state, not
 /// a repo/config property, so it must NEVER gate `--check`.
-fn print_host_watches() {
+fn print_host_watches(me: &str) {
     let Ok(home) = config::home() else { return };
     let reg = crate::autoheal::load();
     let owner = |hub_key: &str, role: &str| -> Option<String> {
@@ -380,6 +380,12 @@ fn print_host_watches() {
     }
     hubs.sort_by_key(|e| e.file_name());
     let mut lines: Vec<String> = Vec::new();
+    // Answer the check an agent will run anyway. jarvis went dark for 52 minutes trusting
+    // `pgrep -af 'confer (watch|arm)'` -> 7 processes -> "my watcher is live". Zero of the seven were
+    // theirs: on a fleet-shared $HOME that command can essentially never return empty, so it is a
+    // check that passes regardless of your state. Telling agents "use watch-status, not pgrep" is a
+    // rule someone has to remember; printing the own-versus-peer split is structural.
+    let (mut live_total, mut live_mine) = (0usize, 0usize);
     for hub_entry in hubs {
         let hub_key = hub_entry.file_name().to_string_lossy().to_string();
         let mut roles: Vec<_> =
@@ -399,6 +405,10 @@ fn print_host_watches() {
                 .unwrap_or_default();
             let ver = info.version.as_deref().unwrap_or("?");
             if info.alive && info.fresh {
+                live_total += 1;
+                if !me.is_empty() && role == me {
+                    live_mine += 1;
+                }
                 match info.delivery.as_deref() {
                     Some(d) => {
                         lines.push(format!("  ✓ {hub_key}/{rlabel}: live — pid {}, {d}, {ver}{sess}", info.pid))
@@ -417,6 +427,20 @@ fn print_host_watches() {
         println!("\nwatches on this host:");
         for l in lines {
             println!("{l}");
+        }
+        if live_total > 0 && !me.is_empty() {
+            let others = live_total - live_mine;
+            if live_mine == 0 {
+                // The case that cost 52 minutes: plenty of watchers running, none of them yours.
+                println!(
+                    "  ⚠ {live_total} live watcher(s) on this host — NONE of them is yours ('{me}'). \
+                     A process check like `pgrep confer` will look healthy while you are not being woken."
+                );
+            } else {
+                println!(
+                    "  ✓ {live_total} live watcher(s) on this host — {live_mine} yours ('{me}'), {others} for other roles."
+                );
+            }
         }
     }
 }
@@ -502,7 +526,7 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
 
     // Host-wide live-watch inventory (grok #4/#5) — report-only, same category as the per-role line
     // above (runtime state, never gates --check). Surfaces every watcher on a mixed/multi-session box.
-    print_host_watches();
+    print_host_watches(&config::resolve_role(None, &root).unwrap_or_default());
 
     // One glyph legend so an agent can classify every confer diagnostic the same way everywhere.
     println!(
