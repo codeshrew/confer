@@ -1096,9 +1096,14 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
             // which rather than letting one word carry both claims (jarvis, 0RZD64).
             let build_unknowable = BUILD_SHA == "unknown" || i.version.as_deref() == Some("unknown");
             let rec = if build_unknowable {
+                // The remedy has a blast radius, so say so. On a fleet-shared $HOME several agents
+                // exec ONE confer, and "switch to a release install" is then the same action as
+                // "change what every running watcher executes, mid-session" — advice that reads as
+                // solo but deafens co-residents (jarvis: nine live watchers, one cargo binary).
                 "this build carries no commit id, so `healthy` here means RUNNING, not up to date — \
-                 the outdated check cannot fire. Install a release binary (brew / the installer) if \
-                 you need that check to work."
+                 the outdated check cannot fire. A release binary (brew / the installer) carries the \
+                 id and restores it. If other agents share this machine's confer, that swap changes \
+                 what THEY run too: announce it, then re-arm every watcher — it is not a solo action."
                     .to_string()
             } else {
                 String::new()
