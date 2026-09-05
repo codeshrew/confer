@@ -1088,6 +1088,21 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         }
         watchlock::WatchState::Healthy => {
             let i = i.unwrap();
+            // `Healthy` is decided by comparing the watcher's recorded build against ours. When this
+            // binary was built without git metadata (a crates.io tarball has no `.git`, so `build.rs`
+            // stamps "unknown") BOTH sides read "unknown", they compare EQUAL, and the OUTDATED check
+            // can never fire — so "healthy" silently stops being able to mean "on the current build".
+            // The liveness half is still real; only the currency half is unknowable. Say which is
+            // which rather than letting one word carry both claims (jarvis, 0RZD64).
+            let build_unknowable = BUILD_SHA == "unknown" || i.version.as_deref() == Some("unknown");
+            let rec = if build_unknowable {
+                "this build carries no commit id, so `healthy` here means RUNNING, not up to date — \
+                 the outdated check cannot fire. Install a release binary (brew / the installer) if \
+                 you need that check to work."
+                    .to_string()
+            } else {
+                String::new()
+            };
             (
                 "healthy",
                 format!(
@@ -1096,7 +1111,7 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
                     i.version.as_deref().unwrap_or("?"),
                     i.started_at.as_deref().unwrap_or("?")
                 ),
-                String::new(),
+                rec,
                 true,
             )
         }
