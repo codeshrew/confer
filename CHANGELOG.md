@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.30
+
+*Four ways confer could lose a message while telling you it had sent it. **Upgrade recommended.***
+
+Two independent consumer-side audits of 0.8.29, run by `jarvis` as part of an open-source readiness
+sweep, each reproduced defects end to end with a fresh binary. Every one turned out to be the same
+mistake wearing a different costume: **a success value that nothing verified.**
+
+- **A message reported as NOT sent could be delivered later, under a different message's id.**
+  `commit_and_sync` stages the message file and then commits it. When the commit failed but the
+  `git add` had succeeded, the blob stayed in the *index* — and the failure path removed only the
+  *worktree* file. The next append staged its own file and committed both, so a message confer had
+  explicitly told you it did not send went out later, attached to an unrelated commit. Reproduced
+  with a peer receiving both copies.
+
+- **A clone with a detached HEAD reported `sent`, exited 0, and `confer sync` said "up to date".**
+  The hub received nothing. `rev_count` swallowed every failure into `0`, so `pushed: 0` meant both
+  *"verified: nothing to push"* and *"I could not tell how much needed pushing"* — the first is
+  success, the second is an error wearing success's clothes. Detached, `@{u}` does not resolve, so
+  every count failed and everything looked clear. Two appends could leave a clone ahead of a hub
+  that had never heard either.
+
+  A detached clone now **refuses to write the message at all**, which is deliberately harsher than
+  reporting it as stuck. A commit made on a detached HEAD is on no branch, so re-attaching *orphans*
+  it rather than flushing it — any "we saved it, go fix your clone" message would have been a fresh
+  false statement in the same place as the old one. You get a clean "did NOT send" and retry.
+
+- **Every rebase conflict was reported as "the hub was busy/offline — it will auto-sync."** That is
+  never true of a conflict, and the advice steers you away from the one thing that clears it.
+  Conflicts, a lost upstream and a detached clone are now a distinct *stranded* state: committed
+  locally, and it will **not** self-heal. `confer sync` says so instead of reassuring you, and its
+  "up to date" is now a claim it has actually earned.
+
+  Relatedly, a rebase that hits the 15-second timeout now **aborts before reporting**. It used to
+  return first, leaving the clone mid-rebase and detached — which is how a clone reached the silent
+  state above with nobody doing anything wrong. A slow rebase was enough.
+
+- **An offline `confer done` wrote the auto-claim and never the close.** Closing an unclaimed
+  request writes a claim first; that claim returned an error for *committed-but-not-yet-pushed*, and
+  the close was abandoned on it. Once the clone caught up, the board showed the request **claimed**
+  by the agent that had just closed it. Writing neither would have been recoverable; writing only
+  the claim is the worse half. Both now land, and both flush together on the next sync.
+
+Also: the "the clone may be busy, retry" hint used to be appended to *every* send failure, including
+the ones a retry cannot fix. It now travels with the busy error itself, so the remedy always matches
+the cause.
+
+Internally, `Committed` gained a third state and `rev_count` returns a `Result` — after which the
+compiler enumerated every call site that had been quietly wrong. That is the fix that generalises:
+the type, not the vigilance.
+
+Each defect was reproduced against released 0.8.29 before being fixed, and every regression test was
+re-run against the unfixed code to confirm it actually fails there. One test that did not — it passed
+either way — was rewritten until it did.
+
 ## 0.8.29
 
 *Fixes a false alarm I shipped in 0.8.27 and then told the whole fleet to go looking for.*
