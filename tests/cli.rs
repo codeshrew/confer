@@ -8308,3 +8308,69 @@ fn a_rebase_conflict_is_not_reported_as_the_hub_being_busy() {
         err(&sy)
     );
 }
+
+#[test]
+fn an_offline_done_writes_the_close_not_just_the_auto_claim() {
+    // jarvis's OSS audit (AK8TFW), door three. `confer done` on an unclaimed request writes an
+    // auto-claim first, then the close. The claim went through cmd_append, which returns Err when
+    // a message is committed-but-unpushed — and the `?` on that call aborted the whole run. So
+    // offline, the claim was written and the close never was, and once the clone caught up the
+    // board showed the request CLAIMED by the very agent that had just closed it.
+    //
+    // Writing neither would have been recoverable. Writing only the claim is the worse half.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let req = a.append(&[
+        "--type", "request", "--to", "alpha", "--summary", "do a thing", "--text", "please",
+    ]);
+    assert!(ok(&req));
+    let id = out(&req).trim().to_string();
+    assert!(!id.is_empty(), "need the request id");
+
+    // Offline: a remote that isn't there. The commits still land locally.
+    let gone = a.dir.join("..").join("definitely-not-a-hub.git");
+    assert!(ok(&git(
+        &a.dir,
+        &["remote", "set-url", "origin", gone.to_str().unwrap()]
+    )));
+
+    // Short budgets: an unreachable remote otherwise burns the full retry allowance twice.
+    let done = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", &a.role)
+        .env("CONFER_SYNC_BUDGET_SECS", "1")
+        .env("CONFER_LOCK_BUDGET_SECS", "1")
+        .args(["done", &id, "--summary", "finished"])
+        .output()
+        .expect("run confer");
+    assert!(
+        !ok(&done),
+        "offline, `done` must still exit non-zero — nothing reached the hub"
+    );
+
+    // Ground truth is the commit log, not the exit code: BOTH must be committed.
+    let log = out(&git(&a.dir, &["log", "--format=%s"]));
+    assert!(
+        log.contains("alpha: claim"),
+        "the auto-claim should be written: {log}"
+    );
+    assert!(
+        log.contains("alpha: done"),
+        "the CLOSE must be written too — a claim with no close is worse than neither: {log}"
+    );
+
+    // And once the hub is reachable again, both flush and the request reads as closed.
+    assert!(ok(&git(
+        &a.dir,
+        &["remote", "set-url", "origin", hub.bare.to_str().unwrap()]
+    )));
+    assert!(ok(&a.confer(&["sync"])), "sync must flush both commits");
+    let short = &id[id.len() - 6..];
+    let read = out(&a.confer(&["read", "--last", "10"]));
+    assert!(
+        read.contains("done") || read.contains(short),
+        "the close should be visible after the flush: {read}"
+    );
+}

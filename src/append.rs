@@ -358,6 +358,22 @@ pub(crate) fn cmd_lifecycle(
                     patch_repo: None,
                     allow_large_patch: false,
                     force: a.force,
+                })
+                .or_else(|e| {
+                    // A claim that is committed-but-unpushed is SAFE, and both it and the close
+                    // flush together on the next sync. Aborting here would write the claim and
+                    // never the close — the one outcome worse than writing neither.
+                    match e.downcast_ref::<CommittedNotSynced>() {
+                        Some(_) => {
+                            eprintln!(
+                                "confer: the auto-claim is committed locally but not yet on the \
+                                 hub ({e}) — continuing so the {msg_type} still gets written."
+                            );
+                            Ok(())
+                        }
+                        // Genuinely not written. Stop: claiming is part of resolving.
+                        None => Err(e),
+                    }
                 })?;
                 // Keep the notice truthful: "was unclaimed" only when nobody held
                 // it; in the handoff case name the prior owner (we add our own
@@ -474,6 +490,26 @@ fn split_comma_targets(v: Vec<String>) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect()
 }
+
+/// A message that IS durably committed locally but has not reached the hub.
+///
+/// `cmd_append` returns this as an Err so the process still exits non-zero — a caller must never
+/// read "delivered" from it. But it is a DIFFERENT failure from "the message was not written",
+/// and one internal caller has to tell them apart: the auto-claim that `confer done` writes
+/// before the close. It used to `?` on this, so a deferred claim aborted the run and the `done`
+/// was never written at all — leaving the board reading CLAIMED, by an agent that had just
+/// closed the request (jarvis's audit, AK8TFW). The claim landing must not be able to prevent
+/// the close from landing.
+#[derive(Debug)]
+pub(crate) struct CommittedNotSynced(pub String);
+
+impl std::fmt::Display for CommittedNotSynced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CommittedNotSynced {}
 
 pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Accept `--to a,b,c` (and `--cc`) as a convenience for addressing several peers at once.
@@ -1079,11 +1115,11 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         // Non-zero, like the deferral below — but with the OPPOSITE advice. The deferral says
         // "wait, it flushes itself"; this one never does, and repeating the deferral's wording
         // here would quietly undo the warning printed above.
-        return Err(anyhow!(
+        return Err(anyhow::Error::new(CommittedNotSynced(format!(
             "message {} is committed locally but STRANDED — {why}. It will NOT auto-sync; \
              resolve that, then run `confer sync`.",
             short_id(&id)
-        ));
+        ))));
     }
     if !synced {
         // Non-zero exit so a hook/loop can distinguish committed-locally from
@@ -1091,12 +1127,12 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         // The commit is SAFE and append-only; it auto-flushes on the next confer command that syncs
         // (poll/inbox/watch) or an explicit `confer sync`. Say so, so the caller doesn't reach for
         // git by hand and inherit an ahead/behind merge to resolve themselves (Pipeline bug #5).
-        return Err(anyhow!(
+        return Err(anyhow::Error::new(CommittedNotSynced(format!(
             "message {} committed locally but not yet pushed to the hub (the hub was busy/offline). \
              It's safe and will auto-sync on your next confer command, or run `confer sync` now — \
              no git surgery needed.",
             short_id(&id)
-        ));
+        ))));
     }
     Ok(())
 }
