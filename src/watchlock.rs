@@ -78,10 +78,10 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     let version = v.get("version").and_then(|x| x.as_str()).map(String::from);
     let started_at = v.get("started_at").and_then(|x| x.as_str()).map(String::from);
     let delivery = v.get("delivery").and_then(|x| x.as_str()).map(String::from);
-    let same_host = host == config::hostname().unwrap_or_default();
+    let same_host = config::is_this_host(&host);
     let age = age_secs(&path);
     Some(LockInfo {
-        alive: same_host && process_alive(pid),
+        alive: same_host && process_alive(pid) && is_confer_watch(pid),
         same_host,
         fresh: age < stale_secs,
         age_secs: age,
@@ -100,6 +100,23 @@ fn lock_path(hub: &str, role: &str) -> Result<PathBuf> {
         .join("watch")
         .join(hub)
         .join(format!("{role}.json")))
+}
+
+/// Is `pid` actually a confer watch, rather than whatever recycled that number?
+///
+/// Used to gate the kill in `--replace`. Being able to SIGNAL a pid proves it is on this machine
+/// far more reliably than comparing hostname spellings — but pids are recycled, so "signalable"
+/// alone is not enough to justify killing it. This is the second half of the proof.
+fn is_confer_watch(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .is_some_and(|c| {
+            let c = c.trim();
+            c.contains("confer") && c.contains("watch")
+        })
 }
 
 /// Same-host liveness via `kill -0` (signal 0 probes without delivering).
@@ -125,7 +142,7 @@ fn read_info(path: &Path) -> Option<(u32, String)> {
 /// mid-flight, so we neither resurrect nor remove it.
 fn we_still_hold(path: &Path) -> bool {
     match read_info(path) {
-        Some((pid, host)) => pid == std::process::id() && host == config::hostname().unwrap_or_default(),
+        Some((pid, host)) => pid == std::process::id() && config::is_this_host(&host),
         None => false,
     }
 }
@@ -166,9 +183,18 @@ impl WatchLock {
         if path.exists() {
             let this_host = config::hostname().unwrap_or_default();
             let info = read_info(&path);
-            let same_host = info.as_ref().is_some_and(|(_, h)| *h == this_host);
+            let same_host = info.as_ref().is_some_and(|(_, h)| config::is_this_host(h));
             let pid = info.as_ref().map(|(p, _)| *p);
-            let alive = same_host && pid.is_some_and(process_alive);
+            // NOT gated on the recorded host string. A pid this process can signal is on THIS
+            // machine by definition, whatever spelling the lock was written with — and gating the
+            // kill on a hostname match is exactly what left a predecessor running: after a
+            // hostname drift, `--replace` decided its predecessor was on another box, took the
+            // "stale lock" branch, and never killed it. Two watchers delivered while
+            // `watch-status` reported one, healthy, naming only the new pid (studio-markup, twice).
+            //
+            // `is_confer_watch` carries the weight the host comparison used to: it stops us
+            // signalling an unrelated process that inherited the pid.
+            let alive = pid.is_some_and(|p| process_alive(p) && is_confer_watch(p));
             let fresh = age_secs(&path) < stale_secs;
             if alive && fresh {
                 if !replace {
@@ -201,6 +227,16 @@ impl WatchLock {
                         }
                     }
                     eprintln!("confer watch: --replace killed the existing watcher (pid {p}) for role '{label}'.");
+                    if !same_host {
+                        // Say it out loud. This is the case that used to leave a second watcher
+                        // running, so an operator seeing the drift should see that it was handled.
+                        let was = info.as_ref().map(|(_, h)| h.as_str()).unwrap_or("?");
+                        eprintln!(
+                            "confer watch: (that lock was recorded under host '{was}', this machine \
+                             answers to '{this_host}' — same machine, different spelling; matched on \
+                             the live process rather than the name.)"
+                        );
+                    }
                 }
             } else {
                 eprintln!(

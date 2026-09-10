@@ -8459,3 +8459,100 @@ fn saved_cursor(home: &Path) -> Option<String> {
     }
     None
 }
+
+#[test]
+fn replace_kills_a_watcher_whose_lock_records_a_different_spelling_of_this_host() {
+    // studio-markup, twice (0.8.25 and again on 0.8.30): `--replace` updated the registry and left
+    // the previous process ALIVE, so two watchers delivered while watch-status reported one,
+    // healthy, naming only the new pid. Their diagnosis was right — the replace path gated the
+    // kill on the recorded host string matching, and a hostname drift made it believe its own
+    // predecessor was on another machine. It then took the "stale lock" branch, which does not kill.
+    //
+    // The drift is real and unremarkable: this Mac answers to `Batman.local` from `hostname`,
+    // `Batman` from `scutil --get LocalHostName`, and had locks written under `Batman.localdomain`,
+    // a fourth spelling nothing reproduces.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    // A real watcher, holding a real lock.
+    let mut first = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&a.home).expect("the watcher must write a lock");
+
+    // Rewrite ONLY the host field, to another spelling of this same machine. Everything else —
+    // the pid above all — stays true.
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    let real_pid = v.get("pid").and_then(|p| p.as_u64()).unwrap() as u32;
+    let drifted = format!(
+        "{}.localdomain",
+        v.get("host").and_then(|h| h.as_str()).unwrap_or("host").split('.').next().unwrap_or("host")
+    );
+    v["host"] = serde_json::Value::String(drifted);
+    std::fs::write(&lock, v.to_string()).unwrap();
+
+    // Take over. The predecessor must actually die.
+    let second = spawn_and_capture(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--poll", "1"],
+        false,
+        &["killed the existing watcher", "reclaimed a stale watch lock"],
+    );
+
+    // Reap while polling. `kill -0` succeeds on a ZOMBIE — a process that has been killed but not
+    // yet waited on by its parent, which is exactly what the child is here — so a liveness probe
+    // alone cannot tell "still watching" from "dead, unreaped". try_wait both reaps and answers.
+    let mut gone = false;
+    for _ in 0..60 {
+        if matches!(first.try_wait(), Ok(Some(_))) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = first.kill();
+    let _ = first.wait();
+    assert!(
+        gone,
+        "--replace left the previous watcher (pid {real_pid}) running — two watchers deliver while \
+         the registry shows one: {second}"
+    );
+    assert!(
+        second.contains("killed the existing watcher"),
+        "it must report the kill, not claim it reclaimed a stale lock: {second}"
+    );
+    // Note: the drift note is NOT expected here. `.localdomain` normalises to the same machine, so
+    // this lock is correctly recognised as ours by name as well as by process — the note is for a
+    // spelling normalisation does not cover, where only the live-process match saves us.
+}
+
+/// Poll for the watch lock a freshly-spawned watcher writes, whatever hub key it lives under.
+fn wait_for_watch_lock(home: &Path) -> Option<PathBuf> {
+    for _ in 0..80 {
+        let root = home.join(".confer/watch");
+        if let Ok(hubs) = std::fs::read_dir(&root) {
+            for hub in hubs.flatten() {
+                if let Ok(files) = std::fs::read_dir(hub.path()) {
+                    for f in files.flatten() {
+                        if f.path().extension().is_some_and(|e| e == "json") {
+                            return Some(f.path());
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+

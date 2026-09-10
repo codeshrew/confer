@@ -339,6 +339,44 @@ pub fn touch_signal(hub_key: &str) {
     }
 }
 
+/// A NORMALISED key for "which machine is this", for comparing one recording against another.
+///
+/// A hostname is a label, not an identity, and one machine answers to several. On this fleet a
+/// single Mac reports `Batman.local` from `hostname`, `Batman` from `hostname -s` and
+/// `scutil --get LocalHostName`, and had a watch lock recorded under a fourth spelling,
+/// `Batman.localdomain`, that none of those reproduce. Comparing the raw strings then concluded
+/// two spellings of one machine were two machines — which broke `watch-status` (a live local
+/// watcher reported as `other-host`) and, worse, `--replace`, which skipped killing its
+/// predecessor because it believed the predecessor was on another box. Two watchers ran while
+/// the registry showed one. Reported by studio and studio-markup, twice each.
+///
+/// Normalising at COMPARISON time rather than at storage is deliberate: records already written
+/// under an old spelling start matching immediately, with no migration and no window in which
+/// existing locks are orphaned. That is the lesson from the hub-id fork — a stored identity that
+/// changes meaning silently repoints everything keyed by it.
+pub fn host_key(host: &str) -> String {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    // Strip the local-network suffixes that the same machine is spelled with interchangeably.
+    for suffix in [".local", ".localdomain", ".lan", ".home", ".internal"] {
+        if let Some(stem) = h.strip_suffix(suffix) {
+            if !stem.is_empty() {
+                return stem.to_string();
+            }
+        }
+    }
+    h
+}
+
+/// `host_key` for THIS machine.
+pub fn this_host_key() -> String {
+    host_key(&hostname().unwrap_or_default())
+}
+
+/// True when `recorded` names this machine, whatever spelling it was written with.
+pub fn is_this_host(recorded: &str) -> bool {
+    !recorded.is_empty() && host_key(recorded) == this_host_key()
+}
+
 /// Best-effort hostname for provenance.
 pub fn hostname() -> Option<String> {
     std::env::var("HOSTNAME").ok().or_else(|| {
@@ -349,4 +387,32 @@ pub fn hostname() -> Option<String> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     })
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::host_key;
+
+    #[test]
+    fn one_machine_spelled_several_ways_is_one_key() {
+        // The four spellings this fleet actually produced for a single Mac. `hostname` gives the
+        // first, `scutil --get LocalHostName` the second, and a watch lock was found recorded
+        // under the third — a form neither command reproduces.
+        for h in ["Batman.local", "Batman", "Batman.localdomain", "batman.LOCAL."] {
+            assert_eq!(host_key(h), "batman", "{h} should key to the same machine");
+        }
+    }
+
+    #[test]
+    fn genuinely_different_machines_stay_different() {
+        assert_ne!(host_key("batman.local"), host_key("pop-os"));
+        assert_ne!(host_key("mini.local"), host_key("batman.local"));
+    }
+
+    #[test]
+    fn a_bare_suffix_is_not_stripped_to_nothing() {
+        // ".local" alone has no stem; stripping it would collapse every such record together.
+        assert_eq!(host_key(".local"), ".local");
+        assert_eq!(host_key(""), "");
+    }
 }
