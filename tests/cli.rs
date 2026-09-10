@@ -8115,3 +8115,64 @@ fn cc_does_not_wake_by_default_but_still_lands_and_high_breaks_through() {
         "a silenced cc must still LAND on the board — nothing is dropped: {read}"
     );
 }
+
+#[test]
+fn a_message_reported_as_not_sent_never_rides_out_on_a_later_commit() {
+    // jarvis's OSS audit (AK8TFW), reproduced end to end with a peer receiving BOTH messages.
+    //
+    // `commit_and_sync` stages the file (`git add`) and then commits. When the COMMIT fails but the
+    // add succeeded, the blob is sitting in the INDEX. The failure path used to remove only the
+    // worktree file, so the next append staged its own file and committed both — delivering, under
+    // a different message's commit, a message confer had told the caller it did NOT send.
+    //
+    // Distinct from `append_under_held_lock_fails_loudly_never_phantom_sends`: there, nothing is
+    // ever staged. The whole point here is that `git add` SUCCEEDS and only `git commit` fails,
+    // which a failing pre-commit hook reproduces exactly.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let hook = a.dir.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let ghost = a.append(&[
+        "--type", "note", "--to", "x", "--summary", "GHOSTMSG must never arrive", "--text", "g",
+    ]);
+    assert!(!ok(&ghost), "the commit failed, so the append must fail too");
+    assert!(
+        err(&ghost).contains("did NOT send"),
+        "must say it didn't send: {}",
+        err(&ghost)
+    );
+
+    // The index must be clean: nothing of the ghost survives the failure.
+    let staged = out(&git(&a.dir, &["diff", "--cached", "--name-only"]));
+    assert!(
+        staged.trim().is_empty(),
+        "a failed append must leave NOTHING staged, or it rides out later: {staged:?}"
+    );
+
+    std::fs::remove_file(&hook).unwrap();
+    let real = a.append(&[
+        "--type", "note", "--to", "x", "--summary", "REALMSG", "--text", "r",
+    ]);
+    assert!(ok(&real), "a later append must still work: {}", err(&real));
+
+    // The load-bearing assertion: the ghost is nowhere in history, under any id.
+    let hist = out(&git(&a.dir, &["log", "--all", "-S", "GHOSTMSG", "--oneline"]));
+    assert!(
+        hist.trim().is_empty(),
+        "a message reported as NOT sent must never appear in history: {hist}"
+    );
+    let files = out(&git(&a.dir, &["log", "-1", "--name-only", "--format="]));
+    assert!(
+        !files.contains("GHOST") && files.matches(".md").count() == 1,
+        "the later commit must carry ONLY its own message: {files}"
+    );
+}

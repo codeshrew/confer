@@ -990,6 +990,17 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         // FAIL LOUDLY — never report "sent" for a message that didn't land (a review finding: a
         // backgrounded append must exit non-zero so the caller knows it did not go out).
         Err(e) => {
+            // UNSTAGE IT TOO. `commit_and_sync` ran `git add <path>` before the commit that failed,
+            // so the blob is still in the INDEX — and removing only the worktree file leaves it
+            // there. The next append stages its own file and commits BOTH, so a message we told the
+            // caller we did NOT send goes out later, under a different message's commit. jarvis
+            // reproduced it end to end with a peer receiving both (audit AK8TFW).
+            //
+            // For a tool whose one job is "what did I actually communicate", reporting a failure and
+            // then delivering anyway is the worst failure available to it. Best-effort like the
+            // worktree removal: if unstaging fails we are no worse off than before, and the loud
+            // error below still fires either way.
+            let _ = gitcmd::check(&root, &["rm", "--cached", "--force", "--quiet", "--", &path.to_string_lossy()]);
             let _ = std::fs::remove_file(&path);
             return Err(anyhow!(
                 "did NOT send {} — not committed ({e}); the clone may be busy. Retry, e.g. `timeout 60 confer append …`.",
