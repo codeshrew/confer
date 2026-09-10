@@ -8374,3 +8374,88 @@ fn an_offline_done_writes_the_close_not_just_the_auto_claim() {
         "the close should be visible after the flush: {read}"
     );
 }
+
+#[test]
+fn the_watch_cursor_never_advances_past_a_message_it_could_not_deliver() {
+    // jarvis, C08 (a mutation-testing sweep): `safe_advance` is unit-tested, but its ONE consumer
+    // in `watch::emit_new` was not — the cursor could be made to advance to HEAD despite a HOLD
+    // and no test failed. That was an unprotected invariant rather than a live bug, but the
+    // failure it permits is a SILENTLY SKIPPED MESSAGE, in a tool whose whole promise is that
+    // nothing is skipped. Same family as the four delivery defects: a value saying "safe" that
+    // nothing verified.
+    //
+    // The invariant: with an undeliverable message in history, the cursor holds BEFORE it, so a
+    // later watch re-emits everything after the hole instead of stepping over it.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    assert!(ok(&b.append(&[
+        "--type", "note", "--to", "alpha", "--summary", "GOODONE", "--text", "one",
+    ])));
+
+    // A message that is in history but unreadable in the tree — a pruned/blobless/corrupt file.
+    // Committing it (rather than dirtying the worktree) keeps it undeliverable across the syncs
+    // that watch performs.
+    assert!(ok(&git(&b.dir, &["pull", "-q", "--rebase"])));
+    let bad = b.dir.join("threads/general/20260101T000000Z-beta-BADBAD.md");
+    std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
+    std::fs::write(&bad, "this is not a message and will not parse\n").unwrap();
+    assert!(ok(&git(&b.dir, &["add", "-A"])));
+    assert!(ok(&git(&b.dir, &["commit", "-q", "-m", "beta: note BADBAD"])));
+    assert!(ok(&git(&b.dir, &["push", "-q"])));
+
+    assert!(ok(&b.append(&[
+        "--type", "note", "--to", "alpha", "--summary", "AFTERHOLE", "--text", "two",
+    ])));
+
+    let args = ["watch", "--role", "alpha", "--replace", "--poll", "1"];
+    // No marker: settle for the full window so the watch completes a cycle and PERSISTS its
+    // cursor. Killing on first sight of the message races the save, and the cursor then looks
+    // held for a reason that has nothing to do with the invariant under test.
+    let first = spawn_and_capture(&a.home, &a.dir, "alpha", &args, true, &[]);
+    assert!(
+        first.contains("GOODONE") && first.contains("AFTERHOLE"),
+        "the first watch should deliver both readable messages: {first}"
+    );
+
+    // The load-bearing assertion, made against the PERSISTED cursor rather than a second run's
+    // output. The output is identical either way — a re-emit after the hole and a fresh-start
+    // re-emit look the same from outside, which is exactly why the invariant was unprotected.
+    let head = out(&git(&a.dir, &["rev-parse", "HEAD"])).trim().to_string();
+    let saved = saved_cursor(&a.home).expect("the watch must persist a cursor");
+    assert_ne!(
+        saved, head,
+        "the cursor advanced to HEAD despite an undeliverable message in the range — everything \
+         after the hole would be silently skipped"
+    );
+    let bad_commit = out(&git(
+        &a.dir,
+        &["log", "--format=%H", "-1", "--", "threads/general/20260101T000000Z-beta-BADBAD.md"],
+    ))
+    .trim()
+    .to_string();
+    assert!(!bad_commit.is_empty(), "the bad message must be in history");
+    assert!(
+        saved != bad_commit
+            && ok(&git(&a.dir, &["merge-base", "--is-ancestor", &saved, &bad_commit])),
+        "the cursor must be held strictly BEFORE the undeliverable commit (saved {saved}, hole {bad_commit})"
+    );
+}
+
+/// The one cursor file under a test HOME, whatever hub key it is namespaced by.
+fn saved_cursor(home: &Path) -> Option<String> {
+    let root = home.join(".confer/cursor");
+    for hub in std::fs::read_dir(&root).ok()?.flatten() {
+        for f in std::fs::read_dir(hub.path()).ok()?.flatten() {
+            let txt = std::fs::read_to_string(f.path()).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+            if let Some(c) = v.get("commit").and_then(|c| c.as_str()) {
+                return Some(c.to_string());
+            }
+        }
+    }
+    None
+}
