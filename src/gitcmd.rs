@@ -4,7 +4,7 @@
 //! user's exact git config, SSH keys, credential helpers, and GitHub auth for
 //! free, and behaves identically to what they'd run by hand.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -239,7 +239,8 @@ fn acquire_lock_until(root: &Path, overall: Option<std::time::Instant>) -> Resul
             }
             Err(_) => {
                 return Err(anyhow!(
-                    "clone busy — could not acquire {} within the time budget (another confer op holds it)",
+                    "clone busy — could not acquire {} within the time budget (another confer op \
+                     holds it); a retry usually clears it, e.g. `timeout 60 confer append …`",
                     p.display()
                 ));
             }
@@ -255,12 +256,79 @@ pub fn lock(root: &Path) -> Result<Lock> {
     acquire_lock(root)
 }
 
-fn rev_count(root: &Path, range: &str) -> usize {
-    output(root, &["rev-list", "--count", range])
+/// How many commits are in `range`, or an ERROR if that can't be determined.
+///
+/// This deliberately does NOT fall back to 0. `0` means "verified: nothing there", and the
+/// sync path treats it as "nothing to push" — so swallowing a failure into 0 turns "I could
+/// not tell" into "all clear". With HEAD detached, `@{u}` does not resolve, every rev-list
+/// here failed, and `append` reported `sent` while the hub received nothing (jarvis, 7BCAT3).
+/// `pushed: 0` was doing two incompatible jobs; only one of them is success.
+fn rev_count(root: &Path, range: &str) -> Result<usize> {
+    let o = output(root, &["rev-list", "--count", range])
+        .with_context(|| format!("could not run rev-list for {range}"))?;
+    if !o.status.success() {
+        return Err(anyhow!(
+            "could not count commits in {range}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
+    }
+    String::from_utf8(o.stdout)
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+        .ok_or_else(|| anyhow!("could not parse the commit count for {range}"))
+}
+
+/// True when HEAD is detached (not on a branch). A detached clone can commit but can never
+/// push: `@{u}` does not resolve, so nothing self-heals and no later sync will flush it.
+/// The first substantive line of a git stderr, without git's trailing `hint:` block.
+///
+/// Relaying git's conflict output verbatim ended a message with "run `git rebase --continue`" —
+/// instructions for a rebase confer had already aborted. Keeping the diagnosis and dropping the
+/// hints leaves exactly one remedy in the text, and it is ours.
+fn first_line(stderr: &[u8]) -> String {
+    let s = String::from_utf8_lossy(stderr);
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("hint:") && !l.starts_with("Rebasing ("))
+        .unwrap_or("git reported no detail")
+        .to_string()
+}
+
+fn detached_head(root: &Path) -> bool {
+    output(root, &["symbolic-ref", "--quiet", "HEAD"]).map_or(false, |o| !o.status.success())
+}
+
+/// True when the clone has at least one remote configured. Distinguishes a genuinely local
+/// repo (fine: nothing to push, tests and brand-new hubs) from a clone that HAS a hub but
+/// has lost its upstream tracking (not fine: it is stranded).
+fn has_remote(root: &Path) -> bool {
+    output(root, &["remote"]).map_or(false, |o| {
+        o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+    })
+}
+
+/// Why a commit did not reach the hub. The distinction is the whole point: one of these
+/// fixes itself and the other never will, and confer used to report both as the first.
+pub enum Stall {
+    /// Offline, contended, hub busy. The commit is safe and the next confer command retries.
+    Transient(String),
+    /// Will NOT self-heal without a human: detached HEAD, a lost upstream, a rebase conflict.
+    /// Reporting this as "will auto-sync" is a lie that gets quieter every time you retry.
+    Stranded(String),
+}
+
+impl Stall {
+    fn msg(&self) -> &str {
+        match self {
+            Stall::Transient(m) | Stall::Stranded(m) => m,
+        }
+    }
+}
+
+impl std::fmt::Display for Stall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.msg())
+    }
 }
 
 /// Current HEAD commit sha (the local tip; == hub tip after integrate).
@@ -419,10 +487,15 @@ fn has_upstream(root: &Path) -> bool {
 /// Whether a message landed — BOTH variants mean it is DURABLY committed locally. A caller
 /// may report "sent" for either; only an `Err` from `commit_and_sync` means NOT committed.
 pub enum Committed {
-    /// Committed + pushed to the hub.
+    /// Committed + pushed to the hub. Only constructible from a push that succeeded, or from
+    /// a VERIFIED `HEAD == @{u}` — never from a count we failed to take.
     Synced,
     /// Committed locally; the push deferred (offline/contended), flushes on the next sync.
     DeferredLocal,
+    /// Committed locally, and it will NOT reach the hub until a human fixes the clone.
+    /// Carries the reason, which the caller must surface — this is the state that used to
+    /// masquerade as `Synced` (detached HEAD) or as `DeferredLocal` (a rebase conflict).
+    Stranded(String),
 }
 
 /// Write path: commit `file` and get it to the hub. Returns `Ok` iff the message is
@@ -431,6 +504,22 @@ pub enum Committed {
 /// it as "did not send", not "committed but unsynced" (studio bug B: the two were conflated,
 /// so a lock-failure looked like a successful unsynced send while the message vanished).
 pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bool) -> Result<Committed> {
+    // REFUSE OUTRIGHT on a detached HEAD, before anything is committed.
+    //
+    // This is deliberately harsher than `Stranded`. The other stalls leave the commit on the
+    // branch, so resolving the conflict or setting the upstream flushes it. A commit made on a
+    // detached HEAD is on no branch at all: `git checkout main` does not flush it, it ORPHANS
+    // it. Advice of the form "we saved it, go fix the clone" would therefore be false — the
+    // honest move is to not create the commit, so the caller gets a clean "did NOT send" and
+    // retries after re-attaching. Verified: with the commit made, re-attaching lost it.
+    if detached_head(root) {
+        return Err(anyhow!(
+            "this clone has a DETACHED HEAD — it cannot push, and a commit made here would be \
+             orphaned by re-attaching rather than flushed. Nothing was written. Re-attach it \
+             (`git -C {} checkout main`), then retry",
+            root.display()
+        ));
+    }
     // Fetch OUTSIDE the lock — it's the slow, read-only part (updates only refs/remotes/*).
     // Keeping it out means a peer's watcher poll fetching the same clone can't starve this
     // write (studio bug A). Everything under the lock is fast-local + a bounded push.
@@ -488,15 +577,28 @@ pub fn commit_and_sync(root: &Path, role: &str, file: &Path, msg: &str, sign: bo
     // From here the message is durably committed locally — a push failure only DEFERS it.
     match reconcile_push(root, fetched, Some(deadline)) {
         Ok(_) => Ok(Committed::Synced),
-        Err(_) => Ok(Committed::DeferredLocal),
+        Err(Stall::Transient(_)) => Ok(Committed::DeferredLocal),
+        Err(Stall::Stranded(why)) => Ok(Committed::Stranded(why)),
     }
 }
 
 /// Fetch (outside the lock), then reconcile with upstream and push — under the lock.
+/// Like `integrate`, but keeps the Transient/Stranded distinction for callers that report it
+/// to a human (`confer sync`). `integrate` flattens it for the fire-and-forget callers.
+pub fn integrate_detailed(root: &Path) -> std::result::Result<SyncResult, Stall> {
+    integrate_inner(root)
+}
+
 pub fn integrate(root: &Path) -> Result<SyncResult> {
+    integrate_inner(root).map_err(|s| anyhow!("{}", s.msg()))
+}
+
+fn integrate_inner(root: &Path) -> std::result::Result<SyncResult, Stall> {
     let deadline = op_deadline();
     let fetched = fetch_unlocked(root, deadline);
-    let _lock = acquire_lock_until(root, Some(deadline))?;
+    // A contended clone lock is transient by definition — someone else is mid-write.
+    let _lock = acquire_lock_until(root, Some(deadline))
+        .map_err(|e| Stall::Transient(format!("clone busy: {e}")))?;
     reconcile_push(root, fetched, Some(deadline))
 }
 
@@ -540,9 +642,36 @@ pub struct SyncResult {
 /// wall-clock budget it DEFERS (the commit stays local, flushes on the next confer command),
 /// returning a clean "hub busy" message. The caller holds the clone lock and has already
 /// fetched OUTSIDE it (`fetched` = whether that succeeded; offline → defer, don't error).
-fn reconcile_push(root: &Path, fetched: bool, overall: Option<std::time::Instant>) -> Result<SyncResult> {
+fn reconcile_push(
+    root: &Path,
+    fetched: bool,
+    overall: Option<std::time::Instant>,
+) -> std::result::Result<SyncResult, Stall> {
+    // Detached HEAD FIRST, with its own message. It is the one state that produced a clean
+    // `sent` + `up to date` while the hub got nothing, so it earns a named diagnosis rather
+    // than an unresolvable-`@{u}` error further down.
+    // The write path refuses before committing (see `commit_and_sync`); this covers the READ
+    // path — `integrate`/`confer sync` on an already-detached clone, which must not answer
+    // "up to date" for a hub it cannot even compare itself against.
+    if detached_head(root) {
+        return Err(Stall::Stranded(format!(
+            "this clone has a DETACHED HEAD, so it cannot be compared with the hub or pushed to \
+             it. Re-attach it (`git -C {} checkout main`) — and check `git -C {} reflog` for any \
+             commit made while detached, which re-attaching will NOT bring with it",
+            root.display(),
+            root.display()
+        )));
+    }
     if !has_upstream(root) {
-        // No remote/upstream yet (e.g. brand-new local repo in tests).
+        if has_remote(root) {
+            // It HAS a hub and lost the tracking link. Nothing self-heals from here.
+            return Err(Stall::Stranded(
+                "this clone has a remote but no upstream branch, so pushes have nowhere to go. \
+                 Set it (`git -C <clone> push -u origin HEAD`) and run `confer sync`"
+                    .into(),
+            ));
+        }
+        // Genuinely local: no remote at all (a brand-new local repo, or a test). Nothing to push.
         return Ok(SyncResult { fetched, pushed: 0 });
     }
     // A short per-git-call timeout for the sync path — a stalled fetch/push under
@@ -567,30 +696,57 @@ fn reconcile_push(root: &Path, fetched: bool, overall: Option<std::time::Instant
         // Reconcile to the latest upstream: fast-forward if we've added nothing,
         // else rebase our commits on top (clean by the unique-file-per-message
         // invariant; abort + surface on any real conflict).
-        let behind = rev_count(root, "HEAD..@{u}");
-        let ahead = rev_count(root, "@{u}..HEAD");
+        let behind = rev_count(root, "HEAD..@{u}").map_err(|e| Stall::Stranded(format!(
+            "could not compare this clone with the hub ({e}) — refusing to call that 'in sync'"
+        )))?;
+        let ahead = rev_count(root, "@{u}..HEAD").map_err(|e| Stall::Stranded(format!(
+            "could not compare this clone with the hub ({e}) — refusing to call that 'in sync'"
+        )))?;
         if behind > 0 {
             if ahead == 0 {
-                let m = sg(&["merge", "--ff-only", "--quiet", "@{u}"])?;
+                let m = sg(&["merge", "--ff-only", "--quiet", "@{u}"])
+                    .map_err(|e| Stall::Transient(format!("ff-merge could not run: {e}")))?;
                 if !m.status.success() {
-                    return Err(anyhow!("ff-merge failed: {}", String::from_utf8_lossy(&m.stderr).trim()));
+                    return Err(Stall::Stranded(format!(
+                        "fast-forward from the hub failed: {}",
+                        String::from_utf8_lossy(&m.stderr).trim()
+                    )));
                 }
             } else {
-                let r = sg(&["rebase", "@{u}"])?;
-                if !r.status.success() {
-                    let _ = sg(&["rebase", "--abort"]);
-                    return Err(anyhow!(
-                        "rebase onto upstream failed (aborted; resolve manually): {}",
-                        String::from_utf8_lossy(&r.stderr).trim()
-                    ));
+                // ALWAYS abort before returning. `sg` fails on the 15s per-call timeout, and the
+                // old `?` propagated that BEFORE the abort ran — leaving the clone mid-rebase and
+                // detached, which is exactly how a clone reaches the silent state above. A slow
+                // rebase was enough; no conflict required (jarvis, 7BCAT3).
+                match sg(&["rebase", "@{u}"]) {
+                    Err(e) => {
+                        let _ = sg(&["rebase", "--abort"]);
+                        return Err(Stall::Transient(format!(
+                            "rebase onto the hub timed out or could not run ({e}); aborted, nothing changed"
+                        )));
+                    }
+                    Ok(r) if !r.status.success() => {
+                        let _ = sg(&["rebase", "--abort"]);
+                        // A CONFLICT is not "the hub is busy". Retrying forever never clears it.
+                        return Err(Stall::Stranded(format!(
+                            "rebase onto the hub hit a conflict in this clone (aborted; nothing \
+                             changed). Resolve the divergence, then run `confer sync` — {}",
+                            first_line(&r.stderr)
+                        )));
+                    }
+                    Ok(_) => {}
                 }
             }
         }
-        let ahead_now = rev_count(root, "@{u}..HEAD");
+        // VERIFIED zero. If this count can't be taken we must not claim "nothing to push".
+        let ahead_now = rev_count(root, "@{u}..HEAD").map_err(|e| Stall::Stranded(format!(
+            "could not tell how far ahead of the hub this clone is ({e}) — refusing to report \
+             'nothing to flush' on a count that failed"
+        )))?;
         if ahead_now == 0 {
             return Ok(SyncResult { fetched, pushed: 0 });
         }
-        let p = sg(&["push", "--quiet"])?;
+        let p = sg(&["push", "--quiet"])
+            .map_err(|e| Stall::Transient(format!("push could not run: {e}")))?;
         if p.status.success() {
             return Ok(SyncResult { fetched, pushed: ahead_now });
         }
@@ -605,11 +761,11 @@ fn reconcile_push(root: &Path, fetched: bool, overall: Option<std::time::Instant
         let _ = sg(&["fetch", "--quiet"]);
         attempt += 1;
     };
-    Err(anyhow!(
+    Err(Stall::Transient(format!(
         "hub busy — push contended for {}s ({} tries); committed locally, will sync on the next confer command ({deferred})",
         started.elapsed().as_secs(),
         attempt + 1
-    ))
+    )))
 }
 
 #[cfg(test)]

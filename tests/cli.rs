@@ -8176,3 +8176,135 @@ fn a_message_reported_as_not_sent_never_rides_out_on_a_later_commit() {
         "the later commit must carry ONLY its own message: {files}"
     );
 }
+
+#[test]
+fn a_detached_clone_refuses_to_send_instead_of_reporting_sent() {
+    // jarvis, 7BCAT3: with HEAD detached, `append` printed `sent`, exited 0 and nudged watchers,
+    // and `sync` then said "up to date — nothing to flush" while the hub received NOTHING. Two
+    // appends left the clone ahead of a hub that never heard either.
+    //
+    // The mechanism was `rev_count`'s `unwrap_or(0)`: detached, `@{u}` does not resolve, every
+    // count failed, and `pushed: 0` meant both "verified nothing to push" and "I could not tell".
+    //
+    // We REFUSE rather than stranding the commit, and that distinction is load-bearing: a commit
+    // made on a detached HEAD is on no branch, so re-attaching ORPHANS it rather than flushing it.
+    // Any "we kept it safe, go fix your clone" message would have been false.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.append(&[
+        "--type", "note", "--to", "x", "--summary", "BEFOREDETACH", "--text", "b",
+    ])));
+
+    assert!(ok(&git(&a.dir, &["checkout", "--detach", "HEAD"])));
+    let det = a.append(&[
+        "--type", "note", "--to", "x", "--summary", "DETACHEDMSG", "--text", "b",
+    ]);
+    assert!(!ok(&det), "a detached clone must NOT report a send: {}", out(&det));
+    let e = err(&det);
+    assert!(
+        e.contains("did NOT send") && e.contains("DETACHED HEAD"),
+        "must name the cause, not 'hub busy': {e}"
+    );
+    assert!(
+        !e.contains("auto-sync") && !e.contains("will flush"),
+        "must never promise a flush that cannot happen: {e}"
+    );
+    assert_eq!(
+        rev_count_of(&a.dir, "origin/main..HEAD"),
+        0,
+        "nothing may be committed while detached — it would be orphaned by re-attaching"
+    );
+
+    // `sync` must not answer "up to date" for a hub it cannot even compare itself against.
+    let sy = a.confer(&["sync"]);
+    assert!(!ok(&sy), "sync on a detached clone must fail, not reassure");
+    assert!(
+        !out(&sy).contains("up to date") && !err(&sy).contains("up to date"),
+        "the false all-clear is the bug: {} {}",
+        out(&sy),
+        err(&sy)
+    );
+
+    // Re-attaching restores normal service.
+    assert!(ok(&git(&a.dir, &["checkout", "main"])));
+    let after = a.append(&[
+        "--type", "note", "--to", "x", "--summary", "AFTERFIX", "--text", "b",
+    ]);
+    assert!(ok(&after), "normal sends must resume once re-attached: {}", err(&after));
+}
+
+/// Commits in `range`, as git reports it (the test's own count — deliberately not confer's).
+fn rev_count_of(dir: &Path, range: &str) -> usize {
+    out(&git(dir, &["rev-list", "--count", range]))
+        .trim()
+        .parse()
+        .unwrap_or(usize::MAX)
+}
+
+#[test]
+fn a_rebase_conflict_is_not_reported_as_the_hub_being_busy() {
+    // jarvis's OSS audit (AK8TFW), door two: EVERY reconcile failure collapsed into
+    // `Committed::DeferredLocal`, whose message is "the hub was busy/offline, it will auto-sync
+    // on your next confer command". For a rebase conflict that is false forever — no amount of
+    // waiting or retrying clears it, and the advice actively steers the sender away from the one
+    // thing that would (resolving it). "Busy" and "stuck" need different words.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    // A file both clones will edit divergently. Confer's own messages are one-file-per-message
+    // and never conflict, so the conflict has to come from something else in the tree.
+    // beta's join pushed after alpha's, so alpha is behind — catch up before adding to the tree.
+    assert!(ok(&git(&a.dir, &["pull", "-q", "--rebase"])));
+    std::fs::write(a.dir.join("shared.txt"), "base\n").unwrap();
+    assert!(ok(&git(&a.dir, &["add", "shared.txt"])));
+    assert!(ok(&git(&a.dir, &["commit", "-q", "-m", "base"])));
+    assert!(ok(&git(&a.dir, &["push", "-q"])));
+
+    // beta pushes its version...
+    assert!(ok(&git(&b.dir, &["fetch", "-q"])));
+    assert!(ok(&git(&b.dir, &["reset", "-q", "--hard", "origin/main"])));
+    std::fs::write(b.dir.join("shared.txt"), "beta's line\n").unwrap();
+    assert!(ok(&git(&b.dir, &["add", "shared.txt"])));
+    assert!(ok(&git(&b.dir, &["commit", "-q", "-m", "beta edit"])));
+    assert!(ok(&git(&b.dir, &["push", "-q"])));
+
+    // ...while alpha has an unpushed, conflicting version of the same line.
+    std::fs::write(a.dir.join("shared.txt"), "alpha's line\n").unwrap();
+    assert!(ok(&git(&a.dir, &["add", "shared.txt"])));
+    assert!(ok(&git(&a.dir, &["commit", "-q", "-m", "alpha edit"])));
+
+    let sent = a.append(&[
+        "--type", "note", "--to", "beta", "--summary", "CONFLICTMSG", "--text", "b",
+    ]);
+    assert!(!ok(&sent), "a permanently stuck send must exit non-zero");
+    let e = err(&sent);
+    assert!(
+        e.contains("STRANDED") && e.contains("conflict"),
+        "must name the conflict: {e}"
+    );
+    assert!(
+        !e.contains("busy/offline") && !e.contains("will auto-sync"),
+        "a conflict is not a busy hub, and must never be sold as self-healing: {e}"
+    );
+    assert!(
+        !e.contains("rebase --continue"),
+        "must not relay git's hint to continue a rebase confer already aborted: {e}"
+    );
+    // The abort must leave the tree usable, not mid-rebase.
+    assert!(
+        !a.dir.join(".git/rebase-merge").exists() && !a.dir.join(".git/rebase-apply").exists(),
+        "the rebase must be aborted, never left in progress"
+    );
+    // And `sync` must tell the same story rather than the reassuring one.
+    let sy = a.confer(&["sync"]);
+    assert!(
+        !out(&sy).contains("up to date") && !err(&sy).contains("up to date"),
+        "sync must not report all-clear on a stuck clone: {} {}",
+        out(&sy),
+        err(&sy)
+    );
+}

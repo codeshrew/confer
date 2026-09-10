@@ -530,6 +530,10 @@ pub(crate) fn cmd_describe(
         Ok(gitcmd::Committed::DeferredLocal) => {
             println!("updated roles/{me}.md (committed locally; hub push deferred — flushes on the next confer command)");
         }
+        Ok(gitcmd::Committed::Stranded(why)) => {
+            println!("updated roles/{me}.md locally, but this clone is STRANDED — {why}. \
+                      Peers will NOT see the change until that is fixed.");
+        }
         // NOT committed — undo the edit so the card isn't left dirty (a review finding, 0.2.1).
         Err(e) => {
             let _ = gitcmd::check(&root, &["checkout", "--", &format!("roles/{me}.md")]);
@@ -592,6 +596,10 @@ pub(crate) fn cmd_set_status(role: Option<String>, value: &str) -> Result<()> {
         }
         Ok(gitcmd::Committed::DeferredLocal) => {
             println!("{me} → {value} (committed locally; hub push deferred — flushes on the next confer command)");
+        }
+        Ok(gitcmd::Committed::Stranded(why)) => {
+            println!("{me} → {value} locally, but this clone is STRANDED — {why}. \
+                      Peers will NOT see this status until that is fixed.");
         }
         // NOT committed — undo the working-tree edit so we don't leave a dirty card that blocks a
         // later rebase or gets swept into an unrelated commit (a review finding, 0.2.1).

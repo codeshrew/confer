@@ -967,6 +967,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
     // Send receipt (stderr) so the sender SEES the body size immediately — a
     // 0-char body is now impossible, but the receipt makes content visible and
     // pairs with the drift/version checks.
+    let mut stranded: Option<String> = None;
     let synced = match gitcmd::commit_and_sync(
         &root,
         &role,
@@ -978,6 +979,23 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         Ok(gitcmd::Committed::Synced) => {
             config::touch_signal(&config::hub_key(&root));
             true
+        }
+        // Committed locally and it will NEVER reach the hub on its own. Distinct from the
+        // deferral below: no later confer command flushes this one. Telling the sender it will
+        // auto-sync is the lie that made a detached clone look healthy for two whole appends.
+        Ok(gitcmd::Committed::Stranded(why)) => {
+            eprintln!(
+                "confer: ⚠ {} is COMMITTED LOCALLY but STRANDED — it will NOT reach the hub, and \
+                 no later confer command will flush it on its own.",
+                short_id(&id)
+            );
+            eprintln!("confer:   {why}.");
+            eprintln!(
+                "confer:   Do NOT resend — the message is already committed on this branch; \
+                 clearing that flushes it."
+            );
+            stranded = Some(why);
+            false
         }
         // Committed locally, push deferred — the message is SAFE and flushes on next sync.
         Ok(gitcmd::Committed::DeferredLocal) => {
@@ -1003,7 +1021,11 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             let _ = gitcmd::check(&root, &["rm", "--cached", "--force", "--quiet", "--", &path.to_string_lossy()]);
             let _ = std::fs::remove_file(&path);
             return Err(anyhow!(
-                "did NOT send {} — not committed ({e}); the clone may be busy. Retry, e.g. `timeout 60 confer append …`.",
+                // Relay the diagnosis instead of asserting one. This used to append "the clone
+                // may be busy — retry" to EVERY failure, including a detached HEAD, where a
+                // retry is precisely the thing that cannot work. The busy case now carries its
+                // own retry advice, so the remedy always matches the cause.
+                "did NOT send {} — nothing was written ({e})",
                 short_id(&id)
             ));
         }
@@ -1053,6 +1075,16 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         }
     }
     println!("{id}"); // machine-readable id on stdout regardless of sync outcome
+    if let Some(why) = stranded {
+        // Non-zero, like the deferral below — but with the OPPOSITE advice. The deferral says
+        // "wait, it flushes itself"; this one never does, and repeating the deferral's wording
+        // here would quietly undo the warning printed above.
+        return Err(anyhow!(
+            "message {} is committed locally but STRANDED — {why}. It will NOT auto-sync; \
+             resolve that, then run `confer sync`.",
+            short_id(&id)
+        ));
+    }
     if !synced {
         // Non-zero exit so a hook/loop can distinguish committed-locally from
         // reached-the-hub (audit S2) — the id above still identifies the message.
@@ -1077,15 +1109,23 @@ pub(crate) fn cmd_sync() -> Result<()> {
         Some(h) => anyhow!("{e}\n{h}"),
         None => e,
     })?;
-    match gitcmd::integrate(&root) {
+    match gitcmd::integrate_detailed(&root) {
         Ok(r) if r.pushed > 0 => {
             eprintln!("confer sync: flushed {} local commit(s) to the hub.", r.pushed);
             Ok(())
         }
+        // "Nothing to flush" is now a VERIFIED claim: reconcile_push only returns a zero count
+        // it actually took. It used to also cover "I could not tell", which is how `confer sync`
+        // came to reassure a detached clone that had two unsent messages sitting in it.
         Ok(_) => {
             eprintln!("confer sync: up to date — nothing to flush.");
             Ok(())
         }
+        // Will not self-heal. Retrying is not the advice; fixing the clone is.
+        Err(gitcmd::Stall::Stranded(why)) => Err(anyhow!(
+            "confer sync: this clone is STRANDED — {why}.\n\
+             Any local commits are safe, but they will NOT flush until that is fixed."
+        )),
         // Still contended/offline — the commit stays safe locally and the next sync retries.
         Err(e) => Err(anyhow!(
             "confer sync: couldn't reach the hub ({e}). Your local commits are safe and will flush on \
