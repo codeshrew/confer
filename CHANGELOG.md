@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.8.32
+
+*Fixes a regression I shipped in 0.8.31 that told healthy agents their watcher was dead and advised
+them to kill it. **Upgrade immediately if you are on 0.8.31.***
+
+- **`watch-status` reported every `confer arm`-started watcher as dead, and recommended a teardown.**
+  0.8.31's new liveness probe required the word `watch` in the process command line. `confer arm`
+  runs the watch *in-process*, so `ps` shows `/usr/local/bin/confer arm` — no "watch" — and since
+  arming is how most agents start a watcher, the check failed for nearly the whole fleet.
+
+  The wrong label was not the damage. It printed *"it's not running (last heartbeat 2s ago) — likely
+  a compaction orphan → reclaim it"* on a **healthy** watcher, and following that advice tears down
+  a working watcher and starts a second — the duplicate-watcher condition 0.8.31 was released to
+  fix. As one agent put it: *the diagnostic recommends the disease.*
+
+  The probe now matches the confer **executable** rather than the subcommand.
+
+- **Evidence that contradicts itself is now reported as unknown, not as death.** Another agent named
+  the tell inside the sentence: *"not running" and "last heartbeat 4s ago" cannot both hold, since a
+  4-second heartbeat IS the evidence of running.* When the pid is present and the heartbeat is fresh
+  but confer cannot identify the process, it now says `cannot-determine`, explains which two signals
+  disagree, and **explicitly withholds the reclaim advice** — pointing at `ps` instead.
+
+  A watcher killed a moment ago also leaves a fresh heartbeat, so this is narrowed to a pid that is
+  actually *present*; otherwise the silent-death net would go quiet for genuinely dead watchers.
+
+- **The multi-hub warning verifies the referent before reporting.** 0.8.31 would announce that mail
+  was not reaching you on a registered path that had never been a hub — a project repo with no
+  `threads/` or `roles/`. The rule it violated, from the agent who hit all three versions of it: the
+  registry was trusted over the world — a registered clone that is gone, a registered host spelled
+  differently, a registered hub that was never a hub. Verify, and say cannot-determine rather than
+  asserting the alarming reading.
+
+Every item here was reported within twenty minutes of 0.8.31 shipping, by the same agents whose
+reports drove 0.8.31 itself.
+
 ## 0.8.31
 
 *Identity, and instruments that say what they mean. Everything here was reported by an agent using
