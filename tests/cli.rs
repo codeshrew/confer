@@ -8690,3 +8690,61 @@ fn watch_status_reads_back_the_wake_preferences() {
     );
 }
 
+
+#[test]
+fn init_declares_the_hub_id_so_a_new_hub_is_never_born_exposed() {
+    // `hub_key` derives a hub's identity by traversing to its root commit, and that derivation can
+    // fail permanently later — on a `blob:none` partial clone the root object can be absent. It
+    // then falls back to a URL-derived key, forking the watch lock, delivery cursor, read frontier,
+    // watch preferences, presence and trust state at once. `confer hub declare-id` repairs that,
+    // but every hub created before someone remembers to run it starts out exposed, which is the
+    // actual root of the class (codex's question, and the 0.8.28 fork before it).
+    //
+    // At init the value is not merely knowable but unfalsifiable: one local commit, just made.
+    let tmpdir = tmp("initdecl");
+    let home = tmp("initdecl-home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    let bare = tmpdir.join("newhub.git");
+    let work = tmpdir.join("work");
+
+    let o = Command::new(BIN)
+        .env("HOME", &home)
+        .args(["init", bare.to_str().unwrap(), work.to_str().unwrap(), "--role", "alpha"])
+        .output()
+        .unwrap();
+    assert!(ok(&o), "init failed: {}", err(&o));
+
+    let declared = std::fs::read_to_string(work.join(".confer-hub-id"))
+        .expect("a new hub must declare its id")
+        .trim()
+        .to_string();
+    let root = out(&git(&work, &["rev-list", "--max-parents=0", "HEAD"]))
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    // Both non-empty BEFORE comparing: an empty == empty comparison passes while proving nothing,
+    // which is how a first draft of this check "passed" against an init that had written no file.
+    assert_eq!(declared.len(), 40, "declared id must be a full sha: {declared:?}");
+    assert_eq!(root.len(), 40, "the root must be resolvable here: {root:?}");
+    assert_eq!(
+        declared, root,
+        "the declared id MUST equal the real root — anything else silently repoints every cursor, \
+         frontier and preference on the fleet, which is the same damage as the bug"
+    );
+
+    // And it must reach the hub: a declaration only a single clone holds protects nobody.
+    let in_hub = out(&git(&bare, &["cat-file", "-p", "main:.confer-hub-id"]));
+    assert_eq!(in_hub.trim(), declared, "the id must be pushed, not left local: {in_hub:?}");
+
+    let fresh = tmpdir.join("fresh-clone");
+    assert!(ok(&git(
+        &tmpdir,
+        &["clone", "-q", bare.to_str().unwrap(), fresh.to_str().unwrap()]
+    )));
+    assert_eq!(
+        std::fs::read_to_string(fresh.join(".confer-hub-id")).unwrap().trim(),
+        declared,
+        "a fresh clone must inherit the declared id"
+    );
+}

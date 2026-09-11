@@ -184,6 +184,56 @@ pub(crate) fn cmd_init(
                 "confer: initialize hub",
             ],
         )?;
+        // DECLARE THE HUB ID AT CREATION, before the first push.
+        //
+        // `hub_key` derives the hub's identity by traversing to the root commit, and that
+        // derivation can fail permanently later — on a `blob:none` partial clone the root object
+        // may simply be absent. When it fails, confer falls back to a URL-derived key, which forks
+        // the watch lock, delivery cursor, read frontier, watch preferences, presence and trust
+        // state all at once. `confer hub declare-id` exists to repair that, but every hub created
+        // until someone remembers to run it starts out exposed.
+        //
+        // Here the value is not merely knowable, it is UNFALSIFIABLE: this is a local repo with
+        // exactly one commit that we just made, so the root is that commit and nothing about a
+        // partial clone or a stale cache can be involved. Declaring anywhere else has to guard
+        // against pinning a wrong value; declaring here does not.
+        //
+        // It is a second commit rather than part of the seed: the root sha does not exist until the
+        // seed commit does. Both push together below, so a clone never sees one without the other.
+        match gitcmd::output(&root, &["rev-list", "--max-parents=0", "HEAD"]) {
+            Ok(o) if o.status.success() => {
+                let sha = String::from_utf8_lossy(&o.stdout)
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                    std::fs::write(root.join(".confer-hub-id"), format!("{sha}\n"))?;
+                    gitcmd::check(&root, &["add", "--", ".confer-hub-id"])?;
+                    gitcmd::check(
+                        &root,
+                        &[
+                            "-c", "user.name=confer",
+                            "-c", "user.email=confer@confer.local",
+                            "-c", "commit.gpgsign=false",
+                            "commit", "-q", "-m", "confer: declare hub id",
+                        ],
+                    )?;
+                } else {
+                    // Never guess. A hub with no declared id still works; one with the WRONG
+                    // declared id silently repoints every cursor and preference on the fleet.
+                    crate::hint(
+                        "could not read this new hub's root commit, so its id was not declared. \
+                         Run `confer hub declare-id` from a clone that can resolve it.",
+                    );
+                }
+            }
+            _ => crate::hint(
+                "could not read this new hub's root commit, so its id was not declared. \
+                 Run `confer hub declare-id` from a clone that can resolve it.",
+            ),
+        }
+
         let p = gitcmd::output(&root, &["push", "-u", "origin", "main"])?;
         if !p.status.success() {
             return Err(anyhow!(
