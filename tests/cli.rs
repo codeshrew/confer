@@ -8748,3 +8748,156 @@ fn init_declares_the_hub_id_so_a_new_hub_is_never_born_exposed() {
         "a fresh clone must inherit the declared id"
     );
 }
+
+#[test]
+fn an_arm_started_watcher_is_not_reported_dead() {
+    // 0.8.31 regression, reported within minutes by studio and studio-markup. The new liveness
+    // probe required the word "watch" in the process command line — but `confer arm` runs the
+    // watch IN-PROCESS, so `ps` shows `/usr/local/bin/confer arm` and every arm-started watcher on
+    // the fleet was instantly classified dead.
+    //
+    // The damage was not the label. `watch-status` then printed "it's not running (last heartbeat
+    // 2s ago) — likely a compaction orphan → reclaim it": a self-contradicting sentence whose
+    // advice, if followed, tears down a working watcher and starts a second. The diagnostic
+    // recommended the disease the release existed to cure.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let mut armed = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .arg("arm") // the wrapper the skills use — NOT `watch`
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&a.home);
+    std::thread::sleep(Duration::from_millis(700));
+
+    let s = format!(
+        "{}{}",
+        out(&a.confer(&["watch-status"])),
+        err(&a.confer(&["watch-status"]))
+    );
+    let _ = armed.kill();
+    let _ = armed.wait();
+    assert!(lock.is_some(), "arm must take the watch lock");
+
+    // Assert the POSITIVE. My first version only checked that the harmful strings were absent —
+    // and it passed with the bug reinstated, because the `Indeterminate` safety net catches that
+    // case and withholds the teardown advice. That proved the net works, not that the liveness
+    // probe does. An arm-started watcher must read as an actually-running one.
+    assert!(
+        s.contains("watching (pid"),
+        "a live arm-started watcher must be recognised as RUNNING, not merely not-harmful: {s}"
+    );
+    assert!(
+        !s.contains("not running") && !s.contains("cannot-determine"),
+        "and neither dead nor unknown — `confer arm` runs the watch in-process, which is the \
+         normal way the fleet arms: {s}"
+    );
+    assert!(
+        !s.contains("reclaim it"),
+        "never offer a teardown for a healthy watcher — following it creates the duplicate: {s}"
+    );
+}
+
+#[test]
+fn a_fresh_heartbeat_is_never_reported_as_not_running() {
+    // studio-markup: "'not running' and 'last heartbeat 4s ago' cannot both hold, since a
+    // 4-second heartbeat IS the evidence of running." Whatever the liveness probe says, a fresh
+    // heartbeat means something is alive there — so the honest answer is unknown, not dead, and
+    // the recommendation must not be a teardown.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    // A lock whose heartbeat is fresh but whose pid is certainly not a confer process: pid 1.
+    let mut armed = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&a.home).expect("need a lock");
+    std::thread::sleep(Duration::from_millis(400));
+    let _ = armed.kill();
+    let _ = armed.wait();
+
+    // A process we OWN that is plainly not confer. Not pid 1: `kill -0` on init returns EPERM for
+    // an unprivileged user, so the liveness probe reports it absent and the contradiction we are
+    // testing for never arises. (That conflation of "gone" with "not mine to signal" is a real,
+    // separate rough edge — it just is not this test's subject.)
+    let mut impostor = Command::new("sleep")
+        .arg("30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    v["pid"] = serde_json::json!(impostor.id());
+    std::fs::write(&lock, v.to_string()).unwrap(); // the write also freshens the heartbeat
+
+    let s = format!(
+        "{}{}",
+        out(&a.confer(&["watch-status"])),
+        err(&a.confer(&["watch-status"]))
+    );
+    assert!(
+        !s.contains("not running"),
+        "a fresh heartbeat contradicts 'not running' — say unknown instead: {s}"
+    );
+    let _ = impostor.kill();
+    let _ = impostor.wait();
+    assert!(
+        s.contains("cannot-determine") && s.contains("do NOT reclaim"),
+        "it must report the contradiction AND withhold the teardown advice: {s}"
+    );
+}
+
+#[test]
+fn watch_status_does_not_warn_about_a_registered_path_that_is_not_a_hub() {
+    // studio: `/Users/sk/git/book-business` is a project repo with no threads/ or roles/, but it
+    // sat in the watch registry — so the new multi-hub warning announced that mail there was not
+    // reaching them. There is no mail there to miss.
+    //
+    // Their summary across three separate reports is the rule worth keeping: the registry was
+    // trusted over the world — a registered clone that is gone, a registered host spelled
+    // differently, a registered hub that was never a hub. Verify the referent before reporting.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let home = tmp("notahub-home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    let a = Clone { dir: a.dir, role: a.role, home: home.clone() };
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    // A plain git repo — not a hub — registered as a watch target.
+    let notahub = tmp("plain-repo");
+    assert!(ok(&git(&notahub, &["init", "-q", "-b", "main"])));
+    let reg = home.join(".confer/autoheal.json");
+    std::fs::write(
+        &reg,
+        serde_json::json!({
+            "enabled": false,
+            "targets": [{"hub": notahub.to_str().unwrap(), "role": "alpha"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let s = format!(
+        "{}{}",
+        out(&a.confer(&["watch-status"])),
+        err(&a.confer(&["watch-status"]))
+    );
+    assert!(
+        !s.contains(notahub.to_str().unwrap()),
+        "a path with no threads/ or roles/ is not a hub and has no mail to miss: {s}"
+    );
+}

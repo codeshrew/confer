@@ -511,6 +511,11 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
                 watchlock::WatchState::Outdated => println!(
                     "⚠ watch: your watcher for '{me}' is on an OLD build — re-arm: confer watch --role {me} --replace"
                 ),
+                watchlock::WatchState::Indeterminate => println!(
+                    "· watch: cannot tell whether '{me}''s watcher is live — its heartbeat is fresh \
+                     but the process probe disagrees. Something is writing that heartbeat, so do \
+                     NOT reclaim it blindly; check with `ps` before replacing."
+                ),
                 watchlock::WatchState::OtherHost => {
                     println!("· watch: '{me}' is watched on another machine (fine if intended).")
                 }

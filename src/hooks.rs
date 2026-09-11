@@ -327,7 +327,11 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
         let hub_key = config::hub_key(std::path::Path::new(&t.hub));
         let info = watchlock::inspect(&hub_key, &t.role, 90);
         let reason = match watchlock::classify(&info, cur) {
-            watchlock::WatchState::Healthy | watchlock::WatchState::OtherHost => continue,
+            // Indeterminate joins the skip list: the heartbeat is fresh, so something is alive
+            // there. Nudging a session to re-arm on that evidence is how you get two watchers.
+            watchlock::WatchState::Healthy
+            | watchlock::WatchState::OtherHost
+            | watchlock::WatchState::Indeterminate => continue,
             watchlock::WatchState::NotWatching => "not running".to_string(),
             watchlock::WatchState::Stale => "stale (a compaction orphan)".to_string(),
             watchlock::WatchState::Outdated => format!(

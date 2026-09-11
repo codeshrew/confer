@@ -32,8 +32,11 @@ pub struct LockInfo {
     pub version: Option<String>,
     pub started_at: Option<String>,
     pub age_secs: u64,
-    /// pid is alive AND on this host.
+    /// pid is alive AND on this host AND identifiable as a confer process.
     pub alive: bool,
+    /// The pid is in the process table, whatever it turned out to be. Separate from `alive`
+    /// because the two answer different questions, and only their DISAGREEMENT is a contradiction.
+    pub pid_present: bool,
     pub same_host: bool,
     /// heartbeat is newer than the stale window.
     pub fresh: bool,
@@ -51,6 +54,17 @@ pub enum WatchState {
     Stale,
     Outdated,
     OtherHost,
+    /// The lock's heartbeat is FRESH but the liveness probe says the pid is not a live confer
+    /// process. Those two cannot both be true — something wrote that heartbeat seconds ago — so
+    /// the honest answer is that we do not know, not that the watcher is dead.
+    ///
+    /// `Stale` asserts death and recommends reclaiming. Saying that about a LIVE watcher is not a
+    /// cosmetic mislabel: following the advice tears down a working watcher and starts a second,
+    /// which is the duplicate-watcher condition itself. 0.8.31 did exactly that to every
+    /// arm-started watcher on the fleet, and the printed sentence contradicted itself — "it's not
+    /// running (last heartbeat 2s ago)" (studio-markup: "a 4-second heartbeat IS the evidence of
+    /// running"). Never recommend a teardown on a contradiction.
+    Indeterminate,
 }
 
 /// Classify a lock snapshot against the current binary version.
@@ -58,6 +72,14 @@ pub fn classify(info: &Option<LockInfo>, cur_version: &str) -> WatchState {
     match info {
         None => WatchState::NotWatching,
         Some(i) if !i.same_host => WatchState::OtherHost,
+        // The contradiction is narrow: the pid IS in the process table and the heartbeat is
+        // fresh, but we could not identify the process as confer's. Something is there and
+        // something wrote that heartbeat seconds ago, so we do not know.
+        //
+        // A pid that is GONE is not a contradiction even with a fresh heartbeat — a watcher killed
+        // a moment ago leaves exactly that, and calling it unknown would silence the silent-death
+        // net (an existing test caught this immediately, which is the argument for keeping it).
+        Some(i) if !i.alive && i.pid_present && i.fresh => WatchState::Indeterminate,
         Some(i) if !(i.alive && i.fresh) => WatchState::Stale,
         Some(i) if i.version.as_deref() != Some(cur_version) => WatchState::Outdated,
         Some(_) => WatchState::Healthy,
@@ -81,7 +103,10 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     let same_host = config::is_this_host(&host);
     let age = age_secs(&path);
     Some(LockInfo {
-        alive: same_host && process_alive(pid) && is_confer_watch(pid),
+        alive: same_host && process_alive(pid) && is_confer_process(pid),
+        // Whether that pid EXISTS at all, separately from whether we could identify it as ours.
+        // The two answer different questions and only their disagreement is a contradiction.
+        pid_present: process_alive(pid),
         same_host,
         fresh: age < stale_secs,
         age_secs: age,
@@ -102,20 +127,32 @@ fn lock_path(hub: &str, role: &str) -> Result<PathBuf> {
         .join(format!("{role}.json")))
 }
 
-/// Is `pid` actually a confer watch, rather than whatever recycled that number?
+/// Is `pid` a confer process, rather than whatever recycled that number?
 ///
 /// Used to gate the kill in `--replace`. Being able to SIGNAL a pid proves it is on this machine
 /// far more reliably than comparing hostname spellings — but pids are recycled, so "signalable"
 /// alone is not enough to justify killing it. This is the second half of the proof.
-fn is_confer_watch(pid: u32) -> bool {
+///
+/// Matches the EXECUTABLE, not the subcommand. 0.8.31 required the word "watch" in the command
+/// line, and `confer arm` runs the watch in-process — so `ps` shows `/usr/local/bin/confer arm`
+/// and every arm-started watcher on the fleet was instantly classified dead. `watch-status` then
+/// told healthy agents their watcher was "not running … likely a compaction orphan" and advised
+/// reclaiming it, which would have torn down a working watcher and started a second: the
+/// diagnostic recommending the disease it had just been released to cure (studio, studio-markup).
+///
+/// A confer process that inherited a stale pid is a far smaller risk than not matching our own
+/// watchers, and the host comparison this replaced never guarded against pid reuse either.
+fn is_confer_process(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "command=", "-p", &pid.to_string()])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .is_some_and(|c| {
-            let c = c.trim();
-            c.contains("confer") && c.contains("watch")
+            c.split_whitespace()
+                .next()
+                .map(|exe| exe.rsplit('/').next().unwrap_or(exe))
+                .is_some_and(|name| name == "confer" || name == "confer.exe")
         })
 }
 
@@ -192,9 +229,9 @@ impl WatchLock {
             // "stale lock" branch, and never killed it. Two watchers delivered while
             // `watch-status` reported one, healthy, naming only the new pid (studio-markup, twice).
             //
-            // `is_confer_watch` carries the weight the host comparison used to: it stops us
+            // `is_confer_process` carries the weight the host comparison used to: it stops us
             // signalling an unrelated process that inherited the pid.
-            let alive = pid.is_some_and(|p| process_alive(p) && is_confer_watch(p));
+            let alive = pid.is_some_and(|p| process_alive(p) && is_confer_process(p));
             let fresh = age_secs(&path) < stale_secs;
             if alive && fresh {
                 if !replace {

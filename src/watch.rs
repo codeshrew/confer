@@ -671,8 +671,16 @@ fn unarmed_elsewhere(current_root: &Path, me: &str) -> Vec<(String, String)> {
         .iter()
         .filter(|t| {
             let p = Path::new(&t.hub);
+            // VERIFY THE REFERENT. The registry records what was armed, not what is still true, and
+            // a registration can outlive the thing it points at — or never have pointed at a hub.
+            // studio's `/Users/sk/git/book-business` is a project repo with no threads/ or roles/;
+            // reporting "mail there is not reaching you" about it is a warning with no referent.
+            // Their summary of all three of their reports is the rule: the registry was trusted
+            // over the world. Verify before reporting, and say cannot-determine rather than
+            // asserting the alarming reading.
             t.role == me
-                && p.exists()
+                && p.join("threads").is_dir()
+                && p.join("roles").is_dir()
                 && p.canonicalize().unwrap_or_else(|_| p.to_path_buf()) != current
         })
         .filter_map(|t| {
@@ -1091,6 +1099,27 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
                     i.host
                 ),
                 format!("if this machine should run it, re-arm here: {arm}"),
+                false,
+            )
+        }
+        watchlock::WatchState::Indeterminate => {
+            let i = i.unwrap();
+            (
+                "cannot-determine",
+                format!(
+                    "a watch lock exists (pid {}) and its heartbeat is FRESH ({}s ago), but this \
+                     process cannot confirm pid {} is a live confer process. Those disagree, so \
+                     the honest answer is: unknown",
+                    i.pid, i.age_secs, i.pid
+                ),
+                // Deliberately NOT "reclaim it". A fresh heartbeat means something is alive there,
+                // and replacing a live watcher is how a diagnostic causes the duplicate-watcher
+                // condition it was written to detect.
+                format!(
+                    "do NOT reclaim on this alone — check first: ps -p {} -o command= . If it is \
+                     your watcher, nothing is wrong. If that prints nothing, re-arm: {arm}",
+                    i.pid
+                ),
                 false,
             )
         }
