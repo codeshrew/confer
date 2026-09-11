@@ -86,6 +86,11 @@ fn new_hub() -> Hub {
     // The authoritative hub marker a real `init` scaffolds — clones inherit it, and the managed-clone
     // health probe (`find_managed_clone`) requires it, so test hubs must carry it too.
     std::fs::write(seed.join(".confer-version"), "0.6.5\n").unwrap();
+    // Make every test hub's ROOT COMMIT unique. Without this the seeds are byte-identical and,
+    // committed within the same second, produce the SAME root sha — so two hubs share a `hub_key`
+    // and therefore share watch locks, delivery cursors and read frontiers under one HOME. A test
+    // that arms hub A then asks about hub B was reading A's lock and concluding B was healthy.
+    std::fs::write(seed.join(".hub-test-id"), format!("{}\n", seed.display())).unwrap();
     git(&seed, &["add", "-A"]);
     git(&seed, &["commit", "-q", "-m", "init"]);
     git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
@@ -121,6 +126,15 @@ impl Hub {
             role: role.to_string(),
             home: self.home.clone(),
         }
+    }
+
+    /// A clone sharing an explicit HOME — for the one-agent-on-several-hubs case, where the watch
+    /// registry (per-$HOME) is the thing under test.
+    fn clone_with_home(&self, role: &str, home: &Path) -> Clone {
+        let mut c = self.clone(role);
+        std::fs::create_dir_all(home.join(".confer")).unwrap();
+        c.home = home.to_path_buf();
+        c
     }
 }
 
@@ -8556,3 +8570,122 @@ fn wait_for_watch_lock(home: &Path) -> Option<PathBuf> {
     None
 }
 
+
+#[test]
+fn watch_status_says_when_you_are_deaf_on_another_hub() {
+    // codex: armed on one hub, never on another, and six notices sat unread for a MONTH — one of
+    // them mine, telling them their watch was eating the delivery cursor. They found it with
+    // `confer rewatch`, not `watch-status`, "which said healthy while I was deaf on half my hubs".
+    //
+    // watch-status reports the hub you are standing in. Saying "healthy" without saying what it
+    // does NOT cover lets one hub's health read as the agent's overall state.
+    let hub_a = new_hub();
+    let hub_b = new_hub();
+    let home = tmp("shared-home"); // one agent, one HOME, two hubs
+    let a = hub_a.clone_with_home("alpha", &home);
+    let b = hub_b.clone_with_home("alpha", &home);
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "alpha"])));
+
+    // Arm hub B just long enough to register it, then kill AND REAP it: B becomes a registered
+    // watch target with no watcher — exactly codex's situation, a hub the agent believes it is on.
+    //
+    // Spawned directly rather than via spawn_and_capture so the child can be waited on. Under a
+    // loaded suite a killed-but-unreaped watcher is still signalable, so B would look live and the
+    // test would pass or fail on timing rather than on behaviour.
+    let mut deaf = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CONFER_HUB", &b.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if std::fs::read_to_string(home.join(".confer/autoheal.json"))
+            .unwrap_or_default()
+            .contains(b.dir.to_str().unwrap())
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = deaf.kill();
+    let _ = deaf.wait(); // reaped: genuinely gone, not a zombie that still answers `kill -0`
+    // Assert the SETUP, not just the conclusion: if B never registered, the test would pass
+    // vacuously against a broken feature.
+    let registry = std::fs::read_to_string(home.join(".confer/autoheal.json")).unwrap_or_default();
+    assert!(
+        registry.contains(b.dir.to_str().unwrap()),
+        "hub B must be a registered watch target for this test to mean anything: {registry}"
+    );
+
+    // Now a genuinely live watcher on A, while B stays deaf.
+    let mut live = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_watch_lock(&home);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let status = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch-status"])
+        .output()
+        .unwrap();
+    let _ = live.kill();
+    let _ = live.wait();
+
+    let s = format!("{}{}", out(&status), err(&status));
+    assert!(
+        s.contains("this covers THIS hub only"),
+        "a healthy report must say what it does NOT cover: {s}"
+    );
+    assert!(
+        s.contains(b.dir.to_str().unwrap()),
+        "it must name the deaf hub, so the fix is obvious: {s}"
+    );
+}
+
+#[test]
+fn watch_status_reads_back_the_wake_preferences() {
+    // codex, after turning on --wake-on-cc: "I cannot confirm the flag took, only that I passed
+    // it: watch-status reports delivery and health but not the cc preference. The proof is a cc'd
+    // message waking me, which has not happened yet, so I am treating it as set rather than as
+    // working." A setting you cannot read back is one you cannot verify, and watch-status is
+    // exactly where someone looks.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let before = out(&a.confer(&["watch-status"]));
+    assert!(
+        before.contains("cc-wakes=no"),
+        "the default (a cc lands but does not interrupt) must be visible: {before}"
+    );
+
+    // Set it the way an agent does — by passing the flag to an arm, which persists it per
+    // (hub, role). The watcher itself is irrelevant here; the preference outlives it.
+    let _ = spawn_and_capture(
+        &a.home,
+        &a.dir,
+        "alpha",
+        &["watch", "--role", "alpha", "--replace", "--wake-on-cc", "--poll", "1"],
+        false,
+        &[],
+    );
+
+    let after = out(&a.confer(&["watch-status"]));
+    assert!(
+        after.contains("cc-wakes=yes"),
+        "after --wake-on-cc, the preference must read back as SET: {after}"
+    );
+}

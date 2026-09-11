@@ -634,11 +634,41 @@ fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
                     .to_string(),
                 fix: None,
             }),
-            Err(e) => out.push(doctor::Finding {
-                level: doctor::Level::Warn,
-                title: format!("hub identity: {e}"),
-                fix: None,
-            }),
+            Err(e) => {
+                // Remediation belongs HERE, next to the error, because the right next step depends
+                // on WHICH failure this is — and the two causes STACK. I sent the fleet "remove the
+                // commit-graph first, it restores the namespace", and for codex it was diagnostic
+                // rather than curative: the removal changed the error from "exists in commit-graph
+                // but not in the object database" to "Could not read", which is the difference
+                // between a stale cache entry and an object that is genuinely ABSENT. The cache had
+                // been masking a real hole. Someone following "try this first" and seeing the error
+                // persist reads it as failed and reaches for `declare-id` — the push-and-commit
+                // step the advice was steering them away from.
+                let msg = e.to_string();
+                let stale_cache = msg.contains("commit-graph");
+                let absent = msg.contains("Could not read") || msg.contains("Not a valid object");
+                let fix = if stale_cache {
+                    "the commit-graph is reporting this — remove the cache and re-run `confer doctor`: \
+                     `rm .git/objects/info/commit-graph`. That is a TEST as much as a fix: if the \
+                     warning clears, it was a stale cache entry; if it changes to `Could not read`, \
+                     the object is genuinely missing and the cache was masking it — then \
+                     `git fetch --all`. Both causes can be present at once. Only reach for \
+                     `confer hub declare-id` if neither clears it."
+                } else if absent {
+                    "the commit object is genuinely absent from this clone (common on a `blob:none` \
+                     partial clone) — `git fetch --all`, then re-run `confer doctor`. No amount of \
+                     cache-clearing helps when the object itself is not there."
+                } else {
+                    "re-run `confer doctor` after `git fetch --all`. If it persists, `confer hub \
+                     declare-id` from a clone that CAN resolve the root — never from this one, which \
+                     would pin a value that is not the hub's real root."
+                };
+                out.push(doctor::Finding {
+                    level: doctor::Level::Warn,
+                    title: format!("hub identity: {e}"),
+                    fix: Some(fix.to_string()),
+                })
+            }
         }
     }
 

@@ -651,6 +651,42 @@ fn print_unread_footer(roster: &roster::Roster, unread: &[&Message]) {
     let _ = out.flush();
 }
 
+/// Hubs registered for MY role on this machine, other than the one being reported on, that have no
+/// live watcher.
+///
+/// `watch-status` speaks only for the hub you are standing in, and it says "healthy" — so an agent
+/// on several hubs reads one hub's health as their overall state. codex was deaf on a hub they had
+/// never armed for a MONTH, with six unread notices including one from me, and found it by running
+/// `rewatch` rather than `watch-status`, "which said healthy while I was deaf on half my hubs".
+///
+/// Scoped to `me` on purpose. `~/.confer/autoheal.json` is per-$HOME, so on a co-resident box it
+/// also holds other agents' targets — reporting those would mean this command announcing peers as
+/// unwatched, which is neither its business nor reliably true. An agent holding a DIFFERENT role on
+/// another hub is a different identity there, and `watch-status` for this role should not speak for
+/// it; `confer rewatch` remains the whole-machine view.
+fn unarmed_elsewhere(current_root: &Path, me: &str) -> Vec<(String, String)> {
+    let current = current_root.canonicalize().unwrap_or_else(|_| current_root.to_path_buf());
+    autoheal::load()
+        .targets
+        .iter()
+        .filter(|t| {
+            let p = Path::new(&t.hub);
+            t.role == me
+                && p.exists()
+                && p.canonicalize().unwrap_or_else(|_| p.to_path_buf()) != current
+        })
+        .filter_map(|t| {
+            let hub_key = config::hub_key(Path::new(&t.hub));
+            let info = watchlock::inspect(&hub_key, &t.role, 90);
+            let live = matches!(
+                watchlock::classify(&info, BUILD_SHA),
+                watchlock::WatchState::Healthy | watchlock::WatchState::Outdated
+            );
+            (!live).then(|| (t.role.clone(), t.hub.clone()))
+        })
+        .collect()
+}
+
 /// Emit new actionable messages added since the cursor commit, then advance the
 /// cursor to HEAD (commit-ordered incremental read; no wall-clock comparison).
 /// Above this many wake-worthy items in a single emit batch, the watch coalesces them into one
@@ -1124,6 +1160,11 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
 
     // The stamped delivery is `monitor` even on Codex (arm hardcodes it), but Codex has no idle wake
     // (design/54) — so report it honestly as `poll` there, for machine readers too (codex field report).
+    // What this watcher is actually SET TO. codex turned on `--wake-on-cc` and could confirm only
+    // that they had passed the flag, not that it took: "the proof is a cc'd message waking me,
+    // which has not happened yet, so I am treating it as set rather than as working." A preference
+    // you cannot read back is one you cannot verify, and this is where you would look.
+    let saved_prefs = crate::machineconfig::get_watch_prefs(&hub, &me);
     let is_codex = crate::skills::detect_harness() == "codex";
     let delivery = if is_codex {
         Some("poll".to_string())
@@ -1138,6 +1179,17 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
             "pid": info.as_ref().map(|i| i.pid),
             "delivery": delivery,
             "recommendation": rec,
+            "wake_prefs": {
+                "wake_on": saved_prefs.wake_on.clone().unwrap_or_else(|| "notice".into()),
+                "min_priority": saved_prefs.min_priority.clone().unwrap_or_else(|| "low".into()),
+                "topic": saved_prefs.topic.clone(),
+                "all": saved_prefs.all.unwrap_or(false),
+                "wake_on_cc": saved_prefs.wake_on_cc.unwrap_or(false),
+            },
+            "unarmed_elsewhere": unarmed_elsewhere(&root, &me)
+                .iter()
+                .map(|(r, h)| serde_json::json!({"role": r, "hub": h}))
+                .collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string(&obj)?);
     } else {
@@ -1169,6 +1221,38 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         }
         if !rec.is_empty() {
             println!("  → {rec}");
+        }
+        // Read the preferences back, so "I passed the flag" and "the flag is set" stop being the
+        // same statement. These are per (hub, role) and survive re-arming.
+        {
+            let cc = saved_prefs.wake_on_cc.unwrap_or(false);
+            let mut bits = vec![
+                format!("wake-on={}", saved_prefs.wake_on.as_deref().unwrap_or("notice")),
+                format!("min-priority={}", saved_prefs.min_priority.as_deref().unwrap_or("low")),
+                format!("cc-wakes={}", if cc { "yes" } else { "no" }),
+            ];
+            if saved_prefs.all.unwrap_or(false) {
+                bits.push("scope=all (firehose)".into());
+            }
+            if let Some(t) = &saved_prefs.topic {
+                bits.push(format!("topic={t}"));
+            }
+            println!("  wakes on: {}", bits.join(" · "));
+        }
+        // This report covers ONE hub. Say so when there are others, and name the ones that are
+        // deaf — otherwise a healthy line here reads as "I am receiving my mail", which is a claim
+        // this command has never been able to make.
+        let elsewhere = unarmed_elsewhere(&root, &me);
+        if !elsewhere.is_empty() {
+            println!(
+                "  ⚠ this covers THIS hub only — {} other hub(s) registered for '{me}' on this \
+                 machine have NO live watcher, so mail there is not reaching you:",
+                elsewhere.len()
+            );
+            for (_, h) in &elsewhere {
+                println!("      {h}");
+            }
+            println!("    → `confer rewatch` prints the arm command for each.");
         }
     }
     // `watch-status` is a REPORT: it always exits 0 once it has produced the report above, however bad
