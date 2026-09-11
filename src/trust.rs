@@ -545,6 +545,32 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
 /// `doctor::audit` — folded into the same typed `Finding` model so they gate `--check` and appear
 /// in `--json` too. Deliberately EXCLUDES the per-session watch-liveness check (see the comment at
 /// its text-only call site in `cmd_doctor`): that one must stay report-only.
+/// What a root-resolution failure actually COSTS, which depends entirely on whether the hub
+/// declares its id — a fact the error text never carried.
+///
+/// codex spent an hour treating `could not resolve the root commit` as urgent on two hubs that
+/// both declared. There, `hub_key` reads `.confer-hub-id` and never traverses, so the failure
+/// cannot move the namespace at all: "I had read a matching value as confirmation that traversal
+/// was working; it was confirmation that traversal was never consulted." On an UNDECLARED hub the
+/// same words are load-bearing and the ORDER matters — arming before repairing writes the lock,
+/// cursor and preferences under a fallback key the repair then abandons, which also leaves a watch
+/// lock the next arm cannot see (a third route into duplicate watchers).
+fn root_failure_stakes(declared: Option<&str>) -> String {
+    match declared {
+        Some(id) => format!(
+            "this hub DECLARES its id ({}), and `hub_key` reads that file instead of traversing — \
+             so your cursor, watch lock, read frontier and watch preferences are NOT affected by \
+             this and cannot be moved by it. Repair it whenever; arming first is safe.",
+            &id[..id.len().min(12)]
+        ),
+        None => "this hub does NOT declare an id, so the identity namespace IS at stake: until the \
+                 root resolves, confer falls back to a URL-derived key, and a watch armed now writes \
+                 its lock, cursor and preferences under a key the repair will abandon — orphaning \
+                 them, and leaving a watch lock the next arm cannot see. REPAIR FIRST, then arm."
+            .to_string(),
+    }
+}
+
 fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
     let mut out = Vec::new();
 
@@ -644,6 +670,15 @@ fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
                 // been masking a real hole. Someone following "try this first" and seeing the error
                 // persist reads it as failed and reaches for `declare-id` — the push-and-commit
                 // step the advice was steering them away from.
+                // FIRST: does this failure actually matter? It depends entirely on whether the
+                // hub declares its id, and the warning used to give the reader no way to tell.
+                // codex spent an hour treating it as urgent on two hubs that both declared — where
+                // `hub_key` never consults traversal at all, so the failure cannot move the
+                // namespace. On an UNDECLARED hub the same text is load-bearing and the ORDER
+                // matters: arming before the repair writes the cursor, lock and preferences under
+                // a fallback key that the repair then abandons.
+                let declared = config::declared_hub_id(root);
+                let stakes = root_failure_stakes(declared.as_deref());
                 let msg = e.to_string();
                 let stale_cache = msg.contains("commit-graph");
                 let absent = msg.contains("Could not read") || msg.contains("Not a valid object");
@@ -664,9 +699,12 @@ fn advisory_findings(root: &std::path::Path) -> Vec<doctor::Finding> {
                      would pin a value that is not the hub's real root."
                 };
                 out.push(doctor::Finding {
-                    level: doctor::Level::Warn,
+                    // A declared hub's traversal failure is worth fixing but is not an incident.
+                    // Ranking it the same as the namespace-forking case is what made the alarming
+                    // reading the natural one.
+                    level: if declared.is_some() { doctor::Level::Info } else { doctor::Level::Warn },
                     title: format!("hub identity: {e}"),
-                    fix: Some(fix.to_string()),
+                    fix: Some(format!("{stakes} To repair: {fix}")),
                 })
             }
         }
@@ -984,3 +1022,30 @@ mod advisory_findings_tests {
     }
 }
 
+
+#[cfg(test)]
+mod root_stakes_tests {
+    use super::root_failure_stakes;
+
+    #[test]
+    fn a_declared_hub_is_told_the_failure_cannot_move_its_namespace() {
+        let s = root_failure_stakes(Some("da5d0802f3b8445815c2e4bb5bb2cb9e372d5835"));
+        assert!(s.contains("DECLARES its id"), "{s}");
+        assert!(s.contains("da5d0802f3b8"), "it should name the id it is relying on: {s}");
+        assert!(
+            !s.contains("REPAIR FIRST"),
+            "the order-matters warning is what made this read as urgent when it was not: {s}"
+        );
+    }
+
+    #[test]
+    fn an_undeclared_hub_is_told_the_order_matters() {
+        let s = root_failure_stakes(None);
+        assert!(s.contains("REPAIR FIRST"), "{s}");
+        assert!(
+            s.contains("watch lock"),
+            "the orphaned lock is the worst consequence and the one nobody connects to a \
+             namespace note — it must be named: {s}"
+        );
+    }
+}

@@ -8689,3 +8689,4 @@ fn watch_status_reads_back_the_wake_preferences() {
         "after --wake-on-cc, the preference must read back as SET: {after}"
     );
 }
+
