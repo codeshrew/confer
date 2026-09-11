@@ -39,6 +39,7 @@ mod machineconfig;
 mod patch;
 mod pollcmd;
 mod presence;
+mod prune;
 mod projection;
 mod reconnect;
 mod refcmd;

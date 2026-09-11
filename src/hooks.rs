@@ -531,22 +531,97 @@ pub(crate) fn cmd_autoheal(action: AutohealAction, yes: bool) -> Result<()> {
         AutohealAction::Prune => {
             // MANUAL, human-verified prune (never automatic — a transiently-absent hub must not
             // silently drop a live watcher). Dry-run lists; `--yes` removes.
-            let stale = autoheal::stale_targets();
-            if stale.is_empty() {
-                println!("auto-heal: no stale targets — every registered hub dir still exists.");
+            let s = crate::prune::survey();
+            if s.is_empty() && s.retained_state.is_empty() && !s.state_undetermined {
+                println!("auto-heal: nothing to prune — every registered hub still exists and is a hub, and no state is orphaned.");
                 return Ok(());
             }
-            println!(
-                "auto-heal: {} watch-registry target(s) point at a MISSING hub dir:",
-                stale.len()
-            );
-            for t in &stale {
-                println!("  role '{}' @ {}", t.role, t.hub);
+            if !s.missing.is_empty() {
+                println!(
+                    "auto-heal: {} watch-registry target(s) point at a MISSING hub dir:",
+                    s.missing.len()
+                );
+                for t in &s.missing {
+                    println!("  role '{}' @ {}", t.role, t.hub);
+                }
+            }
+            if !s.not_a_hub.is_empty() {
+                // Separate category on purpose: "gone" and "was never a hub" deserve different
+                // confidence. A missing dir might be an unmounted volume; a directory that exists
+                // and has no threads/ or roles/ is simply not a hub, and never was.
+                println!(
+                    "\nauto-heal: {} watch-registry target(s) point at a path that is NOT a confer hub \
+                     (no threads/ or roles/) — there is no mail there to miss:",
+                    s.not_a_hub.len()
+                );
+                for t in &s.not_a_hub {
+                    println!("  role '{}' @ {}", t.role, t.hub);
+                }
+            }
+            if !s.orphan_state.is_empty() {
+                println!(
+                    "\nauto-heal: {} state entr(ies) filed under a hub id nothing uses any more, \
+                     against {} live hub id(s) on this machine:",
+                    s.orphan_state.len(),
+                    s.live_count
+                );
+                // Grouped with a sample rather than a full dump. A wall of 138 hashes is not a
+                // report anybody can check, and this is the output someone reads before
+                // authorising a deletion.
+                let mut by_store: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+                for o in &s.orphan_state {
+                    by_store.entry(o.store.as_str()).or_default().push(o.key.as_str());
+                }
+                for (store, keys) in &by_store {
+                    println!("  {store}: {} entr(ies)", keys.len());
+                    for k in keys.iter().take(3) {
+                        println!("      {k}");
+                    }
+                    if keys.len() > 3 {
+                        println!("      … and {} more", keys.len() - 3);
+                    }
+                }
+                println!(
+                    "  (read positions and local signals — removing one costs at most a re-read, \
+                     never a message. The live count above is the BASIS: if it looks too low, stop \
+                     and check `confer autoheal status` before passing --yes.)"
+                );
+            }
+            if !s.retained_state.is_empty() {
+                // Say what is being LEFT and why. Silence here would read as "nothing else exists".
+                println!(
+                    "\nauto-heal: {} trust/replay entr(ies) are also under unused hub ids, and are \
+                     deliberately LEFT ALONE:",
+                    s.retained_state.len()
+                );
+                for o in &s.retained_state {
+                    println!("  {}/{}", o.store, o.key);
+                }
+                println!(
+                    "  (keyring = TOFU key pins, presence_hwm = replay-defence anchor. Being wrong \
+                     about these re-pins a key or reopens a replay window, so they are never pruned \
+                     automatically. Remove one by hand only if you are certain the hub is gone.)"
+                );
+            }
+            if s.state_undetermined {
+                println!(
+                    "\nauto-heal: could not establish which hub ids are live, so NO state was \
+                     surveyed (registry entries above are unaffected). This is what an unreadable \
+                     ~/.confer/known_hubs.json looks like — guessing here would delete live state."
+                );
             }
             if yes {
-                let removed = autoheal::prune();
-                println!("\nremoved {} stale target(s).", removed.len());
-            } else {
+                let r = crate::prune::apply(&s);
+                println!(
+                    "\nremoved {} registry target(s) and {} state entr(ies).",
+                    r.targets, r.state
+                );
+                for (path, why) in &r.failed {
+                    // Never report a removal that did not happen: the debris would return next run
+                    // with no explanation.
+                    println!("  ⚠ could NOT remove {}: {why}", path.display());
+                }
+            } else if !s.is_empty() {
                 println!(
                     "\nDry run — nothing removed. If these are truly gone (not an unmounted volume \
                      or a clone mid-move), re-run: confer autoheal prune --yes"

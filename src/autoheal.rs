@@ -272,6 +272,22 @@ pub fn stale_targets() -> Vec<Target> {
 /// automatic: a transiently-absent hub (unmounted volume, offline network FS, a clone mid-move)
 /// must not silently drop a live watcher. Touches only the ephemeral registry — never identity,
 /// keys, roster, or role cards.
+/// Keep only the targets matching `keep`; returns how many were dropped.
+///
+/// The general form of `prune`, which only ever tested "does the directory exist". A registered
+/// path that was never a hub needs removing too, and that is a different predicate.
+pub fn retain_targets(keep: impl Fn(&Target) -> bool) -> usize {
+    let _lock = registry_lock(); // held across the load-modify-save (M3)
+    let mut r = load();
+    let before = r.targets.len();
+    r.targets.retain(keep);
+    let dropped = before - r.targets.len();
+    if dropped > 0 {
+        let _ = save(&r);
+    }
+    dropped
+}
+
 pub fn prune() -> Vec<Target> {
     let _lock = registry_lock(); // held across the load-modify-save (M3)
     let mut r = load();

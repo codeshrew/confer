@@ -8901,3 +8901,257 @@ fn watch_status_does_not_warn_about_a_registered_path_that_is_not_a_hub() {
         "a path with no threads/ or roles/ is not a hub and has no mail to miss: {s}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// `confer autoheal prune` — registry debris AND orphaned per-hub state.
+//
+// This command DELETES, so its tests are written to prove the guards, not just the happy path:
+// what it refuses to touch matters more than what it clears.
+// ---------------------------------------------------------------------------------------------
+
+/// A HOME with a confer state tree, plus helpers to plant entries in it.
+struct PruneEnv {
+    home: PathBuf,
+}
+
+impl PruneEnv {
+    fn new(tag: &str) -> Self {
+        let home = tmp(tag);
+        std::fs::create_dir_all(home.join(".confer")).unwrap();
+        PruneEnv { home }
+    }
+    /// A per-hub state entry. `dir` mirrors cursor/inbox/watch (a directory of role files);
+    /// otherwise a flat file, like tips/.
+    fn plant(&self, store: &str, key: &str, dir: bool) -> PathBuf {
+        let base = self.home.join(".confer").join(store);
+        std::fs::create_dir_all(&base).unwrap();
+        let p = if dir { base.join(key) } else { base.join(format!("{key}.json")) };
+        if dir {
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("alpha.json"), r#"{"commit":"x"}"#).unwrap();
+        } else {
+            std::fs::write(&p, "{}").unwrap();
+        }
+        p
+    }
+    fn registry(&self, targets: serde_json::Value) {
+        std::fs::write(
+            self.home.join(".confer/autoheal.json"),
+            serde_json::json!({"enabled": false, "targets": targets}).to_string(),
+        )
+        .unwrap();
+    }
+    fn known_hubs(&self, raw: &str) {
+        std::fs::write(self.home.join(".confer/known_hubs.json"), raw).unwrap();
+    }
+    fn run(&self, hub: &Path, args: &[&str]) -> Output {
+        Command::new(BIN)
+            .env("HOME", &self.home)
+            .env("CONFER_HUB", hub)
+            .env("CONFER_ROLE", "alpha")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+}
+
+const LIVE_ID: &str = "1111111111111111111111111111111111111111";
+const DEAD_ID: &str = "2222222222222222222222222222222222222222";
+
+#[test]
+fn prune_removes_a_registered_path_that_was_never_a_hub() {
+    // studio's `/Users/sk/git/book-business` is a project repo with no threads/ or roles/. It
+    // survived every prune because the directory EXISTS, so it sat in the registry forever
+    // generating "you have no watcher there" noise that nothing could clear.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-nothub");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+
+    let plain = tmp("plain-project-repo");
+    assert!(ok(&git(&plain, &["init", "-q", "-b", "main"])));
+    let gone = tmp("deleted-clone");
+    std::fs::create_dir_all(&gone).unwrap();
+    std::fs::remove_dir_all(&gone).unwrap();
+    env.registry(serde_json::json!([
+        {"hub": plain.to_str().unwrap(), "role": "alpha"},
+        {"hub": gone.to_str().unwrap(), "role": "alpha"},
+    ]));
+
+    let dry = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(
+        dry.contains("NOT a confer hub") && dry.contains(plain.to_str().unwrap()),
+        "the never-a-hub path must be reported in its own category: {dry}"
+    );
+    assert!(
+        dry.contains("MISSING hub dir") && dry.contains(gone.to_str().unwrap()),
+        "and a deleted dir stays in the existing category — they warrant different confidence: {dry}"
+    );
+    assert!(
+        std::fs::read_to_string(env.home.join(".confer/autoheal.json"))
+            .unwrap()
+            .contains(plain.to_str().unwrap()),
+        "a DRY RUN must not modify the registry"
+    );
+
+    assert!(ok(&env.run(&a.dir, &["autoheal", "prune", "--yes"])));
+    let reg = std::fs::read_to_string(env.home.join(".confer/autoheal.json")).unwrap();
+    assert!(!reg.contains(plain.to_str().unwrap()), "not-a-hub must be removed: {reg}");
+    assert!(!reg.contains(gone.to_str().unwrap()), "missing dir must be removed: {reg}");
+}
+
+#[test]
+fn prune_clears_orphaned_state_and_keeps_state_for_live_hubs() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-state");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.registry(serde_json::json!([]));
+    env.known_hubs(&format!(r#"{{"live-hub":{{"root":"{LIVE_ID}","tip":"","confirmed":true}}}}"#));
+
+    let live_cursor = env.plant("cursor", LIVE_ID, true);
+    let dead_cursor = env.plant("cursor", DEAD_ID, true);
+    let live_tip = env.plant("tips", LIVE_ID, false);
+    let dead_tip = env.plant("tips", DEAD_ID, false);
+
+    let dry = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(dry.contains(DEAD_ID), "the orphan must be reported: {dry}");
+    assert!(!dry.contains(LIVE_ID), "a PINNED hub's state is not orphaned: {dry}");
+    assert!(dead_cursor.exists(), "dry run must delete nothing");
+
+    assert!(ok(&env.run(&a.dir, &["autoheal", "prune", "--yes"])));
+    assert!(!dead_cursor.exists(), "orphaned cursor dir should be gone");
+    assert!(!dead_tip.exists(), "orphaned tip file should be gone");
+    assert!(live_cursor.exists(), "a live hub's cursor must survive");
+    assert!(live_tip.exists(), "a live hub's tip must survive");
+}
+
+#[test]
+fn prune_never_deletes_trust_or_replay_state() {
+    // keyring holds TOFU key pins; presence_hwm holds the replay-defence monotonic anchor. Being
+    // wrong about either does not cost a re-read — it silently re-TOFUs a key, or reopens a replay
+    // window. The asymmetry is the whole argument: a few hundred bytes against a security property.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-trust");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.registry(serde_json::json!([]));
+    env.known_hubs(&format!(r#"{{"live-hub":{{"root":"{LIVE_ID}","tip":"","confirmed":true}}}}"#));
+
+    let keyring = env.plant("keyring", DEAD_ID, false);
+    let hwm = env.plant("presence_hwm", DEAD_ID, false);
+
+    let dry = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(
+        dry.contains("LEFT ALONE") && dry.contains("keyring"),
+        "it must SAY what it is declining to remove — silence reads as 'nothing else exists': {dry}"
+    );
+
+    assert!(ok(&env.run(&a.dir, &["autoheal", "prune", "--yes"])));
+    assert!(keyring.exists(), "--yes must NOT remove a TOFU keyring entry");
+    assert!(hwm.exists(), "--yes must NOT remove a replay anchor");
+}
+
+#[test]
+fn prune_refuses_to_touch_state_when_it_cannot_tell_which_hubs_are_live() {
+    // known_hubs' own loader is tolerantly lossy — any parse failure degrades to an empty map,
+    // which is right for a read path and catastrophic here: an unreadable pin file would shrink
+    // the live set and make LIVE state look orphaned. Not-knowing has to be expressible.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-unreadable");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.registry(serde_json::json!([]));
+    env.known_hubs("{ this is not json");
+
+    let cursor = env.plant("cursor", DEAD_ID, true);
+    let out_dry = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(
+        out_dry.contains("could not establish which hub ids are live"),
+        "it must say it cannot tell, rather than proceeding on an empty live set: {out_dry}"
+    );
+
+    assert!(ok(&env.run(&a.dir, &["autoheal", "prune", "--yes"])));
+    assert!(
+        cursor.exists(),
+        "--yes must delete NO state when the live set is undetermined — this is the case where a \
+         bug would wipe a working machine"
+    );
+}
+
+#[test]
+fn prune_leaves_a_watch_lock_that_a_running_process_holds() {
+    // Deleting a held watch lock frees the single-watcher guard under a LIVE watcher and lets a
+    // second start — manufacturing the duplicate-watcher condition out of a cleanup command. This
+    // is the guard that makes a wrong live-hub set cost nothing.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-heldlock");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.known_hubs(&format!(r#"{{"live-hub":{{"root":"{LIVE_ID}","tip":"","confirmed":true}}}}"#));
+
+    // A real watcher, then point the registry away so its hub id is NOT in the live set.
+    let mut watcher = Command::new(BIN)
+        .env("HOME", &env.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&env.home).expect("watcher must take a lock");
+    std::thread::sleep(Duration::from_millis(400));
+    env.registry(serde_json::json!([]));
+
+    let res = env.run(&a.dir, &["autoheal", "prune", "--yes"]);
+    let still_there = lock.exists();
+    let _ = watcher.kill();
+    let _ = watcher.wait();
+
+    assert!(ok(&res), "prune should succeed: {}", err(&res));
+    assert!(
+        still_there,
+        "a watch lock held by a RUNNING process must survive prune even when its hub looks dead"
+    );
+}
+
+#[test]
+fn prune_reports_the_basis_for_its_judgement() {
+    // "138 orphans" is not a number a human can check. "138 orphans against 4 live hubs" is —
+    // and this is the output someone reads immediately before authorising a deletion.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-basis");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.registry(serde_json::json!([]));
+    env.known_hubs(&format!(r#"{{"live-hub":{{"root":"{LIVE_ID}","tip":"","confirmed":true}}}}"#));
+    for n in 0..5 {
+        env.plant("tips", &format!("{n}{}", &DEAD_ID[1..]), false);
+    }
+
+    let dry = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(
+        dry.contains("live hub id"),
+        "the live count is the basis and must be shown: {dry}"
+    );
+    assert!(
+        dry.contains("tips: 5 entr"),
+        "entries must be grouped per store with counts, not dumped as a wall of hashes: {dry}"
+    );
+}
+
+#[test]
+fn prune_says_nothing_to_do_on_a_clean_machine() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let env = PruneEnv::new("prune-clean");
+    assert!(ok(&env.run(&a.dir, &["join", "--role", "alpha"])));
+    env.registry(serde_json::json!([{"hub": a.dir.to_str().unwrap(), "role": "alpha"}]));
+
+    let s = out(&env.run(&a.dir, &["autoheal", "prune"]));
+    assert!(
+        s.contains("nothing to prune"),
+        "a healthy machine must get a clean bill, not an empty list: {s}"
+    );
+}

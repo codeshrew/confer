@@ -142,6 +142,12 @@ fn lock_path(hub: &str, role: &str) -> Result<PathBuf> {
 ///
 /// A confer process that inherited a stale pid is a far smaller risk than not matching our own
 /// watchers, and the host comparison this replaced never guarded against pid reuse either.
+/// Is `pid` a running confer process? The same two-part proof `--replace` uses, exposed for the
+/// prune survey so a cleanup can refuse to delete a lock that is currently held.
+pub fn pid_is_live_confer(pid: u32) -> bool {
+    process_alive(pid) && is_confer_process(pid)
+}
+
 fn is_confer_process(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "command=", "-p", &pid.to_string()])
