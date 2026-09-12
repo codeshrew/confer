@@ -196,7 +196,29 @@ fn url_derived_key(root: &Path) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
-    raw.chars()
+    slug_for_url(&raw)
+}
+
+/// Slugify a remote URL into a namespace key, CANONICALISING it first.
+///
+/// This used to slug `remote.origin.url` verbatim, so the same hub reached over two transports
+/// produced two keys — codex found `git_github_com_..._herald_grok_git` sitting beside
+/// `https___github_com_..._herald_grok_git` on pop-os, one hub with two complete state namespaces.
+/// Merely changing a clone's remote URL form therefore forked its watch lock, cursor, read frontier
+/// and preferences: two watchers on one hub could each hold "the" lock without seeing each other,
+/// a duplicate-watcher route nobody would connect to a URL.
+///
+/// `canonical_hub_id` already collapses scp-form, `scheme://`, `user@`, ports, trailing `/` and
+/// `.git` — it is what `known_hubs` keys by — so this reuses it rather than growing a second
+/// notion of "same hub". Anything it does not recognise falls back to the old raw slug, which is
+/// no worse than before.
+///
+/// This is a DEGRADED path either way: it is only reached when a hub has no declared id AND its
+/// root commit cannot be resolved, and it announces itself loudly when it fires.
+fn slug_for_url(raw: &str) -> String {
+    let basis = crate::reconnect::canonical_hub_id(raw).unwrap_or_else(|| raw.to_string());
+    basis
+        .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
 }
@@ -414,5 +436,50 @@ mod host_key_tests {
         // ".local" alone has no stem; stripping it would collapse every such record together.
         assert_eq!(host_key(".local"), ".local");
         assert_eq!(host_key(""), "");
+    }
+}
+
+#[cfg(test)]
+mod url_key_tests {
+    use super::slug_for_url;
+
+    #[test]
+    fn one_hub_reached_two_ways_gets_one_key() {
+        // The exact pair codex found side by side under ~/.confer/watch/ on pop-os.
+        let ssh = slug_for_url("git@github.com:codeshrew/confer-herald-grok.git");
+        let https = slug_for_url("https://github.com/codeshrew/confer-herald-grok.git");
+        assert_eq!(ssh, https, "same hub, two transports, must be one namespace");
+    }
+
+    #[test]
+    fn ports_users_and_trailing_git_do_not_split_a_hub() {
+        let a = slug_for_url("ssh://git@github.com/codeshrew/confer-lab.git");
+        for form in [
+            "https://github.com/codeshrew/confer-lab",
+            "https://github.com/codeshrew/confer-lab/",
+            "git@github.com:codeshrew/confer-lab.git",
+        ] {
+            assert_eq!(a, slug_for_url(form), "{form} should key the same as the ssh form");
+        }
+    }
+
+    #[test]
+    fn different_hubs_still_get_different_keys() {
+        assert_ne!(
+            slug_for_url("https://github.com/codeshrew/confer-lab.git"),
+            slug_for_url("https://github.com/codeshrew/agent-coord.git")
+        );
+        // Same repo name under a different owner is NOT the same hub.
+        assert_ne!(
+            slug_for_url("https://github.com/codeshrew/confer-lab.git"),
+            slug_for_url("https://github.com/someone-else/confer-lab.git")
+        );
+    }
+
+    #[test]
+    fn an_unrecognisable_value_still_produces_a_key() {
+        // Degrading to the old raw slug is no worse than before; returning nothing would be.
+        let k = slug_for_url("not a url at all");
+        assert!(!k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{k}");
     }
 }
