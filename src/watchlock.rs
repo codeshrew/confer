@@ -151,6 +151,18 @@ fn lock_path(hub: &str, role: &str) -> Result<PathBuf> {
 ///
 /// A confer process that inherited a stale pid is a far smaller risk than not matching our own
 /// watchers, and the host comparison this replaced never guarded against pid reuse either.
+fn exe_path() -> String {
+    std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// Is THIS binary a development build — untagged/dirty tree, or living in a cargo build dir?
+pub fn is_dev_build() -> bool {
+    let p = exe_path();
+    !env!("CONFER_BUILD_SUFFIX").trim().is_empty()
+        || p.contains("/target/debug/")
+        || p.contains("/target/release/")
+}
+
 /// Is `pid` a running confer process? The same two-part proof `--replace` uses, exposed for the
 /// prune survey so a cleanup can refuse to delete a lock that is currently held.
 pub fn pid_is_live_confer(pid: u32) -> bool {
@@ -319,8 +331,12 @@ impl WatchLock {
             // the release, so the sha alone cannot tell an operator their watcher is running a
             // scratch build — which is exactly what the poisoned-skills incident would have
             // produced, invisibly (studio-markup). The path plus the +dev marker make it visible.
-            "exe": std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
-            "dev": !env!("CONFER_BUILD_SUFFIX").trim().is_empty(),
+            "exe": exe_path(),
+            // Two independent signals, either sufficient: the +dev suffix (an untagged or dirty
+            // tree) OR a cargo build directory. The suffix alone is not enough — CI builds from a
+            // clean, sha-injected checkout and gets no suffix, yet its target/debug binary is
+            // still a scratch build by every definition that matters here.
+            "dev": is_dev_build(),
             "started_at": self.started_at,
             "delivery": self.delivery,
         });

@@ -257,15 +257,6 @@ pub fn retarget(old: &str, new: &str) {
     }
 }
 
-/// Watch-liveness targets whose hub directory is currently MISSING — the candidates a human
-/// reviews before pruning. Read-only; never deletes.
-pub fn stale_targets() -> Vec<Target> {
-    load()
-        .targets
-        .into_iter()
-        .filter(|t| !std::path::Path::new(&t.hub).exists())
-        .collect()
-}
 
 /// Remove watch-liveness targets whose hub directory no longer exists. Returns the removed
 /// targets. **Manual + human-verified only** (`confer autoheal prune`) — deliberately NEVER
@@ -288,19 +279,6 @@ pub fn retain_targets(keep: impl Fn(&Target) -> bool) -> usize {
     dropped
 }
 
-pub fn prune() -> Vec<Target> {
-    let _lock = registry_lock(); // held across the load-modify-save (M3)
-    let mut r = load();
-    let (live, dead): (Vec<Target>, Vec<Target>) = r
-        .targets
-        .drain(..)
-        .partition(|t| std::path::Path::new(&t.hub).exists());
-    if !dead.is_empty() {
-        r.targets = live;
-        let _ = save(&r);
-    }
-    dead
-}
 
 /// Should this session heal (re-arm) a target? Owned when it carries MY session id (I armed it
 /// this session), or — as the resume / session-id-rotation fallback — when it's for MY role (the
