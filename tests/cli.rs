@@ -9155,3 +9155,34 @@ fn prune_says_nothing_to_do_on_a_clean_machine() {
         "a healthy machine must get a clean bill, not an empty list: {s}"
     );
 }
+
+#[test]
+fn install_skill_refuses_from_a_development_build() {
+    // ~/.claude/skills is a per-user singleton: every agent on a box reads the same files, and the
+    // SessionStart resync rewrites them from whatever binary ran it. On 2026-09-11 that was
+    // target/debug/confer on Batman, so three co-resident agents spent four days with a
+    // /confer-arm skill pointing at an unreleased, mid-edit build — one `cargo clean` away from a
+    // path that did not exist. The test binary IS a dev build, so it must refuse outright.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let dir = tmp("skills-target");
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env_remove("CONFER_SKILLS_FROM_DEV_BUILD") // the harness sets it; this test is about its absence
+        .args(["install-skill", "--dir", dir.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!ok(&o), "a dev build must not install skills: {}", out(&o));
+    assert!(
+        err(&o).contains("development build"),
+        "and must say why, so the operator reaches for a release binary: {}",
+        err(&o)
+    );
+    assert!(
+        !dir.join("confer-arm").exists(),
+        "nothing may be written before the refusal"
+    );
+}

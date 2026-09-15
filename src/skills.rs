@@ -117,6 +117,50 @@ fn harness_rewrite(text: &str, harness: &str) -> String {
 /// Re-derive the confer skills in ONE harness dir if they exist there but were baked from a different
 /// build. Returns whether it acted. Never creates skills where none exist; bails (role-blind safety)
 /// if a template unexpectedly bakes {ROLE}/{HUB}.
+/// The binary reference to bake into a skill: the bare name when this executable IS what `confer`
+/// on PATH resolves to, else its absolute path — and `None` for a development build, which must
+/// never be written into a shared skill at all.
+///
+/// `~/.claude/skills` is a per-user singleton. On a co-resident box every agent reads the same
+/// files, and the SessionStart resync rewrites them from whatever binary happened to run it. On
+/// 2026-09-11 that was `target/debug/confer` on Batman, so every agent there was told to arm with
+/// an unreleased, mid-edit development build — one `cargo clean` from a path that does not exist.
+/// A skill is a pure function of the binary, but only if the binary is one the fleet should run.
+///
+/// Preferring the bare name is also what survives a brew upgrade: the Cellar path changes every
+/// version, and a baked absolute path would go stale on the first one.
+pub(crate) fn skill_binary_ref() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_s = exe.to_string_lossy().to_string();
+    if exe_s.contains("/target/debug/") || exe_s.contains("/target/release/") {
+        return None;
+    }
+    let canon = std::fs::canonicalize(&exe).unwrap_or(exe.clone());
+    let on_path = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("confer"))
+            .find(|c| std::fs::canonicalize(c).ok().as_ref() == Some(&canon))
+    });
+    Some(if on_path.is_some() { "confer".to_string() } else { exe_s })
+}
+
+/// The one escape hatch, for the test suite: `CONFER_SKILLS_FROM_DEV_BUILD=1` lets a `target/`
+/// binary install skills. Named for exactly what it permits so nobody sets it by accident, and
+/// checked at the two call sites rather than inside `skill_binary_ref`, so the refusal itself stays
+/// a pure function that the unit test can pin.
+fn dev_build_override() -> bool {
+    std::env::var_os("CONFER_SKILLS_FROM_DEV_BUILD").is_some_and(|v| v == "1")
+}
+
+/// What to bake, honouring the override: a dev build under the override bakes its own path.
+fn skill_binary_ref_or_override() -> Option<String> {
+    skill_binary_ref().or_else(|| {
+        dev_build_override()
+            .then(|| std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string()))
+            .flatten()
+    })
+}
+
 fn resync_dir(dir: &Path, bin: &str, harness: &str) -> bool {
     let sentinel = sentinel_skill(harness);
     if !dir.join(sentinel).join("SKILL.md").is_file() {
@@ -148,7 +192,10 @@ fn resync_dir(dir: &Path, bin: &str, harness: &str) -> bool {
 /// build synced to if any dir acted.
 pub(crate) fn resync_skills_if_stale() -> Option<String> {
     let home = config::home().ok()?;
-    let bin = std::env::current_exe().ok()?.to_string_lossy().to_string();
+    // A dev build refuses to resync SHARED skills. Silently, and that is deliberate: this runs from
+    // a SessionStart hook, where a warning would be noise on every developer session — and the
+    // failure it prevents is loud enough on its own once it happens.
+    let bin = skill_binary_ref_or_override()?;
     let mut acted = false;
     for (harness, sub) in HARNESS_SKILL_HOMES {
         acted |= resync_dir(&home.join(sub).join("skills"), &bin, harness);
@@ -163,7 +210,14 @@ pub(crate) fn cmd_install_skill(
     role: Option<String>,
     no_autoheal: bool,
 ) -> Result<()> {
-    let bin = std::env::current_exe()?.to_string_lossy().to_string();
+    let bin = skill_binary_ref_or_override().ok_or_else(|| {
+        anyhow!(
+            "refusing to install skills from a development build ({}). A skill is read by every \
+             agent that shares this skills directory, and would tell them all to run this binary. \
+             Install from a release binary (brew / the installer), or a copy outside target/.",
+            std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
+        )
+    })?;
     let hub_root = match hub {
         Some(h) => std::fs::canonicalize(&h).unwrap_or_else(|_| std::path::PathBuf::from(h)),
         None => config::repo_root()?,
@@ -287,4 +341,21 @@ pub(crate) fn cmd_install_skill(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod binary_ref_tests {
+    use super::skill_binary_ref;
+
+    #[test]
+    fn a_test_binary_is_a_dev_build_and_is_refused() {
+        // Under `cargo test`, current_exe is target/debug/deps/confer-<hash> — a development
+        // artifact by construction. That is exactly the thing that must never be baked into a
+        // skills directory other agents read.
+        assert_eq!(
+            skill_binary_ref(),
+            None,
+            "a binary under target/ must refuse to name itself in a shared skill"
+        );
+    }
 }

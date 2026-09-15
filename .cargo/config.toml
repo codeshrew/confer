@@ -1,0 +1,9 @@
+# Applies to every process cargo launches under this crate: `cargo test`, `cargo run`, and the
+# child confer processes the integration tests spawn (they inherit the test binary's environment).
+[env]
+# The test binary lives under target/, which `install-skill` and the SessionStart resync correctly
+# REFUSE to bake into a skills directory — a dev path written into a shared ~/.claude/skills told
+# three co-resident agents to run an unreleased build for four days. The suite exercises the
+# install path on purpose, under per-test HOMEs, so it needs the escape hatch. Named for exactly
+# what it permits; the one test that checks the refusal itself removes it (`env_remove`).
+CONFER_SKILLS_FROM_DEV_BUILD = "1"
