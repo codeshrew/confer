@@ -131,17 +131,29 @@ fn harness_rewrite(text: &str, harness: &str) -> String {
 /// version, and a baked absolute path would go stale on the first one.
 pub(crate) fn skill_binary_ref() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
+    binary_ref_for(&exe, std::env::var_os("PATH").as_deref())
+}
+
+/// The pure core of [`skill_binary_ref`], so each branch can be pinned by a test.
+fn binary_ref_for(exe: &Path, path_var: Option<&std::ffi::OsStr>) -> Option<String> {
     let exe_s = exe.to_string_lossy().to_string();
     if exe_s.contains("/target/debug/") || exe_s.contains("/target/release/") {
         return None;
     }
-    let canon = std::fs::canonicalize(&exe).unwrap_or(exe.clone());
-    let on_path = std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join("confer"))
-            .find(|c| std::fs::canonicalize(c).ok().as_ref() == Some(&canon))
+    let canon = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let path_confer: Option<PathBuf> = path_var.and_then(|p| {
+        std::env::split_paths(p).map(|d| d.join("confer")).find(|c| c.is_file())
     });
-    Some(if on_path.is_some() { "confer".to_string() } else { exe_s })
+    match path_confer {
+        // This exe IS the installed confer: bake the bare name.
+        Some(c) if std::fs::canonicalize(&c).ok().as_ref() == Some(&canon) => Some("confer".into()),
+        // Some OTHER confer is installed. Rewriting everyone's skills to point at this one instead
+        // is a fleet-wide config change by the safety kernel's own definition, and it would go out
+        // with no owner confirmation. Refuse (studio-markup's second ask).
+        Some(_) => None,
+        // Nothing on PATH at all: the absolute path is the only reference that can work.
+        None => Some(exe_s),
+    }
 }
 
 /// The one escape hatch, for the test suite: `CONFER_SKILLS_FROM_DEV_BUILD=1` lets a `target/`
@@ -345,7 +357,53 @@ pub(crate) fn cmd_install_skill(
 
 #[cfg(test)]
 mod binary_ref_tests {
-    use super::skill_binary_ref;
+    use super::{binary_ref_for, skill_binary_ref};
+    use std::path::Path;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("confer-binref-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_installed_confer_bakes_the_bare_name() {
+        let bin = scratch("installed");
+        std::fs::write(bin.join("confer"), "#!/bin/sh\n").unwrap();
+        let exe = bin.join("confer");
+        let path = std::env::join_paths([&bin]).unwrap();
+        assert_eq!(
+            binary_ref_for(&exe, Some(&path)).as_deref(),
+            Some("confer"),
+            "when this exe is what PATH resolves to, the portable bare name is baked"
+        );
+    }
+
+    #[test]
+    fn a_different_installed_confer_means_refuse() {
+        // A second copy somewhere else must not rewrite everyone's skills to point at itself.
+        let bin = scratch("other-installed");
+        std::fs::write(bin.join("confer"), "#!/bin/sh\n").unwrap();
+        let elsewhere = scratch("elsewhere");
+        std::fs::write(elsewhere.join("confer"), "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        assert_eq!(
+            binary_ref_for(&elsewhere.join("confer"), Some(&path)),
+            None,
+            "a fleet-wide skill rewrite from a non-installed binary needs an owner, not a hook"
+        );
+    }
+
+    #[test]
+    fn with_nothing_on_path_the_absolute_path_is_the_only_option() {
+        let elsewhere = scratch("lonely");
+        std::fs::write(elsewhere.join("confer"), "#!/bin/sh\n").unwrap();
+        let empty = scratch("empty-path");
+        let path = std::env::join_paths([&empty]).unwrap();
+        let got = binary_ref_for(&elsewhere.join("confer"), Some(&path)).unwrap();
+        assert!(got.ends_with("/confer") && Path::new(&got).is_absolute(), "{got}");
+    }
 
     #[test]
     fn a_test_binary_is_a_dev_build_and_is_refused() {

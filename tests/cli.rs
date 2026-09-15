@@ -9186,3 +9186,45 @@ fn install_skill_refuses_from_a_development_build() {
         "nothing may be written before the refusal"
     );
 }
+
+#[test]
+fn watch_status_names_the_binary_and_flags_a_development_build() {
+    // studio-markup, after the poisoned-skills incident: "had I followed the startup hook's advice
+    // literally I would have spent the last 15 minutes on your dev binary and would not have
+    // known, because watch-status reports the commit hash, not the path, and a debug build of
+    // 0.8.32 prints the same hash." The sha cannot distinguish them. The path and +dev can.
+    //
+    // The test binary IS a dev build (target/debug/...), so arming with it is the real case.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let mut w = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_watch_lock(&a.home);
+    std::thread::sleep(Duration::from_millis(500));
+    let s = out(&a.confer(&["watch-status"]));
+    let j = out(&a.confer(&["watch-status", "--json"]));
+    let _ = w.kill();
+    let _ = w.wait();
+
+    assert!(s.contains("binary: "), "the watcher's executable must be named: {s}");
+    assert!(
+        s.contains("target/debug") || s.contains("target/release"),
+        "and it must be the real path, not a guess: {s}"
+    );
+    assert!(
+        s.contains("DEVELOPMENT build"),
+        "a +dev watcher must be flagged as one, because its sha looks like a release: {s}"
+    );
+    assert!(
+        j.contains(r#""watcher_is_dev_build":true"#),
+        "machine readers get the same fact: {j}"
+    );
+}

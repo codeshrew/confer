@@ -1208,6 +1208,8 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
             "pid": info.as_ref().map(|i| i.pid),
             "delivery": delivery,
             "recommendation": rec,
+            "watcher_exe": info.as_ref().and_then(|i| i.exe.clone()),
+            "watcher_is_dev_build": info.as_ref().map(|i| i.dev),
             "wake_prefs": {
                 "wake_on": saved_prefs.wake_on.clone().unwrap_or_else(|| "notice".into()),
                 "min_priority": saved_prefs.min_priority.clone().unwrap_or_else(|| "low".into()),
@@ -1250,6 +1252,20 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         }
         if !rec.is_empty() {
             println!("  → {rec}");
+        }
+        // WHICH binary is doing the watching. The sha alone cannot distinguish a dev build from
+        // the release it was cut from; the path and the +dev marker can. An operator whose skills
+        // had been quietly repointed at a scratch build would otherwise see "healthy" and the
+        // release's own sha (studio-markup).
+        if let Some(i) = info.as_ref() {
+            match (&i.exe, i.dev) {
+                (Some(exe), true) => println!(
+                    "  binary: {exe}  ⚠ a DEVELOPMENT build (+dev) — not a release; if you did not \
+                     build it yourself, re-arm from the installed confer"
+                ),
+                (Some(exe), false) => println!("  binary: {exe}"),
+                (None, _) => {}
+            }
         }
         // Read the preferences back, so "I passed the flag" and "the flag is set" stop being the
         // same statement. These are per (hub, role) and survive re-arming.

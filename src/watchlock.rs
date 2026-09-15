@@ -43,6 +43,11 @@ pub struct LockInfo {
     /// Self-declared arming method (see [`WatchLock::delivery`]). `None` = not recorded — an older
     /// watcher, or one armed without the stamp (possibly a plain background process not delivering).
     pub delivery: Option<String>,
+    /// The executable the watcher is running — `None` on a lock written before this was stamped.
+    pub exe: Option<String>,
+    /// Built from an untagged/dirty tree (the `+dev` marker). A dev build shares its sha with the
+    /// release it was cut from, so this is the only thing that distinguishes them in the lock.
+    pub dev: bool,
 }
 
 /// The health of a role's watcher — shared by `watch-status` and `session-heal`
@@ -100,6 +105,8 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     let version = v.get("version").and_then(|x| x.as_str()).map(String::from);
     let started_at = v.get("started_at").and_then(|x| x.as_str()).map(String::from);
     let delivery = v.get("delivery").and_then(|x| x.as_str()).map(String::from);
+    let exe = v.get("exe").and_then(|x| x.as_str()).map(String::from);
+    let dev = v.get("dev").and_then(|x| x.as_bool()).unwrap_or(false);
     let same_host = config::is_this_host(&host);
     let age = age_secs(&path);
     Some(LockInfo {
@@ -115,6 +122,8 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
         version,
         started_at,
         delivery,
+        exe,
+        dev,
     })
 }
 
@@ -306,6 +315,12 @@ impl WatchLock {
             "pid": std::process::id(),
             "host": config::hostname().unwrap_or_default(),
             "version": env!("CONFER_GIT_SHA"),
+            // WHICH binary, not just which commit. A debug build of 0.8.32 carries the same sha as
+            // the release, so the sha alone cannot tell an operator their watcher is running a
+            // scratch build — which is exactly what the poisoned-skills incident would have
+            // produced, invisibly (studio-markup). The path plus the +dev marker make it visible.
+            "exe": std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            "dev": !env!("CONFER_BUILD_SUFFIX").trim().is_empty(),
             "started_at": self.started_at,
             "delivery": self.delivery,
         });
