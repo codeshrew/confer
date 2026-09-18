@@ -7807,10 +7807,16 @@ fn confer_arm_persists_wake_on_and_a_bare_rearm_reloads_it() {
     let a = hub.clone("alpha");
     assert!(ok(&a.confer(&["join", "--role", "alpha"])));
 
+    // `arm` now starts a DETACHED watcher and attaches to its spool, so the watcher's startup
+    // chatter (including the wake-on floor hint) reaches the stream via stdout, not this
+    // process's stderr — and a bare re-arm finds the watcher "already running" and prints no
+    // fresh hint at all. The observable for "the preference is what the watcher is using" is
+    // therefore `watch-status`'s read-back, which is exactly what it exists for.
+    let _guard = Daemons(a.home.clone());
     let run = |args: &[&str]| -> String {
         let mut full = vec!["arm", "--role", "alpha"];
         full.extend_from_slice(args);
-        spawn_and_capture_stderr(&a.home, &a.dir, "alpha", &full)
+        spawn_and_capture(&a.home, &a.dir, "alpha", &full, true, &["alert (act-now only", "already running"])
     };
 
     let explicit = run(&["--wake-on", "alert"]);
@@ -7818,11 +7824,16 @@ fn confer_arm_persists_wake_on_and_a_bare_rearm_reloads_it() {
         explicit.contains("alert (act-now only"),
         "confer arm --wake-on alert must apply on this run: {explicit}"
     );
+    let status = out(&a.confer(&["watch-status"]));
+    assert!(status.contains("wake-on=alert"), "the running watcher must carry the preference: {status}");
 
+    // A bare re-arm must not lose it: the same watcher is reused, still on alert.
     let reloaded = run(&[]);
+    assert!(reloaded.contains("already running"), "a bare re-arm reuses the watcher: {reloaded}");
+    let status2 = out(&a.confer(&["watch-status"]));
     assert!(
-        reloaded.contains("alert (act-now only"),
-        "a bare `confer arm` must reload the saved wake-on=alert preference: {reloaded}"
+        status2.contains("wake-on=alert"),
+        "a bare `confer arm` must keep the saved wake-on=alert preference: {status2}"
     );
 }
 
@@ -9227,4 +9238,320 @@ fn watch_status_names_the_binary_and_flags_a_development_build() {
         j.contains(r#""watcher_is_dev_build":true"#),
         "machine readers get the same fact: {j}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Detached watchers + `confer attach` / the new `confer arm`.
+//
+// Detached watchers are setsid'd daemons: they outlive the test process on purpose. Every test
+// here holds a `Daemons` guard that kills whatever took a watch lock under the test's HOME.
+// ---------------------------------------------------------------------------------------------
+
+struct Daemons(PathBuf);
+impl Daemons {
+    fn pids(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        if let Ok(hubs) = std::fs::read_dir(self.0.join(".confer/watch")) {
+            for h in hubs.flatten() {
+                if let Ok(files) = std::fs::read_dir(h.path()) {
+                    for f in files.flatten() {
+                        if let Ok(t) = std::fs::read_to_string(f.path()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
+                                if let Some(p) = v.get("pid").and_then(|p| p.as_u64()) {
+                                    out.push(p as u32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+impl Drop for Daemons {
+    fn drop(&mut self) {
+        for p in self.pids() {
+            let _ = Command::new("kill").arg(p.to_string()).stderr(Stdio::null()).status();
+        }
+    }
+}
+
+fn spool_dir(home: &Path) -> PathBuf {
+    home.join(".confer/spool")
+}
+
+/// Run `confer arm --role <r>` for `secs` seconds under a per-test HOME, capturing its stream.
+fn arm_for(home: &Path, cwd: &Path, role: &str, secs: u64) -> String {
+    use std::io::Read;
+    let mut child = Command::new(BIN)
+        .env("HOME", home)
+        .env("CONFER_ROLE", role)
+        .current_dir(cwd)
+        .args(["arm", "--role", role])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(secs));
+    let _ = child.kill();
+    let mut s = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut s);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut s);
+    }
+    let _ = child.wait();
+    s
+}
+
+#[test]
+fn a_detached_watcher_outlives_the_process_that_started_it() {
+    // The whole point: a Monitor's expiry must not take the watcher with it. The daemon runs in
+    // its own session, so killing the parent's process group cannot reach it.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let o = a.confer(&["watch", "--detach", "--poll", "1"]);
+    assert!(ok(&o), "detach should return immediately: {}", err(&o));
+    assert!(err(&o).contains("detached watcher"), "{}", err(&o));
+    let lock = wait_for_watch_lock(&a.home).expect("daemon takes the lock");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    assert_eq!(v["delivery"], "spool", "a detached watcher is stamped as spool delivery");
+    let pid = v["pid"].as_u64().unwrap() as u32;
+    // The process that ran `--detach` has already exited (the command returned). The daemon lives.
+    std::thread::sleep(Duration::from_millis(500));
+    let alive = |p: u32| Command::new("kill").args(["-0", &p.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+    assert!(alive(pid), "daemon {pid} must still be running after its parent exited");
+}
+
+#[test]
+fn a_detached_watcher_survives_its_starting_process_group_being_killed() {
+    // The property that matters. A parent merely EXITING leaves any child alive; what a harness
+    // does when a Monitor ends is kill the whole process GROUP, and a child that shares it dies
+    // with everything else. setsid() puts the daemon in its own session and group, so the group
+    // kill cannot reach it. A first version of the test above passed with setsid removed — it was
+    // checking the wrong thing.
+    use std::os::unix::process::CommandExt;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    // Start the detach from a shell that holds it open in ITS OWN process group, so we can
+    // group-kill exactly that group and nothing else.
+    let mut starter = Command::new("sh")
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .current_dir(&a.dir)
+        .arg("-c")
+        .arg(format!("{} watch --detach --poll 1 >/dev/null 2>&1; sleep 30", BIN))
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let starter_pgid = starter.id(); // process_group(0) → pgid == its pid
+    let lock = wait_for_watch_lock(&a.home).expect("daemon takes the lock");
+    let daemon = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"].as_u64().unwrap() as u32;
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Kill the starter's whole group — what a Monitor teardown does.
+    let _ = Command::new("kill").args(["-TERM", &format!("-{starter_pgid}")]).stderr(Stdio::null()).status();
+    let _ = starter.wait();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let alive = Command::new("kill").args(["-0", &daemon.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+    assert!(alive, "the daemon must survive its starting process group being killed — that is what detached means");
+    let daemon_pgid = out(&Command::new("ps").args(["-o", "pgid=", "-p", &daemon.to_string()]).output().unwrap());
+    assert_ne!(daemon_pgid.trim(), starter_pgid.to_string(), "and it must be in its own process group");
+}
+
+#[test]
+fn one_arm_covers_every_hub_and_survives_the_monitor_expiring() {
+    // Two hubs, one arm, one stream. Kill the stream (the Monitor expiring), let a message land in
+    // the gap, arm again: the watchers were never restarted, and ONLY the gap message is delivered.
+    let hub_a = new_hub();
+    let hub_b = new_hub();
+    let home = tmp("mux-home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    let _guard = Daemons(home.clone());
+    let me_a = hub_a.clone_with_home("alpha", &home);
+    let me_b = hub_b.clone_with_home("alpha", &home);
+    let peer_a = hub_a.clone("peer");
+    let peer_b = hub_b.clone("peer");
+    for c in [&me_a, &me_b] {
+        assert!(ok(&c.confer(&["join", "--role", "alpha"])));
+    }
+    for c in [&peer_a, &peer_b] {
+        assert!(ok(&c.confer(&["join", "--role", "peer"])));
+    }
+    std::fs::write(
+        home.join(".confer/autoheal.json"),
+        serde_json::json!({"enabled": false, "targets": [
+            {"hub": me_a.dir.to_str().unwrap(), "role": "alpha"},
+            {"hub": me_b.dir.to_str().unwrap(), "role": "alpha"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+
+    // Arm from OUTSIDE any clone: the registry alone must be enough.
+    let neutral = tmp("neutral");
+    let first = {
+        use std::io::Read;
+        let mut child = Command::new(BIN)
+            .env("HOME", &home)
+            .current_dir(&neutral)
+            .args(["arm", "--role", "alpha"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(5));
+        assert!(ok(&peer_a.append(&["--type", "request", "--to", "alpha", "--summary", "FROM-A-1", "--text", "x"])));
+        assert!(ok(&peer_b.append(&["--type", "request", "--to", "alpha", "--summary", "FROM-B-1", "--text", "x"])));
+        std::thread::sleep(Duration::from_secs(6));
+        let _ = child.kill();
+        let mut s = String::new();
+        child.stdout.take().unwrap().read_to_string(&mut s).unwrap();
+        let mut e = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut e).unwrap();
+        let _ = child.wait();
+        format!("{s}{e}")
+    };
+    assert!(first.contains("2 hub(s)"), "one arm must cover both hubs: {first}");
+    assert!(first.contains("FROM-A-1") && first.contains("FROM-B-1"), "both hubs' wakes in ONE stream: {first}");
+    assert!(first.contains("[") && first.contains("] REQUEST"), "wakes are prefixed with their hub: {first}");
+
+    let pids_before = _guard.pids();
+    assert_eq!(pids_before.len(), 2, "two detached watchers: {pids_before:?}");
+
+    // The Monitor is gone. A message lands. The peer clones live under a DIFFERENT HOME, so the
+    // same-machine notify signal does not fire and the daemon sees it on its next 10s poll —
+    // the window below must cover a full poll interval.
+    assert!(ok(&peer_a.append(&["--type", "request", "--to", "alpha", "--summary", "FROM-A-GAP", "--text", "x"])));
+    std::thread::sleep(Duration::from_secs(6));
+
+    let second = arm_for(&home, &neutral, "alpha", 9);
+    assert!(second.contains("already running"), "watchers must NOT be restarted: {second}");
+    // Judge WAKE lines only. The "unread for you" footer re-surfaces unread mail by design (that
+    // is the read frontier, not the delivery cursor) and legitimately names FROM-A-1 again.
+    let wakes = |s: &str, tag: &str| s.lines().filter(|l| l.contains("] REQUEST") && l.contains(tag)).count();
+    assert_eq!(wakes(&second, "FROM-A-GAP"), 1, "the gap message is replayed on re-attach, once: {second}");
+    assert_eq!(wakes(&second, "FROM-A-1") + wakes(&second, "FROM-B-1"), 0, "already-delivered wakes are never repeated: {second}");
+    let mut pids_after = _guard.pids();
+    let mut before = pids_before.clone();
+    pids_after.sort();
+    before.sort();
+    assert_eq!(pids_after, before, "the same two daemons, untouched by expiry and re-attach");
+}
+
+#[test]
+fn watch_status_distinguishes_spooling_from_attached() {
+    // "The watcher is running" and "someone is reading it" are different claims; only the second
+    // means wakes reach the agent. A spool with nothing attached is exactly the deaf state.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["watch", "--detach", "--poll", "1"])));
+    wait_for_watch_lock(&a.home);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let unattached = out(&a.confer(&["watch-status"]));
+    assert!(unattached.contains("NOTHING ATTACHED"), "a spool with no reader must say so: {unattached}");
+
+    let stream = {
+        let mut child = Command::new(BIN)
+            .env("HOME", &a.home)
+            .env("CONFER_HUB", &a.dir)
+            .env("CONFER_ROLE", "alpha")
+            .current_dir(&a.dir)
+            .args(["attach", "--role", "alpha"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        let s = out(&a.confer(&["watch-status"]));
+        let _ = child.kill();
+        let _ = child.wait();
+        s
+    };
+    assert!(stream.contains("attached (pid"), "with a reader, it must say attached: {stream}");
+}
+
+#[test]
+fn a_detached_watcher_exits_on_its_own_when_nothing_attaches() {
+    // A watcher whose human left for the week must not hold the lock and heartbeat presence for
+    // ever, telling peers someone is home. Idle-exit is a clean stop that releases the lock.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("CONFER_WATCH_IDLE_EXIT_SECS", "3")
+        .args(["watch", "--detach", "--poll", "1"])
+        .output()
+        .unwrap();
+    assert!(ok(&o));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    let pid = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"].as_u64().unwrap() as u32;
+    let mut gone = false;
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(250));
+        if !Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().unwrap().success() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "an unattached watcher must exit after the idle limit");
+    let spool = std::fs::read_dir(spool_dir(&a.home)).unwrap().flatten().next().map(|d| d.path()).unwrap();
+    let log = std::fs::read_to_string(spool.join("alpha.log")).unwrap_or_default();
+    assert!(log.contains("exiting"), "and say why in its spool: {log}");
+}
+
+#[test]
+fn the_spool_is_rotated_by_its_writer_without_losing_a_wake() {
+    // The writer holds one fd; a rename by the reader would strand it. So the writer truncates its
+    // own spool, only once the reader's offset says everything was consumed. A wake written after
+    // the rotation must still be delivered — exactly once.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let peer = hub.clone("peer");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&peer.confer(&["join", "--role", "peer"])));
+    assert!(ok(&a.confer(&["watch", "--detach", "--poll", "1"])));
+    wait_for_watch_lock(&a.home);
+    std::thread::sleep(Duration::from_millis(800));
+    let spool = std::fs::read_dir(spool_dir(&a.home)).unwrap().flatten().next().map(|d| d.path()).unwrap();
+    let log = spool.join("alpha.log");
+    // Inflate the spool past the rotation threshold with already-"delivered" filler, and mark the
+    // reader caught up, so the writer's rotation precondition holds.
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let filler = "x".repeat(1024);
+        for _ in 0..2100 {
+            writeln!(f, "{filler}").unwrap();
+        }
+    }
+    let len = std::fs::metadata(&log).unwrap().len();
+    std::fs::write(log.with_extension("offset"), len.to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(2500)); // > one poll: the writer rotates
+    assert!(std::fs::metadata(&log).unwrap().len() < len, "writer should have truncated its spool");
+
+    assert!(ok(&peer.append(&["--type", "request", "--to", "alpha", "--summary", "AFTER-ROTATE", "--text", "x"])));
+    let s = arm_for(&a.home, &a.dir, "alpha", 12); // the detached watcher polls every 10s; the peer is under another HOME
+    // Count WAKE lines only: the unread-for-you footer repeats the summary, and that is not a
+    // second delivery.
+    let wakes = s.lines().filter(|l| l.contains("] REQUEST") && l.contains("AFTER-ROTATE")).count();
+    assert_eq!(wakes, 1, "delivered exactly once after rotation: {s}");
 }

@@ -367,7 +367,11 @@ pub(crate) fn cmd_rewatch(only: Option<String>, role: Option<String>) -> Result<
             println!("(no watch targets for this session — arm one with `confer watch --role <you> --replace`, or set `hubs.<name>.watch`)");
         }
     } else if reactive > 0 {
-        println!("\narm the reactive one(s) under the Monitor tool — never background bash (it gets reaped). See /confer-watch.");
+        println!(
+            "\nOr cover ALL of the above with one command under one Monitor: `confer arm` (detached \
+             watchers + a single attach stream; survives the Monitor expiring). The per-hub lines are \
+             the manual equivalent. Never background either — see /confer-arm."
+        );
     }
     Ok(())
 }

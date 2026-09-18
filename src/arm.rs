@@ -72,7 +72,22 @@ pub fn run(
     wake_on_cc: bool,
     session: Option<String>,
     force: bool,
+    inline: bool,
 ) -> Result<()> {
+    if !inline {
+        // The default since the harness capped Monitors at 30 minutes: detached watchers for every
+        // hub this session owns, and ONE attach stream for the Monitor to host. Explicit
+        // preference flags are passed to any watcher this starts, so they are saved per
+        // (hub, role) exactly as an inline arm would have saved them.
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(t) = &topic { extra.extend(["--topic".into(), t.clone()]); }
+        if all { extra.push("--all".into()); }
+        if let Some(m) = &min_priority { extra.extend(["--min-priority".into(), m.clone()]); }
+        if let Some(w) = &wake_on { extra.extend(["--wake-on".into(), w.clone()]); }
+        if wake_on_cc { extra.push("--wake-on-cc".into()); }
+        if let Some(s) = &session { extra.extend(["--session".into(), s.clone()]); }
+        return crate::attach::run(role, session, force, extra);
+    }
     let clone = resolve_clone(&role)?;
     std::env::set_current_dir(&clone)
         .map_err(|e| anyhow!("confer arm: cannot enter clone {}: {e}", clone.display()))?;

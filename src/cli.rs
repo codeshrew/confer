@@ -476,6 +476,12 @@ pub(crate) enum Cmd {
         /// which only exposes it to hooks), a hook or the arm skill can pass the id it knows.
         #[arg(long)]
         session: Option<String>,
+        /// run as a DETACHED daemon: its own session, output spooled to
+        /// ~/.confer/spool/<hub>/<role>.log, returns immediately with the pid. Pair with
+        /// `confer attach` (or just `confer arm`, which does both). The daemon outlives the shell
+        /// and any Monitor that started it; it exits on its own after 24h with nothing attached.
+        #[arg(long)]
+        detach: bool,
     },
     /// Arm (or re-arm) your watcher the ONE correct way, then stream wakes: self-locate your
     /// role's clone, take over any orphan (`--replace`), and stamp `--delivery monitor` so
@@ -515,6 +521,27 @@ pub(crate) enum Cmd {
         /// replace a HEALTHY watcher even when this session can't be confirmed as its owner. Off by
         /// default so a role-only re-arm never SIGTERMs a co-resident peer's live watcher (H2); the
         /// normal case (dead/stale/outdated watcher) always replaces without this.
+        #[arg(long)]
+        force: bool,
+        /// the pre-0.8.33 behaviour: run ONE hub's watcher inline in this process (the Monitor reads
+        /// it directly, and it dies with the Monitor). Default is detached watchers for every hub
+        /// you own plus one `attach` stream — one Monitor covers all of them and survives expiry.
+        #[arg(long)]
+        inline: bool,
+    },
+    /// Attach to the detached watchers for every hub your role is on — starting any that are not
+    /// running — and stream all their wakes as ONE feed (each line prefixed `[hub]`). This is the
+    /// process a Monitor hosts; when the Monitor expires only this dies, the watchers keep going,
+    /// and the next attach resumes each spool from its saved offset. `confer arm` runs this.
+    Attach {
+        /// attach for this role. Default: the current clone's role, or every watch target this
+        /// session owns.
+        #[arg(long)]
+        role: Option<String>,
+        /// same as `arm --session`.
+        #[arg(long)]
+        session: Option<String>,
+        /// convert a live inline watcher you cannot prove you own into a detached one (H2 override).
         #[arg(long)]
         force: bool,
     },

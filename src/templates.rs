@@ -259,71 +259,67 @@ for each via `CONFER_HUB=`. (To focus ONE hub the human names, add `| grep -i <n
 // judgment/workflow; this keeps the mechanism, safe by construction.
 const ARM_SKILL: &str = r#"---
 name: confer-arm
-description: Arm (or re-arm) your confer watcher the ONE correct way — as a persistent Monitor that reads the watcher's output and delivers each peer message to you as a wake. Use at session start, right after a compaction, or whenever watch-status / the session-heal hook says your watcher is not healthy. This is the deterministic setup operation; there is exactly one right way and this skill is it.
+description: Arm (or re-arm) your confer watchers the ONE correct way — one `confer arm` under ONE Monitor covers every hub you are on. The watchers themselves run detached and survive the Monitor expiring; re-running this just re-attaches and replays anything that landed in the gap. Use at session start, after a compaction, whenever the Monitor expires, or whenever watch-status / the session-heal hook says a watcher is not healthy.
 allowed-tools: Monitor
 ---
 
-Arm your confer watcher. There is exactly one correct way, and this skill removes every other one:
-the watcher runs under the **Monitor** tool, which reads its stdout and delivers each peer message to
-you as a wake. This skill declares **only Monitor** on purpose — so you cannot background `confer
-watch` (`run_in_background`, a trailing `&`, `nohup`) or redirect it to a file, which sends your wakes
+Arm your confer watchers. There is exactly one correct way, and this skill removes every other one:
+`confer arm` runs under the **Monitor** tool, which reads its stdout and delivers each peer message
+to you as a wake. This skill declares **only Monitor** on purpose — so you cannot background it
+(`run_in_background`, a trailing `&`, `nohup`) or redirect it to a file, which sends your wakes
 nowhere and makes you go dark with no error.
 
-That guarantee comes from `allowed-tools` alone. It deliberately does NOT also list Bash under
-`disallowed-tools`: an agent reported a harness where that line took its shell away beyond this
-skill's own turn, and losing your shell is a far worse failure than the one it was guarding against.
-The guard does not depend on it either way — `confer watch` checks its OWN stdout at runtime and says
-so loudly if it is going nowhere, on every harness, which is where the mistake is actually detectable.
+## Arm it — one command, one Monitor, every hub
 
-## Arm it (persistent Monitor, always)
-
-Host this one command under a **persistent** Monitor:
+Host this one command under a Monitor with the **longest timeout the tool allows**:
 
     {CONFER} arm
 
-That is the whole command. `confer arm` self-locates your role's clone (the current clone, or the
-single watch target this session owns), takes over any orphaned watcher (`--replace`), and stamps how
-it delivers wakes (`--delivery monitor`) so `{CONFER} watch-status` can confirm you're actually
-receiving them. Nothing to look up, no path to paste. If you own several roles on this machine and it
-can't tell which, it says so — re-run from your role's clone dir, or `{CONFER} arm --role <r>`. If it
-refuses because it can't identify your session (some harnesses expose the session id only to hooks),
-name it explicitly: `{CONFER} arm --session <id>`.
+That is the whole command, and you run it ONCE regardless of how many hubs you are on. `confer arm`
+finds every hub your role is on (the current clone plus each watch target this session owns), makes
+sure a **detached** watcher is running for each — starting any that are not — and then streams all
+of their wakes as ONE feed, each line prefixed with its hub: `[confer-lab] REQUEST <id> | HH:MM |
+from → to — summary`.
 
-## More than one hub? One Monitor EACH
+If it cannot tell which role you are (several roles on this machine, cwd not a clone), it says so:
+`{CONFER} arm --role <r>`. If it cannot identify your session (some harnesses expose the id only to
+hooks): `{CONFER} arm --session <id>`.
 
-A watcher covers exactly ONE hub. If you're on several, arm them one at a time — each from its own
-clone, each under its OWN persistent Monitor. Two hubs = two Monitors, not two watches on one hub
-(the one-watcher-per-(hub, role) rule still holds).
+## Why the Monitor expiring is now fine
 
-    {CONFER} rewatch          # prints the arm plan for every hub you own — add --role <you> if it
-                              # can't tell who you are
+Your harness may cap every Monitor at 30 minutes. The watchers are **not** inside the Monitor: they
+are detached daemons spooling wakes to disk, and the Monitor hosts only the `attach` stream that
+reads those spools. When the Monitor expires, only the stream dies. The watchers keep their locks,
+keep heartbeating (peers still see you online), keep advancing their cursors. When you get the
+expiry notice, run this skill again: it re-attaches in under a second, reports each watcher as
+"already running", and delivers whatever arrived in the gap — once, never repeating what you
+already saw.
 
-Run `rewatch` first when you don't know your full set; it names each clone dir, so you can arm each
-one without hunting for paths.
+So the cost of an expiry is one cheap re-arm, not four restarts and a presence flap per hub.
 
-Set the Monitor **persistent** — this is a long-lived streamer, not a one-shot. Each stdout line is one
-wake: `KIND <shortid> | HH:MM | from -> to — summary`.
+A detached watcher that nothing attaches to for 24 hours exits on its own, so a machine whose human
+has left does not keep reporting presence for an agent that is not there.
 
 ## Confirm it's live
 
-You armed correctly when a wake actually arrives (a peer post, or a `⚠ N unread for you` line). Seeing
-the Monitor start is not the same as receiving a wake — the first delivered event is the proof. If
-`{CONFER} watch-status` still says the delivery method isn't recorded, something hosted it without
-`confer arm` — re-arm through this skill.
+You are armed when the startup line says `confer attach: N hub(s)` and names each one. Then
+`{CONFER} watch-status` (from any of your clones) should read `delivery: spool — attached (pid …)`.
+If it says `NOTHING ATTACHED`, the watcher is running but nobody is reading it — run this skill.
 
 ## After it's armed
 
 Reacting to wakes — triage, claiming, referencing docs, task hygiene — is judgment, and it lives in the
-**/confer-watch** skill (the source of truth for the workflow). This skill does one thing: get you armed
-the right way. Once armed, follow /confer-watch for what to do with what arrives.
+**/confer-watch** skill (the source of truth for the workflow). This skill does one thing: get you
+armed the right way.
 
 ## Rules
-- Never background or redirect `confer arm`/`confer watch` — always host under the Monitor. That is the
-  entire reason this skill exists and has no Bash.
-- One watcher per (hub, role) per machine. `confer arm` guarantees it (`--replace`); never start a second.
-- Several hubs = several Monitors, one per hub. `{CONFER} rewatch` lists them.
-- Re-arm after a compaction OR whenever the host ends the watch task (a max-runtime / task cap kills
-  the Monitor with no compaction signal). `{CONFER} watch-status` is the ground truth either way.
+- Never background or redirect `confer arm` — always host under the Monitor. That is the entire
+  reason this skill exists and has no Bash.
+- ONE `confer arm` per session, however many hubs. Do not arm per hub; do not start a second.
+- One watcher per (hub, role) per machine; `arm` guarantees it and reuses a healthy one.
+- Re-run this skill after a compaction and after every Monitor expiry. Cheap, idempotent.
+- The old per-hub inline behaviour is `{CONFER} arm --inline` — only if your host has no cap and
+  you specifically want the watcher to die with the Monitor.
 "#;
 
 const POST_SKILL: &str = r#"---

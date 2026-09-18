@@ -7,7 +7,7 @@
 use crate::machineconfig::{self, WatchPrefs};
 use crate::schema::{is_actionable, Message};
 use crate::{autoheal, config, cursor, gitcmd, hint, roster, store, watchlock, BUILD_SHA};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::io::Write;
 use std::path::Path;
@@ -221,6 +221,85 @@ pub fn resolve_watch_prefs(
     Ok((wake_on, min_priority, topic, all, wake_on_cc))
 }
 
+/// Rotate our own spool once the reader has consumed it all, and exit if nothing has attached in
+/// `idle_exit` seconds — a watcher whose human has left for the week should not hold a lock and
+/// heartbeat presence for ever, telling peers someone is home.
+fn spool_housekeeping(log: &std::path::Path, idle_exit: u64, started: std::time::Instant) -> Result<()> {
+    let len = std::fs::metadata(log).map(|m| m.len()).unwrap_or(0);
+    if len > crate::spool::ROTATE_AT_BYTES && crate::spool::reader_caught_up(log) {
+        // We are the only writer and single-threaded: nothing can land between that check and
+        // this truncate. Our own O_APPEND stdout lands at the new end (zero) on the next write.
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(log) {
+            let _ = f.set_len(0);
+        }
+    }
+    let unattached_for = crate::spool::attach_age_secs(log).unwrap_or(started.elapsed().as_secs());
+    if unattached_for >= idle_exit && started.elapsed().as_secs() >= idle_exit {
+        eprintln!(
+            "confer watch: nothing has been attached to this watcher for {}h — exiting so it does \
+             not hold the lock or report presence for an agent that is not here. `confer arm` \
+             starts a fresh one.",
+            idle_exit / 3600
+        );
+        return Err(anyhow::Error::new(IdleExitMarker));
+    }
+    Ok(())
+}
+
+/// Attaches to the anyhow chain so `run` can turn an idle exit into a clean `Ok(())`.
+#[derive(Debug)]
+struct IdleExitMarker;
+impl std::fmt::Display for IdleExitMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("idle exit")
+    }
+}
+impl std::error::Error for IdleExitMarker {}
+
+/// Start this same `watch` as a DETACHED daemon: its own session (so a host's process-group kill
+/// cannot take it), stdin from /dev/null, stdout+stderr appended to the spool. Returns the pid.
+///
+/// The one thing this must never do is lose a wake between the child starting and something
+/// attaching: it cannot, because the spool is opened before the child exists and every line the
+/// child would have printed to a Monitor goes there instead. `confer attach` picks up from the
+/// saved offset whenever it next runs.
+pub fn spawn_detached(root: &std::path::Path, role: &str, extra: &[String]) -> Result<u32> {
+    use std::os::unix::process::CommandExt;
+    let hub = config::hub_key(root);
+    let (log, out) = crate::spool::open_for_append(&hub, role)?;
+    let err = out.try_clone()?;
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.current_dir(root)
+        .arg("watch")
+        .arg("--replace")
+        .args(["--delivery", "spool"])
+        .args(extra)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    if !role.is_empty() {
+        cmd.args(["--role", role]);
+    }
+    // SAFETY: setsid() in the forked child before exec — async-signal-safe, no allocation.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().with_context(|| format!("spawn detached watcher for {}", root.display()))?;
+    eprintln!(
+        "confer watch: detached watcher for '{}' started (pid {}), spooling to {}",
+        if role.is_empty() { "<all>" } else { role },
+        child.id(),
+        log.display()
+    );
+    Ok(child.id())
+}
+
 pub fn run(opts: WatchOpts) -> Result<()> {
     let root = config::repo_root()?;
     crate::check_version(&root);
@@ -312,7 +391,8 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     //. Machine-local, no git writes — just help the agent notice.
     // Host self-check: if our output is a discard, the agent will never see a wake — the classic
     // "arm a watch, redirect it to /dev/null / a file, then silently miss everything" trap.
-    if let Some(sink) = stdout_is_discarded() {
+    let spooled = opts.delivery.as_deref() == Some("spool");
+    if let Some(sink) = stdout_is_discarded().filter(|_| !spooled) {
         crate::warn_safety(format!(
             "this watch's output is going to {sink} — you will NOT see any wakes. A watch must run \
              under a host that READS its stdout (your Monitor tool / the /confer-watch skill), never \
@@ -392,8 +472,24 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     let mut io_degraded = false;
     let mut synced = true;
     let mut version_noticed = false;
+    // A detached watcher's stdout IS its spool. Two housekeeping duties come with that: rotate it
+    // (only we may — see spool.rs), and don't run forever after everyone has gone home.
+    let spool_log = spooled.then(|| crate::spool::log_path(&hub, &me).ok()).flatten();
+    let idle_exit = std::env::var("CONFER_WATCH_IDLE_EXIT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(24 * 3600);
+    let started = std::time::Instant::now();
     loop {
         lock.heartbeat(); // prove liveness so a later watcher can tell we're alive
+        if let Some(log) = &spool_log {
+            if let Err(e) = spool_housekeeping(log, idle_exit, started) {
+                if e.downcast_ref::<IdleExitMarker>().is_some() {
+                    return Ok(()); // a deliberate, clean stop — Drop releases the lock
+                }
+                return Err(e);
+            }
+        }
         match gitcmd::integrate(&root) {
             Ok(_) if !synced => {
                 eprintln!("confer watch: hub reachable again");
@@ -1208,6 +1304,7 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
             "pid": info.as_ref().map(|i| i.pid),
             "delivery": delivery,
             "recommendation": rec,
+            "attached_pid": crate::attach::attachment(&hub, &me).map(|(p, _)| p),
             "watcher_exe": info.as_ref().and_then(|i| i.exe.clone()),
             "watcher_is_dev_build": info.as_ref().map(|i| i.dev),
             "wake_prefs": {
@@ -1242,6 +1339,19 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
                 );
             } else {
                 match &delivery {
+                    // A spool watcher delivers only through an attach. Say whether one is live —
+                    // "running" and "someone is reading it" are different claims, and only the
+                    // second means wakes reach the agent.
+                    Some(m) if m == "spool" => match crate::attach::attachment(&hub, &me) {
+                        Some((pid, age)) => println!(
+                            "  delivery: spool — attached (pid {pid}, marker refreshed {age}s ago); wakes are being delivered."
+                        ),
+                        None => println!(
+                            "  delivery: spool — ⚠ NOTHING ATTACHED. The watcher is running and spooling, \
+                             but no process is reading it, so wakes are accumulating unseen. Re-attach: \
+                             confer arm"
+                        ),
+                    },
                     Some(m) => println!("  delivery: {m} — armed to deliver wakes."),
                     None => hint(
                         "delivery method not recorded — if you didn't arm via /confer-watch (or another \

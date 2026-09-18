@@ -11,6 +11,7 @@ mod alias;
 #[cfg(feature = "serve")]
 mod api;
 mod append;
+mod attach;
 mod append_ref;
 mod autoheal;
 mod cli;
@@ -40,6 +41,7 @@ mod patch;
 mod pollcmd;
 mod presence;
 mod prune;
+mod spool;
 mod projection;
 mod reconnect;
 mod refcmd;
@@ -751,12 +753,32 @@ fn run() -> Result<()> {
             no_version_notice,
             delivery,
             session,
+            detach,
             ..
         } => {
+            let root = config::repo_root()?;
+            if detach {
+                // Re-exec ourselves detached with the SAME flags (minus --detach). Preferences
+                // resolve in the child exactly as they would here; passing them through keeps an
+                // explicit flag on this run saved for the next bare arm, as before.
+                let me = config::resolve_role(role.clone(), &root).unwrap_or_default();
+                let mut extra: Vec<String> = Vec::new();
+                if let Some(t) = &topic { extra.extend(["--topic".into(), t.clone()]); }
+                if json { extra.push("--json".into()); }
+                extra.extend(["--poll".into(), poll_secs.to_string()]);
+                if no_advance { extra.push("--no-advance".into()); }
+                if all { extra.push("--all".into()); }
+                if let Some(m) = &min_priority { extra.extend(["--min-priority".into(), m.clone()]); }
+                if let Some(w) = &wake_on { extra.extend(["--wake-on".into(), w.clone()]); }
+                if wake_on_cc { extra.push("--wake-on-cc".into()); }
+                if no_version_notice { extra.push("--no-version-notice".into()); }
+                if let Some(sess) = &session { extra.extend(["--session".into(), sess.clone()]); }
+                watch::spawn_detached(&root, &me, &extra)?;
+                return Ok(());
+            }
             // Resolve wake_on/min_priority/topic/all: explicit CLI flag > saved per-(hub,role)
             // machine-config preference > built-in default (design/51 §6/Phase B). Saves the
             // resolved bundle back when any flag on this run was explicit.
-            let root = config::repo_root()?;
             let hub_key = config::hub_key(&root);
             let resolved_role = config::resolve_role(role.clone(), &root).unwrap_or_default();
             let (wake_on, min_priority, topic, all, wake_on_cc) = watch::resolve_watch_prefs(
@@ -784,9 +806,10 @@ fn run() -> Result<()> {
                 session,
             })
         }
-        Cmd::Arm { role, topic, all, min_priority, wake_on, wake_on_cc, session, force } => {
-            arm::run(role, topic, all, min_priority, wake_on, wake_on_cc, session, force)
+        Cmd::Arm { role, topic, all, min_priority, wake_on, wake_on_cc, session, force, inline } => {
+            arm::run(role, topic, all, min_priority, wake_on, wake_on_cc, session, force, inline)
         }
+        Cmd::Attach { role, session, force } => attach::run(role, session, force, Vec::new()),
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]
