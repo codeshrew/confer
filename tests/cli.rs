@@ -9559,3 +9559,75 @@ fn the_spool_is_rotated_by_its_writer_without_losing_a_wake() {
     let wakes = s.lines().filter(|l| l.contains("] REQUEST") && l.contains("AFTER-ROTATE")).count();
     assert_eq!(wakes, 1, "delivered exactly once after rotation: {s}");
 }
+
+/// Every live descendant of `root`, by walking ppid links — the way a harness tears down a task.
+fn descendants(root: u32) -> Vec<u32> {
+    let table = out(&Command::new("ps").args(["-eo", "pid=,ppid="]).output().unwrap());
+    let pairs: Vec<(u32, u32)> = table
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+        })
+        .collect();
+    let mut found = vec![root];
+    let mut i = 0;
+    while i < found.len() {
+        let parent = found[i];
+        for (pid, ppid) in &pairs {
+            if *ppid == parent && !found.contains(pid) {
+                found.push(*pid);
+            }
+        }
+        i += 1;
+    }
+    found.remove(0);
+    found
+}
+
+#[test]
+fn a_detached_watcher_survives_its_starting_process_tree_being_killed() {
+    // What the harness actually does at Monitor expiry: kill every descendant of the command it
+    // started, found by walking ppid links. setsid alone does not help — a new session leaves
+    // parentage untouched, and every daemon's ppid was still `confer arm`. Observed live: after
+    // the first real expiry, every re-attach reported "started", not "already running".
+    //
+    // The daemon must therefore not BE a descendant by the time anything walks: double-fork,
+    // with the intermediate exiting at once so the daemon is reparented to pid 1.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let mut starter = Command::new("sh")
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .current_dir(&a.dir)
+        .arg("-c")
+        .arg(format!("{} watch --detach --poll 1 >/dev/null 2>&1; sleep 30", BIN))
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&a.home).expect("daemon takes the lock");
+    let daemon = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"].as_u64().unwrap() as u32;
+    std::thread::sleep(Duration::from_millis(400));
+
+    let tree = descendants(starter.id());
+    assert!(
+        !tree.contains(&daemon),
+        "the daemon must already be OUTSIDE the starter's process tree (reparented), else a tree \
+         walk finds it: tree={tree:?} daemon={daemon}"
+    );
+    let ppid = out(&Command::new("ps").args(["-o", "ppid=", "-p", &daemon.to_string()]).output().unwrap());
+    assert_eq!(ppid.trim(), "1", "reparented to pid 1 (launchd/init), not to whatever started it");
+
+    // Do what the harness does: kill the whole tree, then the starter itself.
+    for p in tree {
+        let _ = Command::new("kill").arg(p.to_string()).stderr(Stdio::null()).status();
+    }
+    let _ = starter.kill();
+    let _ = starter.wait();
+    std::thread::sleep(Duration::from_millis(500));
+    let alive = Command::new("kill").args(["-0", &daemon.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+    assert!(alive, "the daemon must survive its starting process TREE being killed");
+}
