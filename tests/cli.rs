@@ -8773,13 +8773,17 @@ fn an_arm_started_watcher_is_not_reported_dead() {
     // recommended the disease the release existed to cure.
     let hub = new_hub();
     let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
     assert!(ok(&a.confer(&["join", "--role", "alpha"])));
 
+    // `--inline` is the pre-0.8.33 shape this regression was about: the watch loop running
+    // INSIDE a process whose command line reads `confer arm --inline` — no "watch" in it. The
+    // default `arm` now starts a detached `confer watch` daemon, which would sidestep the case.
     let mut armed = Command::new(BIN)
         .env("HOME", &a.home)
         .env("CONFER_HUB", &a.dir)
         .env("CONFER_ROLE", "alpha")
-        .arg("arm") // the wrapper the skills use — NOT `watch`
+        .args(["arm", "--inline"]) // the in-process wrapper — NOT `watch`
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
