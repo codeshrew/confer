@@ -135,11 +135,11 @@ fn write_marker(log: &Path) {
 }
 
 fn touch_marker(log: &Path) {
-    let m = spool::attach_marker(log);
-    // Bump mtime cheaply; the content is unchanged.
-    if let Ok(f) = std::fs::OpenOptions::new().append(true).open(&m) {
-        let _ = f.set_len(std::fs::metadata(&m).map(|x| x.len()).unwrap_or(0));
-    }
+    // Rewrite the marker outright rather than `set_len(current_len)`. Measured: a same-size
+    // truncate DOES bump mtime on APFS, so this was not the cause of the 24h idle-exit incident —
+    // but POSIX does not promise it and ext4 does not do it, and half the fleet is on Linux. The
+    // file is ~60 bytes; rewriting it every few seconds is nothing, and it is unambiguous.
+    write_marker(log);
 }
 
 /// Attach: ensure watchers, then stream. Long-lived; returns on SIGTERM/SIGINT (the Monitor
@@ -211,9 +211,12 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
         }
         std::thread::sleep(Duration::from_millis(300));
     }
-    for (_, tail) in &tails {
-        let _ = std::fs::remove_file(spool::attach_marker(&tail.log));
-    }
+    // Deliberately LEAVE the markers in place. Removing them on exit made the seconds between a
+    // Monitor expiring and the next attach look, to the watcher, like "nothing has ever been
+    // attached since I started" — and after 24h of faithful half-hourly re-attaches every daemon
+    // idle-exited in one of those gaps. A stale marker is harmless: `attached_pid` checks the pid
+    // is live before believing it, and its mtime is exactly the "last attached" fact the idle
+    // exit needs.
     Ok(())
 }
 

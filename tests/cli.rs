@@ -9631,3 +9631,102 @@ fn a_detached_watcher_survives_its_starting_process_tree_being_killed() {
     let alive = Command::new("kill").args(["-0", &daemon.to_string()]).stderr(Stdio::null()).status().unwrap().success();
     assert!(alive, "the daemon must survive its starting process TREE being killed");
 }
+
+#[test]
+fn a_recently_attached_watcher_does_not_idle_exit_in_the_gap_between_attaches() {
+    // Live, after 24 hours of faithful half-hourly re-attaches: every daemon idle-exited. The
+    // attach REMOVED its marker on clean exit, so the seconds between a Monitor expiring and the
+    // next attach read as "never attached since start" — and start was 24h ago.
+    //
+    // The Monitor ends an attach with SIGTERM, which runs that cleanup. A first version of this
+    // test used Child::kill (SIGKILL), the cleanup never ran, and the test passed with the bug
+    // reinstated. Terminate the way the host does.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("CONFER_WATCH_IDLE_EXIT_SECS", "4")
+        .args(["watch", "--detach", "--poll", "1"])
+        .output()
+        .unwrap();
+    assert!(ok(&o));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    let pid = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"].as_u64().unwrap() as u32;
+    let alive = |p: u32| Command::new("kill").args(["-0", &p.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+
+    // Short attaches ended by SIGTERM, with gaps, for longer than the idle limit. In each gap
+    // there is no live attach — only whatever the last one left behind.
+    for _ in 0..4 {
+        let mut att = Command::new(BIN)
+            .env("HOME", &a.home)
+            .env("CONFER_HUB", &a.dir)
+            .env("CONFER_ROLE", "alpha")
+            .current_dir(&a.dir)
+            .args(["attach", "--role", "alpha"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = Command::new("kill").args(["-TERM", &att.id().to_string()]).status(); // as the Monitor does
+        let _ = att.wait();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(alive(pid), "the watcher must survive a gap between attaches even past its idle limit");
+    }
+    assert!(alive(pid));
+}
+
+#[test]
+fn a_long_single_attach_keeps_the_watcher_alive_past_the_idle_limit() {
+    // The attach heartbeats its marker every few seconds so a long attach never looks stale.
+    // (On APFS the old set_len heartbeat happened to work; on ext4 a same-size truncate does not
+    // bump mtime, so the marker is now rewritten — this pins the property either way.)
+    // Limit 8s, one attach for 12s, heartbeat every 5s: it must stay up.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("CONFER_WATCH_IDLE_EXIT_SECS", "8")
+        .args(["watch", "--detach", "--poll", "1"])
+        .output()
+        .unwrap();
+    assert!(ok(&o));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    let pid = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"].as_u64().unwrap() as u32;
+    let alive = |p: u32| Command::new("kill").args(["-0", &p.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+
+    let mut att = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .current_dir(&a.dir)
+        .args(["attach", "--role", "alpha"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(12));
+    let still = alive(pid);
+    let _ = Command::new("kill").args(["-TERM", &att.id().to_string()]).status();
+    let _ = att.wait();
+    assert!(still, "a watcher with a live, heartbeating attach must never idle-exit underneath it");
+
+    // And once truly unattended past the limit, it does exit.
+    let mut gone = false;
+    for _ in 0..60 {
+        std::thread::sleep(Duration::from_millis(250));
+        if !alive(pid) {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "once truly unattended past the limit, it must still exit");
+}

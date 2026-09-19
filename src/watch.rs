@@ -233,7 +233,13 @@ fn spool_housekeeping(log: &std::path::Path, idle_exit: u64, started: std::time:
             let _ = f.set_len(0);
         }
     }
-    let unattached_for = crate::spool::attach_age_secs(log).unwrap_or(started.elapsed().as_secs());
+    // "No marker" means nothing has attached since this spool was created — NOT that a reader
+    // vanished. Only a marker that exists and is old counts as idle; a watcher that has never had
+    // a reader is also given the full window from its own start before it gives up.
+    let unattached_for = match crate::spool::attach_age_secs(log) {
+        Some(age) => age,
+        None => started.elapsed().as_secs(),
+    };
     if unattached_for >= idle_exit && started.elapsed().as_secs() >= idle_exit {
         eprintln!(
             "confer watch: nothing has been attached to this watcher for {}h — exiting so it does \
