@@ -48,6 +48,9 @@ pub struct LockInfo {
     /// Built from an untagged/dirty tree (the `+dev` marker). A dev build shares its sha with the
     /// release it was cut from, so this is the only thing that distinguishes them in the lock.
     pub dev: bool,
+    /// A live MONITOR-delivery watcher whose host is gone — reparented to init, so nothing can be
+    /// reading the pipe it writes wakes to. See `orphan.rs`.
+    pub orphaned: bool,
 }
 
 /// The health of a role's watcher — shared by `watch-status` and `session-heal`
@@ -70,6 +73,12 @@ pub enum WatchState {
     /// running (last heartbeat 2s ago)" (studio-markup: "a 4-second heartbeat IS the evidence of
     /// running"). Never recommend a teardown on a contradiction.
     Indeterminate,
+    /// Running and heartbeating, but its host is gone: a Monitor-delivery watcher whose harness
+    /// shell died and left it reparented to init. It holds the lock and looks healthy, yet no wake
+    /// it prints reaches anyone (argus, Grok Build 0.8.24: 1h39m dark behind a green status, and
+    /// `arm` refused to replace it). Unlike `Healthy` it belongs to nobody, so replacing it steals
+    /// nothing — which is why it has to be a state of its own, not a flavour of `Healthy`.
+    Orphaned,
 }
 
 /// Classify a lock snapshot against the current binary version.
@@ -86,6 +95,7 @@ pub fn classify(info: &Option<LockInfo>, cur_version: &str) -> WatchState {
         // net (an existing test caught this immediately, which is the argument for keeping it).
         Some(i) if !i.alive && i.pid_present && i.fresh => WatchState::Indeterminate,
         Some(i) if !(i.alive && i.fresh) => WatchState::Stale,
+        Some(i) if i.orphaned => WatchState::Orphaned,
         Some(i) if i.version.as_deref() != Some(cur_version) => WatchState::Outdated,
         Some(_) => WatchState::Healthy,
     }
@@ -109,8 +119,10 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     let dev = v.get("dev").and_then(|x| x.as_bool()).unwrap_or(false);
     let same_host = config::is_this_host(&host);
     let age = age_secs(&path);
+    let alive = same_host && process_alive(pid) && is_confer_process(pid);
     Some(LockInfo {
-        alive: same_host && process_alive(pid) && is_confer_process(pid),
+        orphaned: alive && delivery.as_deref() == Some("monitor") && crate::orphan::orphaned_by_host(pid),
+        alive,
         // Whether that pid EXISTS at all, separately from whether we could identify it as ours.
         // The two answer different questions and only their disagreement is a contradiction.
         pid_present: process_alive(pid),

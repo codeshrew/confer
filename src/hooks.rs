@@ -334,6 +334,9 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
             | watchlock::WatchState::Indeterminate => continue,
             watchlock::WatchState::NotWatching => "not running".to_string(),
             watchlock::WatchState::Stale => "stale (a compaction orphan)".to_string(),
+            watchlock::WatchState::Orphaned => {
+                "orphaned (running, but its host is gone — nothing is reading its wakes)".to_string()
+            }
             watchlock::WatchState::Outdated => format!(
                 "outdated (watcher on confer {}, yours is {cur})",
                 info.as_ref()

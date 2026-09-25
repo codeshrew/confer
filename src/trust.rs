@@ -519,7 +519,9 @@ pub(crate) fn cmd_doctor(dir: Option<String>, fix: bool, json: bool, check: bool
                 watchlock::WatchState::OtherHost => {
                     println!("· watch: '{me}' is watched on another machine (fine if intended).")
                 }
-                watchlock::WatchState::Stale | watchlock::WatchState::NotWatching => {
+                watchlock::WatchState::Stale
+                | watchlock::WatchState::NotWatching
+                | watchlock::WatchState::Orphaned => {
                     println!("⚠ watch: NO live watcher for '{me}' — you are not being woken by peer messages.");
                     println!(
                         "  Re-arm under your Monitor tool (never background bash): run /confer-watch, or confer watch --role {me} --replace"

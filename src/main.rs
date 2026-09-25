@@ -37,6 +37,7 @@ mod keygen_release;
 mod keyring;
 mod knownhubs;
 mod machineconfig;
+mod orphan;
 mod patch;
 mod pollcmd;
 mod presence;
@@ -146,7 +147,7 @@ pub(crate) fn warn_if_watch_should_be_live(root: &std::path::Path, role: &str) {
     }
     let hub = config::hub_key(root);
     match watchlock::classify(&watchlock::inspect(&hub, role, 90), BUILD_SHA) {
-        watchlock::WatchState::Stale | watchlock::WatchState::NotWatching => warn_safety(format!(
+        watchlock::WatchState::Stale | watchlock::WatchState::NotWatching | watchlock::WatchState::Orphaned => warn_safety(format!(
             "no live watcher for '{role}' on this machine — you are NOT being woken by peer \
              messages. Re-arm via /confer-watch (host it under your Monitor tool, never background \
              bash); check anytime with `confer watch-status`."

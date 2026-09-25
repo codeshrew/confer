@@ -106,6 +106,8 @@ fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bool, force: 
         // Unknown liveness: never kill on a contradiction (0.8.32). Attach to its spool if it has
         // one; otherwise leave it and say so.
         watchlock::WatchState::Indeterminate => Ok(if is_spool { "attached (liveness unconfirmed)" } else { "left alone (liveness unconfirmed)" }),
+        // Everything else is replaced — including an Orphaned inline watcher, which looks live but
+        // belongs to nobody (its host is gone), so H2's reason to refuse does not apply.
         _ => {
             watch::spawn_detached(&t.root, &t.role, extra)?;
             // Give it a moment to take the lock so watch-status is truthful immediately after.
@@ -117,7 +119,11 @@ fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bool, force: 
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Ok("started")
+            Ok(if state == watchlock::WatchState::Orphaned {
+                "started (replaced an orphaned watcher — its host was gone, nothing was reading it)"
+            } else {
+                "started"
+            })
         }
     }
 }

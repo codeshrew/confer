@@ -501,6 +501,12 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         .unwrap_or(24 * 3600);
     let started = std::time::Instant::now();
     loop {
+        // A Monitor-hosted watcher whose Monitor is gone would otherwise keep heartbeating, keep
+        // the lock, and read as healthy until its next write fails — hours, on a quiet hub — while
+        // `arm` refuses to replace it. Ask the kernel instead, and step aside (orphan.rs).
+        if !spooled && crate::orphan::stdout_reader_gone() {
+            return Ok(()); // Drop releases the lock; nothing is left to print to
+        }
         lock.heartbeat(); // prove liveness so a later watcher can tell we're alive
         if let Some(log) = &spool_log {
             if let Err(e) = spool_housekeeping(log, idle_exit, started) {
@@ -585,6 +591,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                     last_vol_warn = std::time::Instant::now();
                 }
             }
+            // The reader vanished mid-write. Not transient: the cursor did not advance, so the
+            // wake is redelivered to whoever arms next — exit rather than retry into a dead pipe.
+            Err(_) if !spooled && crate::orphan::stdout_reader_gone() => return Ok(()),
             Err(e) => {
                 // Transient local failure (e.g. disk full). Stay up, back off, and
                 // retry — never exit. The cursor didn't advance, so nothing is
@@ -1252,6 +1261,22 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
                     format!("reclaim it: {arm}"),
                     false,
                 )
+        }
+        watchlock::WatchState::Orphaned => {
+            let i = i.unwrap();
+            (
+                "orphaned",
+                format!(
+                    "a watcher is running (pid {}, heartbeat {}s ago) but its host is gone — it was \
+                     armed to deliver through a Monitor, and that Monitor's shell has exited, leaving \
+                     it adopted by init. Nothing is reading its wakes, whatever the heartbeat says",
+                    i.pid, i.age_secs
+                ),
+                // Safe to replace without a session stamp: an orphan is nobody's live delivery,
+                // so H2's reason for refusing (stealing a co-resident's cursor) does not apply.
+                format!("re-arm; it is replaced automatically: {arm}"),
+                false,
+            )
         }
         watchlock::WatchState::Outdated => {
             let i = i.unwrap();

@@ -9730,3 +9730,138 @@ fn a_long_single_attach_keeps_the_watcher_alive_past_the_idle_limit() {
     }
     assert!(gone, "once truly unattended past the limit, it must still exit");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Orphaned inline watchers (argus, Grok Build 0.8.24): a Monitor-delivery watcher whose host is
+// gone kept heartbeating as "healthy" while nothing read its wakes, and `arm` refused to replace it.
+// ---------------------------------------------------------------------------------------------
+
+fn alive_pid(p: u32) -> bool {
+    Command::new("kill").args(["-0", &p.to_string()]).stderr(Stdio::null()).status().unwrap().success()
+}
+
+#[test]
+fn an_inline_watcher_exits_when_nothing_is_reading_it_any_more() {
+    // The watcher's own half of the fix. Its Monitor is gone, so the read end of its stdout pipe
+    // is closed — but on a quiet hub it never writes, so it never gets EPIPE, and until this fix
+    // it heartbeated on indefinitely as a healthy watcher holding the lock. It must notice without
+    // a write, and step aside.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let mut w = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--delivery", "monitor", "--poll", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lock = wait_for_watch_lock(&a.home).expect("the watcher takes the lock");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(matches!(w.try_wait(), Ok(None)), "with a reader attached it keeps running");
+
+    drop(w.stdout.take()); // the Monitor goes away: close the only read end
+
+    let mut exited = false;
+    for _ in 0..100 {
+        if matches!(w.try_wait(), Ok(Some(_))) {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(exited, "a watcher with no reader must exit, not heartbeat on as healthy");
+    assert!(!lock.exists(), "and it must release the lock, so the next arm is not refused");
+}
+
+#[test]
+fn arm_replaces_an_orphaned_inline_watcher_instead_of_leaving_it_alone() {
+    // The outside half, for watchers on binaries too old to exit by themselves: argus's exact
+    // shape. A monitor-delivery watcher whose parent shell has died (so it is adopted by init)
+    // belongs to nobody. On 0.8.33 `arm` classified it Healthy, left it alone as a possible
+    // co-resident, and attached to an EMPTY spool — armed-looking, and still dark.
+    //
+    // To build it with a current binary we keep the pipe's read end open (so the watcher does not
+    // exit by itself) and kill only its parent: what remains is exactly what parentage can see.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let script = format!(
+        "( '{}' watch --role alpha --replace --delivery monitor --poll 1 2>/dev/null & )",
+        BIN
+    );
+    let mut shell = Command::new("sh")
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GROK_SESSION_ID")
+        .args(["-c", &script])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _held_reader = shell.stdout.take(); // keep the pipe readable for the whole test
+    let _ = shell.wait(); // the host shell is gone
+    let lock = wait_for_watch_lock(&a.home).expect("the orphan takes the lock");
+    let pid = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap())
+        .unwrap()["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().unwrap();
+    let ppid = String::from_utf8_lossy(&ppid.stdout).trim().to_string();
+    if ppid != "1" {
+        // Some hosts adopt orphans into a subreaper we do not recognise. Say so rather than
+        // passing silently on a setup that never built the case under test.
+        eprintln!("SKIP: orphan was adopted by pid {ppid}, not init — case not constructible here");
+        return;
+    }
+
+    let status = a.confer(&["watch-status"]);
+    assert!(
+        out(&status).contains("orphaned"),
+        "watch-status must not call it healthy: {}",
+        out(&status)
+    );
+
+    use std::io::Read;
+    let mut arm = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_ROLE", "alpha")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GROK_SESSION_ID")
+        .current_dir(&a.dir)
+        .args(["arm", "--role", "alpha"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    let _ = Command::new("kill").args(["-TERM", &arm.id().to_string()]).status();
+    let mut said = String::new();
+    let _ = arm.stdout.take().unwrap().read_to_string(&mut said);
+    let _ = arm.wait();
+
+    assert!(
+        said.contains("replaced an orphaned watcher"),
+        "arm must replace the orphan, not leave it alone: {said}"
+    );
+    let mut gone = false;
+    for _ in 0..40 {
+        if !alive_pid(pid) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(gone, "the orphan (pid {pid}) must be gone once it is replaced");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    assert_eq!(v["delivery"], "spool", "a detached watcher now holds the lock");
+}

@@ -173,7 +173,7 @@ mod tests {
         assert!(may_replace(Healthy, true, false), "session-confirmed healthy → replace");
         assert!(may_replace(Healthy, false, true), "--force healthy → replace");
         // Every non-healthy state replaces freely (normal re-arm / resume / adopt-new-build).
-        for s in [NotWatching, Stale, Outdated, OtherHost] {
+        for s in [NotWatching, Stale, Outdated, OtherHost, Orphaned] {
             assert!(may_replace(s, false, false), "{s:?} always replaces");
         }
     }
