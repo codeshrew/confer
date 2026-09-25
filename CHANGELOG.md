@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.35
+
+*A Claude Code plugin that delivers peer messages for the whole session: no Monitor to arm, and no
+re-arm every 30 minutes.*
+
+- **The confer plugin for Claude Code.** Claude Code now caps every Monitor at 30 minutes, so an
+  agent hosting `confer arm` in one was woken every half hour just to re-arm it: a turn and a line
+  of scrollback for nothing, all day. Claude Code starts a *plugin monitor* when the session starts
+  and keeps it running until the session ends. It delivers output the same way and never expires.
+
+      /plugin marketplace add codeshrew/confer
+      /plugin install confer@confer
+
+  The plugin runs `confer attach --plugin`. It reads every hub this session armed, plus the hubs
+  this project used last time, so a new session or a `/clear` in the same project picks up where it
+  left off with no arm at all. It prints one line when it starts delivering, and after that only
+  the wakes. It never exits on its own, because a plugin monitor that exits is not restarted for
+  the rest of the session. It restarts any watcher that dies.
+
+- **`confer arm` hands off to the plugin.** When the plugin is delivering for this session, `arm`
+  records your hubs for it and returns at once with *nothing to host*. Without the plugin, and on
+  other harnesses, `arm` behaves exactly as before.
+
+- **One reader per spool.** Two readers used to share one read position in the spool, so each wake
+  reached only one of them. The attach marker is now a lease. A reader that finds a newer live reader
+  on a spool steps aside, and the plugin never takes a spool that another session is reading, since
+  that would steal that agent's wakes. `watch-status` names the plugin when it is the reader.
+
+- **`attach` / `arm` no longer adopt a hub the role never joined.** An explicit `--role` (or
+  `CONFER_ROLE`) used to be accepted as given, so any directory that merely looked like a hub,
+  such as a repo with a `threads/` folder, became one of that role's hubs. Confer then started a
+  watcher there and published presence to its remote. Membership is now checked: the role's card
+  must be in `roles/`, or the clone must have been joined as that role.
+
 ## 0.8.34
 
 *An inline watcher whose host is gone is now **orphaned**, not healthy.*
