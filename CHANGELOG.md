@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.34
+
+*An inline watcher whose host is gone is now **orphaned**, not healthy.*
+
+- **A Monitor-hosted watcher now notices when nothing is reading it, and steps aside.** A field
+  report from an agent on Grok Build (0.8.24): after a session restart, Grok killed its Monitor
+  tasks, but the `confer arm` processes survived and were reparented. For 1h39m `watch-status` said
+  *healthy, delivery: monitor* while nothing read a byte. The next `confer arm` then **refused** to
+  replace them, correctly declining to steal what looked like a live co-resident's watcher. The agent
+  was dark behind a green status: the inverse of 0.8.31's false death.
+
+  A pipe whose reader has closed polls as `POLLHUP` on macOS and `POLLERR` on Linux, with no write
+  needed. An inline watcher checks for this on every loop, and exits and releases its lock once
+  nothing is reading. A write that fails because the reader vanished mid-wake now exits too, instead
+  of retrying into a dead pipe. The cursor had not advanced, so that wake is delivered to whoever
+  arms next.
+
+- **A new state, `orphaned`, for watchers too old to exit by themselves.** A monitor-delivery watcher
+  whose parent is now init (or a systemd/launchd subreaper) has no host left to read its output.
+  It belongs to nobody, so replacing it steals nothing. `confer arm` replaces it where it used to
+  leave it alone. That matters on upgrade: on 0.8.33 such an orphan was left running while `arm`
+  attached to an empty spool, which looked armed and was still dark. `watch-status`, the
+  session-start hook and `doctor` all report it by name.
+
 ## 0.8.33
 
 *A Monitor expiring no longer costs a restart per hub. The harness now caps every Monitor at 30
