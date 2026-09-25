@@ -10024,6 +10024,20 @@ fn arm_hands_off_to_the_plugin_reader_which_then_delivers_wakes() {
     assert!(ok(&arm), "arm must return, not host a stream: {said}");
     assert!(said.contains("plugin monitor"), "arm must say the plugin is delivering: {said}");
 
+    // batcave-net: watch-status straight after arm said "not-watching → arm it", advice that starts
+    // a competing watcher. arm now waits until the watcher exists.
+    let status = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-e2e")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["watch-status", "--role", "alpha"])
+        .output()
+        .unwrap();
+    let st = out(&status);
+    assert!(!st.contains("not-watching"), "right after arm, watch-status must not say not-watching: {st}");
+
     let (started, seen) = wait_for_line(&rx, "delivering 1 hub(s)", 15);
     assert!(started, "the plugin reader must pick up the hub arm handed it: {seen}");
 

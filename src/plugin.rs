@@ -51,6 +51,21 @@ pub fn live_reader_for_session(session: &str) -> Option<u32> {
     crate::watchlock::pid_is_live_confer(pid).then_some(pid)
 }
 
+/// The plugin reader's pid if, for the CURRENT session, it is live and (hub, role) is one of the
+/// hubs it will read, so a missing watcher there is one it is about to start, not a fault.
+pub fn starting(hub_key: &str, role: &str) -> Option<u32> {
+    let session = autoheal::current_session()?;
+    let pid = live_reader_for_session(&session)?;
+    let project = std::fs::read_to_string(reader_file(&session)?)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("project").and_then(|p| p.as_str()).map(String::from));
+    wanted(&Some(session), &project)
+        .iter()
+        .any(|t| t.hub_key == hub_key && t.role == role)
+        .then_some(pid)
+}
+
 type Memory = BTreeMap<String, Vec<(String, String)>>;
 
 fn load_memory() -> Memory {

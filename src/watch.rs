@@ -1200,10 +1200,24 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
     let this_host = config::hostname().unwrap_or_default();
     let cur = BUILD_SHA;
     let info = watchlock::inspect(&hub, &me, 90);
-    let arm = format!(
-        "confer watch --role {} --replace",
-        if me.is_empty() { "<role>" } else { &me }
-    );
+    // Since 0.8.33 the paved path is `confer arm` (detached watchers). A bare `watch --replace`
+    // starts an INLINE watcher, which dies with whatever ran it; it is the wrong advice.
+    let arm = format!("confer arm --role {}", if me.is_empty() { "<role>" } else { &me });
+    // The confer plugin starts watchers itself, on a few-second tick. In that window "no watcher"
+    // is true but "arm it" is harmful: a second watcher, moments after the plugin started one.
+    if matches!(watchlock::classify(&info, cur), watchlock::WatchState::NotWatching | watchlock::WatchState::Stale) {
+        if let Some(pid) = crate::plugin::starting(&hub, &me) {
+            if json {
+                println!("{}", serde_json::json!({ "role": me, "state": "starting", "plugin_pid": pid }));
+            } else {
+                println!(
+                    "· watch [{me}]: starting — the confer plugin monitor (pid {pid}) is bringing this watcher \
+                     up. Check again in a few seconds; do not start another watcher."
+                );
+            }
+            return Ok(());
+        }
+    }
     // Placeholder for the None arms below (never read when info is Some).
     let i = info.as_ref();
     let (state, detail, rec, healthy): (&str, String, String, bool) = match watchlock::classify(

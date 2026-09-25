@@ -238,7 +238,27 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
     // fight it for the spools and expire every 30 minutes. Say so and stop: nothing to host.
     if let Some(pid) = me_session.as_deref().and_then(crate::plugin::live_reader_for_session) {
         // The plugin reader starts any watcher these need on its next tick (within 5s). Starting
-        // them here too would race it: two spawns for one (hub, role), one killing the other.
+        // them here too would race it: two spawns for one (hub, role), one killing the other. But
+        // do not return before they exist: an agent that checks `watch-status` straight after arm
+        // would otherwise read "not watching" and start a competing one (batcave-net).
+        let up = |t: &Target| {
+            matches!(
+                watchlock::classify(&watchlock::inspect(&t.hub_key, &t.role, 90), BUILD_SHA),
+                watchlock::WatchState::Healthy | watchlock::WatchState::Outdated
+            )
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !ts.iter().all(up) {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let pending: Vec<String> = ts.iter().filter(|t| !up(t)).map(|t| format!("{} [{}]", t.label, t.role)).collect();
+        if !pending.is_empty() {
+            println!(
+                "confer arm: still starting: {}. The plugin monitor retries every few seconds; \
+                 check `confer watch-status` shortly. Do not start another watcher.",
+                pending.join(", ")
+            );
+        }
         println!(
             "confer arm: the confer plugin monitor (pid {pid}) is delivering for this session — {} hub(s) \
              handed to it: {}. Nothing to host; no Monitor needed, and nothing to re-arm when one \
