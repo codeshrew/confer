@@ -9972,8 +9972,20 @@ fn attach_with_a_role_does_not_adopt_a_hub_that_role_never_joined() {
 
 /// Start a plugin-mode reader for `session`, with its stdout collected line by line.
 fn plugin_reader(home: &Path, session: &str, project: &Path) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    plugin_reader_as(Path::new(BIN), home, session, project, &[])
+}
+
+/// `plugin_reader`, started as `exe` with extra environment.
+fn plugin_reader_as(
+    exe: &Path,
+    home: &Path,
+    session: &str,
+    project: &Path,
+    envs: &[(&str, &str)],
+) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
     use std::io::BufRead;
-    let mut child = Command::new(BIN)
+    let mut child = Command::new(exe)
+        .envs(envs.iter().copied())
         .env("HOME", home)
         .env("CLAUDE_CODE_SESSION_ID", session)
         .env_remove("CONFER_ROLE")
@@ -10157,4 +10169,65 @@ fn a_plugin_reader_never_takes_a_spool_another_session_is_reading() {
     let _ = holder.wait();
     assert!(!took, "the plugin reader must leave a spool another session is reading: {seen}");
     assert!(holder_alive, "and the other session's reader keeps it");
+}
+
+#[test]
+fn a_plugin_reader_becomes_the_newly_installed_confer_without_exiting() {
+    // A reader runs for the whole session and its watchers run its build, so after a brew upgrade
+    // the session stayed on the old build until someone ran /reload-plugins (Herald, 0.8.36). The
+    // reader now execs the new binary in place: same pid, same stdout, still delivering.
+    let hub = new_hub();
+    let home = tmp("plugin-upgrade-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let project = tmp("plugin-upgrade-project");
+    let bin_dir = tmp("plugin-upgrade-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let exe = bin_dir.join("confer");
+    std::fs::copy(BIN, &exe).unwrap();
+
+    let (mut reader, rx) =
+        plugin_reader_as(&exe, &home, "sess-up", &project, &[("CONFER_PLUGIN_UPGRADE_SECS", "1")]);
+    let pid = reader.id();
+    std::thread::sleep(Duration::from_secs(1));
+    let arm = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-up")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["arm", "--role", "alpha"])
+        .output()
+        .unwrap();
+    assert!(ok(&arm), "arm: {}{}", out(&arm), err(&arm));
+    let (started, seen) = wait_for_line(&rx, "delivering 1 hub(s)", 15);
+    assert!(started, "the reader must be delivering before the upgrade: {seen}");
+
+    // "Install" a different build at the path the reader was started as. Written aside and renamed
+    // in, as installers do, so the reader never sees a half-written file.
+    let next = bin_dir.join("confer.next");
+    std::fs::write(
+        &next,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'confer 99.0.0 (fffffff)'; exit 0; fi\nexec '{BIN}' \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&next, &exe).unwrap();
+
+    let (upgraded, seen) = wait_for_line(&rx, "upgraded the plugin reader from", 20);
+    assert!(upgraded, "the reader must re-exec as the new build and say so: {seen}");
+    assert!(matches!(reader.try_wait(), Ok(None)), "the monitor process must never exit");
+    let file = std::fs::read_to_string(home.join(".confer/plugin/readers/sess-up.json")).unwrap();
+    assert!(file.contains(&format!("\"pid\":{pid}")), "same pid after the upgrade: {file}");
+
+    assert!(ok(&b.append(&["--type", "note", "--to", "alpha", "--summary", "after-upgrade-wake", "--text", "t"])));
+    let (woke, seen) = wait_for_line(&rx, "after-upgrade-wake", 40);
+    stop(reader);
+    assert!(woke, "the upgraded reader must still deliver: {seen}");
 }
