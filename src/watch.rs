@@ -1349,7 +1349,7 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
             "pid": info.as_ref().map(|i| i.pid),
             "delivery": delivery,
             "recommendation": rec,
-            "attached_pid": crate::attach::attachment(&hub, &me).map(|(p, _)| p),
+            "attached_pid": crate::attach::attachment(&hub, &me).map(|(p, _, _)| p),
             "watcher_exe": info.as_ref().and_then(|i| i.exe.clone()),
             "watcher_is_dev_build": info.as_ref().map(|i| i.dev),
             "wake_prefs": {
@@ -1388,8 +1388,9 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
                     // "running" and "someone is reading it" are different claims, and only the
                     // second means wakes reach the agent.
                     Some(m) if m == "spool" => match crate::attach::attachment(&hub, &me) {
-                        Some((pid, age)) => println!(
-                            "  delivery: spool — attached (pid {pid}, marker refreshed {age}s ago); wakes are being delivered."
+                        Some((pid, age, plugin)) => println!(
+                            "  delivery: spool — attached (pid {pid}{}, marker refreshed {age}s ago); wakes are being delivered.",
+                            if plugin { ", the confer plugin monitor" } else { "" }
                         ),
                         None => println!(
                             "  delivery: spool — ⚠ NOTHING ATTACHED. The watcher is running and spooling, \

@@ -9925,3 +9925,182 @@ fn attach_with_a_role_does_not_adopt_a_hub_that_role_never_joined() {
         .collect();
     assert_eq!(locks.len(), 1, "no watcher may be started on a hub alpha never joined");
 }
+
+// ---------------------------------------------------------------------------------------------
+// The confer plugin monitor: `confer attach --plugin` (design/56).
+// ---------------------------------------------------------------------------------------------
+
+/// Start a plugin-mode reader for `session`, with its stdout collected line by line.
+fn plugin_reader(home: &Path, session: &str, project: &Path) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    use std::io::BufRead;
+    let mut child = Command::new(BIN)
+        .env("HOME", home)
+        .env("CLAUDE_CODE_SESSION_ID", session)
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .env_remove("GROK_SESSION_ID")
+        .current_dir(home)
+        .args(["attach", "--plugin", "--project", project.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (child, rx)
+}
+
+/// Wait up to `secs` for a line containing `needle`; returns everything seen.
+fn wait_for_line(rx: &std::sync::mpsc::Receiver<String>, needle: &str, secs: u64) -> (bool, String) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    let mut seen = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(l) = rx.recv_timeout(Duration::from_millis(200)) {
+            seen.push_str(&l);
+            seen.push('\n');
+            if l.contains(needle) {
+                return (true, seen);
+            }
+        }
+    }
+    (false, seen)
+}
+
+fn stop(mut c: std::process::Child) {
+    let _ = Command::new("kill").args(["-TERM", &c.id().to_string()]).status();
+    let _ = c.wait();
+}
+
+#[test]
+fn a_plugin_reader_with_nothing_to_read_waits_silently_and_never_exits() {
+    // A plugin monitor that exits is not restarted for the rest of the session, and every stdout
+    // line wakes the agent. With nothing armed yet, the only right behaviour is quiet patience.
+    let home = tmp("plugin-idle-home");
+    std::fs::create_dir_all(home.join(".confer")).unwrap();
+    let project = tmp("plugin-idle-project");
+    let (mut child, rx) = plugin_reader(&home, "sess-idle", &project);
+    std::thread::sleep(Duration::from_secs(7));
+    let still = matches!(child.try_wait(), Ok(None));
+    let printed: Vec<String> = rx.try_iter().collect();
+    stop(child);
+    assert!(still, "the plugin reader must not exit when there is nothing to read");
+    assert!(printed.is_empty(), "and it must print nothing: {printed:?}");
+}
+
+#[test]
+fn arm_hands_off_to_the_plugin_reader_which_then_delivers_wakes() {
+    // End to end: the plugin reader is running for this session; `confer arm` sees it, hosts
+    // nothing, and returns at once; the reader picks up the hub within a tick and delivers a
+    // real message sent to this role.
+    let hub = new_hub();
+    let home = tmp("plugin-e2e-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let project = tmp("plugin-e2e-project");
+
+    let (reader, rx) = plugin_reader(&home, "sess-e2e", &project);
+    std::thread::sleep(Duration::from_secs(1));
+
+    let arm = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-e2e")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["arm", "--role", "alpha"])
+        .output()
+        .unwrap();
+    let said = format!("{}{}", out(&arm), err(&arm));
+    assert!(ok(&arm), "arm must return, not host a stream: {said}");
+    assert!(said.contains("plugin monitor"), "arm must say the plugin is delivering: {said}");
+
+    let (started, seen) = wait_for_line(&rx, "delivering 1 hub(s)", 15);
+    assert!(started, "the plugin reader must pick up the hub arm handed it: {seen}");
+
+    assert!(ok(&b.append(&["--type", "note", "--to", "alpha", "--summary", "plugin-delivered-wake", "--text", "t"])));
+    let (woke, seen) = wait_for_line(&rx, "plugin-delivered-wake", 40);
+    stop(reader);
+    assert!(woke, "a message to alpha must reach the plugin reader's stdout: {seen}");
+}
+
+#[test]
+fn a_new_session_in_the_same_project_resumes_without_arming() {
+    // /clear and a fresh start both give the session a new id, so nothing is stamped with it
+    // yet. The project remembers its hubs, so delivery resumes with no arm at all.
+    let hub = new_hub();
+    let home = tmp("plugin-resume-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let project = tmp("plugin-resume-project");
+
+    let (first, rx1) = plugin_reader(&home, "sess-one", &project);
+    std::thread::sleep(Duration::from_secs(1));
+    let arm = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-one")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["arm", "--role", "alpha"])
+        .output()
+        .unwrap();
+    assert!(ok(&arm), "{}", err(&arm));
+    let (started, seen) = wait_for_line(&rx1, "delivering 1 hub(s)", 15);
+    assert!(started, "{seen}");
+    stop(first);
+
+    let (second, rx2) = plugin_reader(&home, "sess-two", &project);
+    let (resumed, seen) = wait_for_line(&rx2, "delivering 1 hub(s)", 15);
+    stop(second);
+    assert!(resumed, "a new session in the same project must resume without arming: {seen}");
+}
+
+#[test]
+fn a_plugin_reader_never_takes_a_spool_another_session_is_reading() {
+    // One reader per spool. Two readers split the wakes between them, so a plugin reader that
+    // took a spool a different session is reading would steal that agent's messages.
+    let hub = new_hub();
+    let home = tmp("plugin-lease-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let project = tmp("plugin-lease-project");
+
+    // Session A arms normally and is reading; session B's project remembers the same hub.
+    let mut holder = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-A")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["attach", "--role", "alpha"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let canon = a.dir.canonicalize().unwrap();
+    let mem = serde_json::json!({ project.canonicalize().unwrap().to_string_lossy(): [[canon.to_string_lossy(), "alpha"]] });
+    std::fs::create_dir_all(home.join(".confer/plugin")).unwrap();
+    std::fs::write(home.join(".confer/plugin/projects.json"), mem.to_string()).unwrap();
+
+    let (reader, rx) = plugin_reader(&home, "sess-B", &project);
+    let (took, seen) = wait_for_line(&rx, "delivering", 8);
+    let holder_alive = matches!(holder.try_wait(), Ok(None));
+    stop(reader);
+    let _ = Command::new("kill").args(["-TERM", &holder.id().to_string()]).status();
+    let _ = holder.wait();
+    assert!(!took, "the plugin reader must leave a spool another session is reading: {seen}");
+    assert!(holder_alive, "and the other session's reader keeps it");
+}

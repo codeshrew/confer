@@ -25,11 +25,11 @@ extern "C" fn on_term(_: libc::c_int) {
 }
 
 /// One hub this attach covers.
-struct Target {
-    root: PathBuf,
-    role: String,
-    hub_key: String,
-    label: String,
+pub(crate) struct Target {
+    pub(crate) root: PathBuf,
+    pub(crate) role: String,
+    pub(crate) hub_key: String,
+    pub(crate) label: String,
 }
 
 /// A short human label for a hub: the last segment of its canonical remote id, else the dir name.
@@ -85,7 +85,18 @@ fn targets(role: &Option<String>, session: &Option<String>) -> Result<Vec<Target
         }
         found.push((p, t.role.clone()));
     }
-    // Dedup by canonical path + role.
+    let out = finalize(found);
+    if out.is_empty() {
+        return Err(anyhow!(
+            "confer attach: nothing to attach to — not inside a confer clone, and no watch target \
+             owned by this session. cd into a clone and re-run, pass `--role <r>`, or `confer reconnect`."
+        ));
+    }
+    Ok(out)
+}
+
+/// Dedup (hub, role) candidates by canonical path and give each its key and label.
+pub(crate) fn finalize(found: Vec<(PathBuf, String)>) -> Vec<Target> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for (root, r) in found {
@@ -98,13 +109,7 @@ fn targets(role: &Option<String>, session: &Option<String>) -> Result<Vec<Target
         out.push(Target { root: canon, role: r, hub_key, label });
     }
     out.sort_by(|a, b| a.label.cmp(&b.label));
-    if out.is_empty() {
-        return Err(anyhow!(
-            "confer attach: nothing to attach to — not inside a confer clone, and no watch target \
-             owned by this session. cd into a clone and re-run, pass `--role <r>`, or `confer reconnect`."
-        ));
-    }
-    Ok(out)
+    out
 }
 
 /// Has `role` actually joined the hub at `root`? Its signed role card is in `roles/`, or this clone
@@ -125,7 +130,7 @@ pub(crate) fn is_member(root: &Path, role: &str) -> bool {
 }
 
 /// Make sure a detached, spool-mode watcher is running for `t`. Returns what it did.
-fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bool, force: bool) -> Result<&'static str> {
+pub(crate) fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bool, force: bool) -> Result<&'static str> {
     let info = watchlock::inspect(&t.hub_key, &t.role, 90);
     let state = watchlock::classify(&info, BUILD_SHA);
     let is_spool = info.as_ref().and_then(|i| i.delivery.as_deref()) == Some("spool");
@@ -159,24 +164,61 @@ fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bool, force: 
     }
 }
 
-fn write_marker(log: &Path) {
+/// Claim a spool: the marker names this process as its reader. It is also a LEASE — one reader
+/// per spool. Two readers share one byte offset, so between them each wake reaches only one, or
+/// both; a reader that finds another live process named here stops reading (see `other_reader`).
+/// `mode` is `monitor` for an attach hosted by a Monitor, `plugin` for the plugin monitor.
+pub(crate) fn write_marker(log: &Path, mode: &str, session: Option<&str>) {
     let m = spool::attach_marker(log);
     let _ = std::fs::write(
         &m,
         serde_json::json!({
             "pid": std::process::id(),
             "since": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "mode": mode,
+            "session": session,
         })
         .to_string(),
     );
 }
 
-fn touch_marker(log: &Path) {
-    // Rewrite the marker outright rather than `set_len(current_len)`. Measured: a same-size
-    // truncate DOES bump mtime on APFS, so this was not the cause of the 24h idle-exit incident —
-    // but POSIX does not promise it and ext4 does not do it, and half the fleet is on Linux. The
-    // file is ~60 bytes; rewriting it every few seconds is nothing, and it is unambiguous.
-    write_marker(log);
+/// Another live reader holds this spool's lease: (pid, mode, session).
+///
+/// The heartbeat rewrites the marker outright rather than `set_len(current_len)`. Measured: a
+/// same-size truncate DOES bump mtime on APFS, but POSIX does not promise it and ext4 does not do
+/// it. The file is ~100 bytes; rewriting it every few seconds is nothing, and it is unambiguous.
+pub(crate) fn other_reader(log: &Path) -> Option<(u32, String, Option<String>)> {
+    let txt = std::fs::read_to_string(spool::attach_marker(log)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let pid = v.get("pid")?.as_u64()? as u32;
+    if pid == std::process::id() || !watchlock::pid_is_live_confer(pid) {
+        return None;
+    }
+    let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("monitor").to_string();
+    let session = v.get("session").and_then(|m| m.as_str()).map(String::from);
+    Some((pid, mode, session))
+}
+
+pub(crate) fn install_stop_handlers() {
+    let handler = on_term as extern "C" fn(libc::c_int) as *const () as libc::sighandler_t;
+    unsafe {
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+pub(crate) fn stopping() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
+/// Print a spool line: wake lines get the hub prefix; the watcher's own chatter passes through.
+pub(crate) fn emit(out: &mut impl Write, label: &str, line: &str) -> std::io::Result<()> {
+    if line.starts_with("confer") || line.starts_with("──") || line.starts_with("   ") {
+        writeln!(out, "{line}")
+    } else {
+        writeln!(out, "[{label}] {line}")
+    }
 }
 
 /// Attach: ensure watchers, then stream. Long-lived; returns on SIGTERM/SIGINT (the Monitor
@@ -185,6 +227,27 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
     let ts = targets(&role, &session)?;
     let me_session = session.clone().or_else(autoheal::current_session);
     let reg = autoheal::load();
+
+    // An explicit arm claims these targets for this session, so the plugin monitor (which follows
+    // this session's targets) can find them, and a later session's arm can tell they were ours.
+    for t in &ts {
+        autoheal::add_target(&t.root.to_string_lossy(), &t.role, me_session.clone());
+    }
+    // Under Claude Code with the confer plugin installed, a plugin monitor is already reading for
+    // this session and lasts the whole session. Hosting a second reader under a Monitor would only
+    // fight it for the spools and expire every 30 minutes. Say so and stop: nothing to host.
+    if let Some(pid) = me_session.as_deref().and_then(crate::plugin::live_reader_for_session) {
+        // The plugin reader starts any watcher these need on its next tick (within 5s). Starting
+        // them here too would race it: two spawns for one (hub, role), one killing the other.
+        println!(
+            "confer arm: the confer plugin monitor (pid {pid}) is delivering for this session — {} hub(s) \
+             handed to it: {}. Nothing to host; no Monitor needed, and nothing to re-arm when one \
+             would have expired.",
+            ts.len(),
+            ts.iter().map(|t| format!("{} [{}]", t.label, t.role)).collect::<Vec<_>>().join(", ")
+        );
+        return Ok(());
+    }
 
     let mut tails: Vec<(String, spool::Tail)> = Vec::new();
     let mut summary: Vec<String> = Vec::new();
@@ -200,16 +263,10 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        write_marker(&log);
+        write_marker(&log, "monitor", me_session.as_deref());
         tails.push((t.label.clone(), spool::Tail::open(log)));
     }
-
-    let handler = on_term as extern "C" fn(libc::c_int) as *const () as libc::sighandler_t;
-    unsafe {
-        libc::signal(libc::SIGTERM, handler);
-        libc::signal(libc::SIGINT, handler);
-        libc::signal(libc::SIGHUP, handler);
-    }
+    install_stop_handlers();
 
     // On STDOUT, deliberately: this is the line the skill tells an agent proves they are armed,
     // and a Monitor is only guaranteed to read stdout. Everything the daemons print reaches
@@ -224,25 +281,26 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
     )?;
     out.flush()?;
     let mut last_touch = Instant::now();
-    while !STOP.load(Ordering::SeqCst) {
+    while !stopping() {
         let mut any = false;
         for (label, tail) in tails.iter_mut() {
             for line in tail.drain() {
                 any = true;
-                // Only wake lines get the hub prefix; the watcher's own chatter passes through.
-                if line.starts_with("confer") || line.starts_with("──") || line.starts_with("   ") {
-                    writeln!(out, "{line}")?;
-                } else {
-                    writeln!(out, "[{label}] {line}")?;
-                }
+                emit(&mut out, label, &line)?;
             }
         }
         if any {
             out.flush()?;
         }
         if last_touch.elapsed() >= Duration::from_secs(5) {
+            // A newer reader took a spool's lease (another arm, or the plugin monitor): let it
+            // have it. Checked before re-touching, so we never overwrite its claim.
+            tails.retain(|(_, tail)| other_reader(&tail.log).is_none());
+            if tails.is_empty() {
+                break; // nothing left to read; another reader has every spool
+            }
             for (_, tail) in &tails {
-                touch_marker(&tail.log);
+                write_marker(&tail.log, "monitor", me_session.as_deref());
             }
             last_touch = Instant::now();
         }
@@ -257,9 +315,14 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
     Ok(())
 }
 
-/// For `watch-status`: is anything attached to this (hub, role)'s spool, and since when?
-pub fn attachment(hub_key: &str, role: &str) -> Option<(u32, u64)> {
+/// For `watch-status`: is anything attached to this (hub, role)'s spool, how long since its
+/// heartbeat, and is it the plugin monitor?
+pub fn attachment(hub_key: &str, role: &str) -> Option<(u32, u64, bool)> {
     let log = spool::log_path(hub_key, role).ok()?;
     let pid = spool::attached_pid(&log)?;
-    Some((pid, spool::attach_age_secs(&log).unwrap_or(0)))
+    let plugin = std::fs::read_to_string(spool::attach_marker(&log))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v.get("mode").and_then(|m| m.as_str()) == Some("plugin"));
+    Some((pid, spool::attach_age_secs(&log).unwrap_or(0), plugin))
 }

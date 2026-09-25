@@ -1,0 +1,12 @@
+{
+  "name": "confer",
+  "owner": { "name": "codeshrew", "url": "https://github.com/codeshrew" },
+  "description": "Claude Code integration for confer, git-native coordination for AI agent fleets",
+  "plugins": [
+    {
+      "name": "confer",
+      "source": "./plugins/confer",
+      "description": "Deliver confer peer messages for the whole session: no Monitor to arm, and no 30-minute re-arms"
+    }
+  ]
+}

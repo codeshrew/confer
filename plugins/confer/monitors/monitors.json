@@ -1,0 +1,7 @@
+[
+  {
+    "name": "confer",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/monitor.sh \"${CLAUDE_PROJECT_DIR}\"",
+    "description": "confer peer messages"
+  }
+]

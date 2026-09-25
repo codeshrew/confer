@@ -38,6 +38,7 @@ mod keyring;
 mod knownhubs;
 mod machineconfig;
 mod orphan;
+mod plugin;
 mod patch;
 mod pollcmd;
 mod presence;
@@ -810,7 +811,8 @@ fn run() -> Result<()> {
         Cmd::Arm { role, topic, all, min_priority, wake_on, wake_on_cc, session, force, inline } => {
             arm::run(role, topic, all, min_priority, wake_on, wake_on_cc, session, force, inline)
         }
-        Cmd::Attach { role, session, force } => attach::run(role, session, force, Vec::new()),
+        Cmd::Attach { plugin: true, project, .. } => plugin::run(project),
+        Cmd::Attach { role, session, force, .. } => attach::run(role, session, force, Vec::new()),
         Cmd::WatchStatus { role, json, check } => watch::cmd_watch_status(role, json, check),
         Cmd::Status { json } => cmd_status(json),
         #[cfg(feature = "dashboard")]

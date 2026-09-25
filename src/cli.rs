@@ -544,6 +544,13 @@ pub(crate) enum Cmd {
         /// convert a live inline watcher you cannot prove you own into a detached one (H2 override).
         #[arg(long)]
         force: bool,
+        /// run as the confer Claude Code plugin's monitor: read every hub this session armed (and
+        /// this project used last time) for the whole session, never exit, print only wakes.
+        #[arg(long, conflicts_with_all = ["role", "force"])]
+        plugin: bool,
+        /// with --plugin: the project directory, so a new session in it resumes the same hubs.
+        #[arg(long, requires = "plugin")]
+        project: Option<std::path::PathBuf>,
     },
     /// Is a watcher running for your role on THIS machine — and is it yours and on
     /// the current build? Run this first thing after a compaction to decide whether

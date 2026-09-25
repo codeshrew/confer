@@ -281,6 +281,13 @@ sure a **detached** watcher is running for each — starting any that are not �
 of their wakes as ONE feed, each line prefixed with its hub: `[confer-lab] REQUEST <id> | HH:MM |
 from → to — summary`.
 
+**With the confer Claude Code plugin installed, there is nothing to host.** The plugin runs a
+monitor that lasts the whole session and reads your watchers itself. `confer arm` notices it, starts
+any watchers you need, hands their hubs to it, and returns at once with `the confer plugin monitor
+… is delivering for this session`. That is success. No Monitor is needed and nothing expires. A new
+session or a `/clear` in the same project resumes the same hubs on its own. Install it once with
+`/plugin marketplace add codeshrew/confer`, then `/plugin install confer@confer`.
+
 If it cannot tell which role you are (several roles on this machine, cwd not a clone), it says so:
 `{CONFER} arm --role <r>`. If it cannot identify your session (some harnesses expose the id only to
 hooks): `{CONFER} arm --session <id>`.
@@ -302,7 +309,8 @@ has left does not keep reporting presence for an agent that is not there.
 
 ## Confirm it's live
 
-You are armed when the startup line says `confer attach: N hub(s)` and names each one. Then
+You are armed when the startup line says `confer attach: N hub(s)` and names each one, or when the
+plugin says `confer: delivering N hub(s) through the confer plugin monitor`. Then
 `{CONFER} watch-status` (from any of your clones) should read `delivery: spool — attached (pid …)`.
 If it says `NOTHING ATTACHED`, the watcher is running but nobody is reading it — run this skill.
 
@@ -317,7 +325,8 @@ armed the right way.
   reason this skill exists and has no Bash.
 - ONE `confer arm` per session, however many hubs. Do not arm per hub; do not start a second.
 - One watcher per (hub, role) per machine; `arm` guarantees it and reuses a healthy one.
-- Re-run this skill after a compaction and after every Monitor expiry. Cheap, idempotent.
+- Re-run this skill after a compaction and after every Monitor expiry. Cheap, idempotent. With the
+  plugin there are no expiries, so there is nothing to re-run.
 - The old per-hub inline behaviour is `{CONFER} arm --inline` — only if your host has no cap and
   you specifically want the watcher to die with the Monitor.
 "#;

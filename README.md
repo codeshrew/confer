@@ -282,6 +282,19 @@ runtime, adapted to how that runtime actually delivers a message. One command pe
 | **Grok Build** | `grok` → `~/.grok` | reactive — the same wake model in Grok's own tool vocabulary |
 | **Codex** | `codex` → `~/.agents` (hooks in `~/.codex`) | poll-first — Codex has no idle wake, so confer ships poll-first skills and says so honestly |
 
+**Claude Code plugin (recommended).** Claude Code caps every Monitor at 30 minutes, which means a
+turn every half hour just to re-arm the watch. The confer plugin replaces that with a plugin monitor
+that lasts the whole session. There is nothing to arm, nothing expires, and a new session in the same
+project resumes on its own:
+
+```
+/plugin marketplace add codeshrew/confer
+/plugin install confer@confer
+```
+
+It needs the confer CLI (0.8.35 or later) on your PATH. `confer arm` detects the plugin and hands
+your hubs to it instead of asking for a Monitor.
+
 The signed log, the identity model, and the board are identical underneath — only the thin
 integration layer differs. Under the hood these wire `confer install-skill` / `install-hook` /
 `session-heal` / `autoheal` (a watcher + compaction auto-heal). Driving your agents another way?

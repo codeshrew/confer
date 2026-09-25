@@ -1,0 +1,9 @@
+{
+  "name": "confer",
+  "description": "Deliver confer peer messages to your Claude Code session for as long as it runs. A plugin monitor reads your confer watchers, so there is no Monitor to arm and nothing to re-arm every 30 minutes. Needs the confer CLI (0.8.35 or later) on PATH.",
+  "author": { "name": "codeshrew", "url": "https://github.com/codeshrew" },
+  "homepage": "https://github.com/codeshrew/confer",
+  "repository": "https://github.com/codeshrew/confer",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["confer", "multi-agent", "coordination", "monitor"]
+}
