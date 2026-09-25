@@ -9865,3 +9865,63 @@ fn arm_replaces_an_orphaned_inline_watcher_instead_of_leaving_it_alone() {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
     assert_eq!(v["delivery"], "spool", "a detached watcher now holds the lock");
 }
+
+#[test]
+fn attach_with_a_role_does_not_adopt_a_hub_that_role_never_joined() {
+    // The plugin-monitor prototype ran `confer attach --role gitconv` from a planning repo that has
+    // a threads/ folder. attach took the cwd as one of gitconv's hubs: it started a watcher there,
+    // registered it, and tried to publish presence to that repo's remote. A directory that looks
+    // like a hub is not a hub this role is on.
+    let hub_a = new_hub();
+    let hub_b = new_hub();
+    let home = tmp("member-home");
+    let a = hub_a.clone_with_home("alpha", &home);
+    let b = hub_b.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+
+    let run_attach = |cwd: &Path| {
+        use std::io::Read;
+        let mut child = Command::new(BIN)
+            .env("HOME", &home)
+            .env_remove("CONFER_ROLE")
+            .env_remove("CONFER_HUB")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("GROK_SESSION_ID")
+            .current_dir(cwd)
+            .args(["attach", "--role", "alpha"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+        let mut s = String::new();
+        let _ = child.stdout.take().unwrap().read_to_string(&mut s);
+        let _ = child.stderr.take().unwrap().read_to_string(&mut s);
+        let _ = child.wait();
+        s
+    };
+
+    // alpha's real hub: adopted, as before.
+    let first = run_attach(&a.dir);
+    assert!(first.contains("confer attach: 1 hub(s)"), "alpha's own hub is attached: {first}");
+
+    // From beta's hub: alpha never joined it, so it must not be adopted.
+    let second = run_attach(&b.dir);
+    assert!(
+        second.contains("not adopting"),
+        "attach must say why it skipped the cwd: {second}"
+    );
+    assert!(
+        second.contains("confer attach: 1 hub(s)"),
+        "only alpha's real hub is attached, not the cwd: {second}"
+    );
+    let locks: Vec<_> = std::fs::read_dir(home.join(".confer/watch"))
+        .unwrap()
+        .flatten()
+        .filter(|h| std::fs::read_dir(h.path()).map(|mut d| d.next().is_some()).unwrap_or(false))
+        .collect();
+    assert_eq!(locks.len(), 1, "no watcher may be started on a hub alpha never joined");
+}

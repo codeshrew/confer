@@ -16,9 +16,14 @@ use std::path::PathBuf;
 /// role) owns in the auto-heal registry. Refuses to guess across multiple owned targets — asks
 /// for a `cd` or `--role` instead, so `arm` never arms the wrong role's watcher.
 fn resolve_clone(role: &Option<String>) -> Result<PathBuf> {
-    // 1. CWD is itself a hub clone → unambiguous, use it (mirrors how `watch` resolves).
+    // 1. CWD is itself a hub clone this role has joined → unambiguous, use it (mirrors how `watch`
+    //    resolves). A hub-looking directory the role never joined is skipped, not adopted.
     if let Ok(root) = config::repo_root() {
-        return Ok(root);
+        let member = config::resolve_role(role.clone(), &root)
+            .is_ok_and(|r| crate::attach::is_member(&root, &r));
+        if member {
+            return Ok(root);
+        }
     }
     // 2. Fall back to the watch-registry targets this session/role owns (the post-compaction
     //    case, where the agent's cwd isn't its clone). `owned_by_session` never returns a

@@ -54,7 +54,18 @@ fn targets(role: &Option<String>, session: &Option<String>) -> Result<Vec<Target
     let mut found: Vec<(PathBuf, String)> = Vec::new();
     if let Ok(root) = config::repo_root() {
         if let Ok(r) = config::resolve_role(role.clone(), &root) {
-            found.push((root, r));
+            if is_member(&root, &r) {
+                found.push((root, r));
+            } else {
+                // A directory that merely LOOKS like a hub is not one of this role's hubs. Adopting
+                // it started a watcher there and published presence to its remote (the plugin
+                // monitor prototype ran `attach --role` from a planning repo that has threads/).
+                eprintln!(
+                    "confer attach: not adopting {} — role '{r}' has never joined it (no roles/{r}.md, \
+                     and this clone's identity is not '{r}').",
+                    root.display()
+                );
+            }
         }
     }
     let me_session = session.clone().or_else(autoheal::current_session);
@@ -68,6 +79,9 @@ fn targets(role: &Option<String>, session: &Option<String>) -> Result<Vec<Target
         let p = PathBuf::from(&t.hub);
         if !prune::looks_like_hub(&p) {
             continue; // a registered path that is not a hub has no mail to attach to
+        }
+        if !is_member(&p, &t.role) {
+            continue; // registered by mistake (e.g. the bug above, before it was fixed)
         }
         found.push((p, t.role.clone()));
     }
@@ -91,6 +105,23 @@ fn targets(role: &Option<String>, session: &Option<String>) -> Result<Vec<Target
         ));
     }
     Ok(out)
+}
+
+/// Has `role` actually joined the hub at `root`? Its signed role card is in `roles/`, or this clone
+/// was joined as that role (the card may not have reached the roster yet). A directory that only
+/// looks like a hub, such as a repo with a `threads/` folder, is not a hub this role is on.
+pub(crate) fn is_member(root: &Path, role: &str) -> bool {
+    if role.is_empty() {
+        return true; // an observer watch belongs to no role
+    }
+    if crate::roster::load(root).contains_key(role) {
+        return true;
+    }
+    std::fs::read_to_string(root.join(".confer").join("identity.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(|r| r == role))
+        .unwrap_or(false)
 }
 
 /// Make sure a detached, spool-mode watcher is running for `t`. Returns what it did.
