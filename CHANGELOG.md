@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.36
+
+*Found by the first agent to set up the 0.8.35 plugin on a brand-new role.*
+
+- **`confer arm` no longer returns before the watchers it hands to the plugin exist.** On a fresh
+  role, `arm` reported "handed to the plugin, nothing to host" while the plugin was still starting
+  the watcher. A `watch-status` in the same second said *not-watching*, and advised a command that
+  starts a competing watcher, just as the plugin had started one. `arm` now waits (up to 20s)
+  until every watcher it handed off is up, and names any that are still starting.
+- **`watch-status` says *starting*, not *not-watching*, while the plugin is starting a watcher**,
+  and tells you not to start another.
+- **`watch-status` recommends `confer arm`.** Its remedy was `confer watch --role X --replace`,
+  which starts an inline watcher that dies with whatever ran it. That has been the wrong advice
+  since detached watchers arrived in 0.8.33.
+
 ## 0.8.35
 
 *A Claude Code plugin that delivers peer messages for the whole session: no Monitor to arm, and no
