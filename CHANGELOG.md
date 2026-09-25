@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.8.37
 
+*Upgrades now reach a running session, and `watch-status` stops crying wolf outside your hubs.*
+
+- **The plugin monitor upgrades itself.** A plugin reader runs for the whole session, and the
+  watchers it keeps alive run its build, so after a `brew upgrade` a session stayed on the old
+  build until someone ran `/reload-plugins`. The reader now watches the binary it was started as.
+  When that becomes a different confer build that can run the reader, it re-executes as it within
+  about 30 seconds: same process, same output, so Claude Code never sees the monitor stop. The new
+  build then replaces the watchers, and the reader says so once ("upgraded the plugin reader from
+  … to …"). Readers started by 0.8.35 or 0.8.36 need one last `/reload-plugins` to get this.
 - **`watch-status` outside your hubs no longer raises a false alarm.** Run from a repo that is not
   a hub you joined (a project dir, say), it printed "watch [<role>]: not-watching" and advised
   arming a watcher, while every watcher the agent had was healthy. Following that advice starts a
