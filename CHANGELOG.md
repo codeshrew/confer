@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`watch-status` outside your hubs no longer raises a false alarm.** Run from a repo that is not
+  a hub you joined (a project dir, say), it printed "watch [<role>]: not-watching" and advised
+  arming a watcher, while every watcher the agent had was healthy. Following that advice starts a
+  stray one. It now says there is nothing to report there and lists this session's watches (or,
+  with no session, every watch registered on the machine) with their live state and reader.
+  `--check` passes when all of them are healthy; `--json` reports them as `not-in-a-hub`.
+
 ## 0.8.36
 
 *Found by the first agent to set up the 0.8.35 plugin on a brand-new role.*

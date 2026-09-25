@@ -1174,6 +1174,13 @@ mod tests {
     }
 }
 
+/// watch-status outside your hubs: report this session's (or the machine's) watches instead.
+fn machine_report(role: Option<&str>, json: bool, check: bool) -> Result<()> {
+    let (report, healthy) = autoheal::machine_watch_report(role, json);
+    println!("{report}");
+    if check && !healthy { Err(crate::PredicateFalse.into()) } else { Ok(()) }
+}
+
 /// Report the local watcher state for a role so a compacted session can self-heal:
 /// is one running, is it MINE (this host), and is it on the CURRENT build? The lock
 /// is keyed by (hub, role) on the machine, so ownership survives compaction — the
@@ -1186,20 +1193,24 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
     let root = match config::repo_root() {
         Ok(r) => r,
         Err(e) => {
-            if let Some(h) = autoheal::registered_hubs_hint(role.as_deref()) {
-                eprintln!("confer watch-status: can't resolve a hub from cwd/$CONFER_HUB ({e}).");
-                println!("{h}");
-                // Still "not healthy from here" for the scriptable gate.
-                return if check { Err(crate::PredicateFalse.into()) } else { Ok(()) };
+            if autoheal::registered_hubs_hint(role.as_deref()).is_none() {
+                return Err(e);
             }
-            return Err(e);
+            eprintln!("confer watch-status: can't resolve a hub from cwd/$CONFER_HUB ({e}).");
+            return machine_report(role.as_deref(), json, check);
         }
     };
-    let me = config::resolve_role(role, &root).unwrap_or_default();
+    let me = config::resolve_role(role.clone(), &root).unwrap_or_default();
     let hub = config::hub_key(&root);
     let this_host = config::hostname().unwrap_or_default();
     let cur = BUILD_SHA;
     let info = watchlock::inspect(&hub, &me, 90);
+    // Standing in a git repo that is not one of your hubs (a project dir with a threads/ folder):
+    // nothing to report here, and "not-watching — arm it" would be a false alarm. Report the
+    // machine's watches instead.
+    if (me.is_empty() && info.is_none()) || !crate::attach::is_member(&root, &me) {
+        return machine_report(role.as_deref(), json, check);
+    }
     // Since 0.8.33 the paved path is `confer arm` (detached watchers). A bare `watch --replace`
     // starts an INLINE watcher, which dies with whatever ran it; it is the wrong advice.
     let arm = format!("confer arm --role {}", if me.is_empty() { "<role>" } else { &me });

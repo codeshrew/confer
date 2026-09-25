@@ -8667,6 +8667,46 @@ fn watch_status_says_when_you_are_deaf_on_another_hub() {
 }
 
 #[test]
+fn watch_status_outside_your_hubs_reports_your_watches_not_a_false_alarm() {
+    // Herald, 2026-09-25: run from a project repo that is not one of its hubs, watch-status printed
+    // "watch [<role>]: not-watching — arm it" while all four of its watchers were healthy. Following
+    // that advice starts a stray watcher. Outside your hubs it must report the watches you do have.
+    let hub_a = new_hub();
+    let hub_b = new_hub();
+    let home = tmp("outside-home");
+    let a = hub_a.clone_with_home("alpha", &home);
+    let b = hub_b.clone_with_home("alpha", &home); // a hub alpha never joined
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+
+    let mut live = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_watch_lock(&home);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let status = b.confer(&["watch-status"]);
+    let check = b.confer(&["watch-status", "--check"]);
+    let _ = live.kill();
+    let _ = live.wait();
+
+    let s = format!("{}{}", out(&status), err(&status));
+    assert!(!s.contains("not-watching"), "no false alarm about a hub you never joined: {s}");
+    assert!(!s.contains("<role>"), "no placeholder role: {s}");
+    assert!(s.contains("not a hub you have joined"), "say why there is nothing here: {s}");
+    assert!(
+        s.contains(a.dir.to_str().unwrap()) && s.contains("healthy"),
+        "report the watch you do have, and its state: {s}"
+    );
+    assert_eq!(code(&check), 0, "every watch you have is healthy, so --check passes: {}", out(&check));
+}
+
+#[test]
 fn watch_status_reads_back_the_wake_preferences() {
     // codex, after turning on --wake-on-cc: "I cannot confirm the flag took, only that I passed
     // it: watch-status reports delivery and health but not the cc preference. The proof is a cc'd

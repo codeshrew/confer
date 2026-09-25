@@ -423,3 +423,80 @@ mod tests {
         assert!(!owned_by_session(&t(None, "carol"), &none, &me_r));
     }
 }
+
+/// Every watch registered on this machine (optionally just `role`'s), with its live state. For
+/// `watch-status` run from a directory that is not one of your hubs: there is no watcher there to
+/// report, and "not-watching — arm it" would be a false alarm about watchers that are fine.
+/// Returns the report and whether every listed watch is healthy (false when none are listed).
+pub fn machine_watch_report(role: Option<&str>, json: bool) -> (String, bool) {
+    use crate::watchlock::{self, WatchState};
+    // (role, hub path, state, attached reader (pid, is the plugin monitor))
+    type Row = (String, String, &'static str, Option<(u32, bool)>);
+    let mut rows: Vec<Row> = Vec::new();
+    let mut targets: Vec<Target> = load()
+        .targets
+        .into_iter()
+        .filter(|t| role.is_none_or(|r| r == t.role) && crate::prune::looks_like_hub(std::path::Path::new(&t.hub)))
+        .collect();
+    // On a shared box the registry holds every co-resident agent's watches. When this session has
+    // armed some, those are "yours"; the rest belong to other sessions and are not ours to report.
+    let session = current_session();
+    let mine = session.is_some() && targets.iter().any(|t| t.session == session);
+    if mine {
+        targets.retain(|t| t.session == session);
+    }
+    for t in targets {
+        let p = std::path::Path::new(&t.hub);
+        let key = config::hub_key(p);
+        let state = match watchlock::classify(&watchlock::inspect(&key, &t.role, 90), crate::BUILD_SHA) {
+            WatchState::Healthy => "healthy",
+            WatchState::Outdated => "outdated",
+            WatchState::NotWatching => "not-watching",
+            WatchState::Stale => "stale",
+            WatchState::OtherHost => "other-host",
+            WatchState::Indeterminate => "cannot-determine",
+            WatchState::Orphaned => "orphaned",
+        };
+        let reader = crate::attach::attachment(&key, &t.role).map(|(pid, _, plugin)| (pid, plugin));
+        rows.push((t.role, t.hub, state, reader));
+    }
+    rows.sort();
+    rows.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    let all_healthy = !rows.is_empty() && rows.iter().all(|r| r.2 == "healthy");
+    if json {
+        let watches: Vec<_> = rows
+            .iter()
+            .map(|(r, h, s, a)| serde_json::json!({ "role": r, "hub": h, "state": s, "attached_pid": a.map(|x| x.0) }))
+            .collect();
+        let v = serde_json::json!({ "state": "not-in-a-hub", "this_session_only": mine, "all_healthy": all_healthy, "watches": watches });
+        return (v.to_string(), all_healthy);
+    }
+    if rows.is_empty() {
+        let who = role.map(|r| format!(" for '{r}'")).unwrap_or_default();
+        return (
+            format!(
+                "· watch-status: this directory is not a hub you have joined, and no watch{who} is \
+                 registered on this machine. cd into your hub clone and run confer arm there."
+            ),
+            false,
+        );
+    }
+    let mut s = format!(
+        "· watch-status: this directory is not a hub you have joined, so there is no watcher here to \
+         report. {}",
+        if mine { "This session's watches:" } else { "Watches registered on this machine (every agent's):" }
+    );
+    for (r, h, st, a) in &rows {
+        let glyph = if *st == "healthy" { "✓" } else { "⚠" };
+        let reader = match a {
+            Some((pid, true)) => format!(" — delivered by the confer plugin monitor (pid {pid})"),
+            Some((pid, false)) => format!(" — attached (pid {pid})"),
+            None => String::new(),
+        };
+        s.push_str(&format!("\n  {glyph} {r} @ {h}: {st}{reader}"));
+    }
+    if !all_healthy {
+        s.push_str("\n  For details on one, cd into that hub and run confer watch-status there.");
+    }
+    (s, all_healthy)
+}
