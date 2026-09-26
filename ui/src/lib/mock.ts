@@ -542,6 +542,9 @@ export const mockRequests: RequestRow[] = [
     ageSecs: 2400,
     stale: false,
     topic: 'reader',
+    project: 'restoration',
+    projectSource: 'own',
+    projectConflict: false,
   },
   {
     id: 'req_01JQa91',
@@ -555,6 +558,9 @@ export const mockRequests: RequestRow[] = [
     ageSecs: 3600,
     stale: false,
     topic: 'studio',
+    project: 'restoration',
+    projectSource: 'own',
+    projectConflict: false,
   },
   {
     id: 'req_01JQc4a',
@@ -568,6 +574,11 @@ export const mockRequests: RequestRow[] = [
     ageSecs: 7200,
     stale: false,
     topic: 'studio-markup',
+    // Thread-tagged: no `--project` on the request itself, but a later
+    // claim/reply in its thread carried `--project markup-engine`.
+    project: 'markup-engine',
+    projectSource: 'thread',
+    projectConflict: false,
   },
   {
     id: 'req_01JQd21',
@@ -581,6 +592,10 @@ export const mockRequests: RequestRow[] = [
     ageSecs: 10800,
     stale: false,
     topic: 'studio-markup',
+    // Untagged — no `--project` ever landed on this request or its thread.
+    project: null,
+    projectSource: null,
+    projectConflict: false,
   },
   {
     id: 'req_01JQe88',
@@ -594,6 +609,11 @@ export const mockRequests: RequestRow[] = [
     ageSecs: 172800,
     stale: true,
     topic: 'plate-pipeline',
+    // Conflicting: filed under its own `restoration` tag, but a later
+    // thread message tagged `plate-pipeline` instead — flip-flopped.
+    project: 'restoration',
+    projectSource: 'own',
+    projectConflict: true,
   },
 ];
 

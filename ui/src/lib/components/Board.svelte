@@ -19,7 +19,17 @@
   import type { Agent, HubTier, Message, RequestRow } from '../types';
   import { paneFocus } from '../paneFocus.svelte';
   import { boardFilter } from '../boardFilter.svelte';
-  import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, filterRequests, summarizeThroughput, verdictParts } from '../boardStats';
+  import {
+    computeAsking,
+    computeBoardStats,
+    computeCarrying,
+    computeFlowBar,
+    computeThroughput,
+    filterRequests,
+    summarizeThroughput,
+    UNTAGGED_PROJECT,
+    verdictParts,
+  } from '../boardStats';
   import { type TicketState } from '../ticketState';
   import TicketRow from './TicketRow.svelte';
   import EmptyState from './EmptyState.svelte';
@@ -69,12 +79,20 @@
 
   let doneOpen = $state(false);
 
-  /** Both filter dimensions apply here — the agent filter narrows WHAT'S
-   * inside each group; the state filter (below, in `groups`) picks WHICH
-   * groups show at all. */
+  /** All three filter dimensions apply here — the agent + project filters
+   * narrow WHAT'S inside each group; the state filter (below, in `groups`)
+   * picks WHICH groups show at all. */
   function itemsFor(state: TicketState): RequestRow[] {
-    return filterRequests(requests, state, boardFilter.agentFilter).sort((a, b) => b.ageSecs - a.ageSecs);
+    return filterRequests(requests, state, boardFilter.agentFilter, boardFilter.projectFilter).sort((a, b) => b.ageSecs - a.ageSecs);
   }
+
+  /** Distinct effective projects across the board, sorted — the options for
+   * the project filter dropdown. `hasUntagged` gates whether "untagged" is
+   * worth offering at all (no point on a hub where every request is tagged). */
+  const projectOptions = $derived(
+    Array.from(new Set(requests.map((r) => r.project).filter((p): p is string => !!p))).sort((a, b) => a.localeCompare(b))
+  );
+  const hasUntagged = $derived(requests.some((r) => !r.project));
   const needsOwnerList = $derived(itemsFor('unowned'));
   const inFlightList = $derived(itemsFor('flight'));
   const stuckList = $derived(itemsFor('stuck'));
@@ -235,6 +253,26 @@
       </div>
     </div>
 
+    {#if projectOptions.length || hasUntagged}
+      <div class="project-filter">
+        <label for="board-project-filter" class="project-filter-label">project</label>
+        <select
+          id="board-project-filter"
+          data-testid="board-project-select"
+          value={boardFilter.projectFilter ?? ''}
+          onchange={(e) => boardFilter.setProject(e.currentTarget.value || null)}
+        >
+          <option value="">all</option>
+          {#each projectOptions as p (p)}
+            <option value={p}>{p}</option>
+          {/each}
+          {#if hasUntagged}
+            <option value={UNTAGGED_PROJECT}>untagged</option>
+          {/if}
+        </select>
+      </div>
+    {/if}
+
     {#if boardFilter.active}
       <div class="filter-chips" data-testid="board-filter-chips">
         {#if boardFilter.stateFilter}
@@ -248,6 +286,12 @@
           <span class="chip">
             {display(boardFilter.agentFilter)}
             <button type="button" onclick={() => boardFilter.toggleAgent(boardFilter.agentFilter!)} aria-label="Clear agent filter">✕</button>
+          </span>
+        {/if}
+        {#if boardFilter.projectFilter}
+          <span class="chip">
+            {boardFilter.projectFilter === UNTAGGED_PROJECT ? 'untagged' : boardFilter.projectFilter}
+            <button type="button" onclick={() => boardFilter.setProject(null)} aria-label="Clear project filter">✕</button>
           </span>
         {/if}
         <button type="button" class="clear-all" onclick={() => boardFilter.clearAll()}>clear all ↺</button>
@@ -575,6 +619,28 @@
   .chart-meta b {
     color: var(--state-metric);
     font-size: 13px;
+  }
+
+  .project-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .project-filter-label {
+    font: 700 10px/1 var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .project-filter select {
+    font: 600 11px/1 var(--mono);
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 6px;
+    padding: 4px 6px;
+    cursor: pointer;
   }
 
   .filter-chips {

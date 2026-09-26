@@ -202,6 +202,15 @@
         <span class="tk-kind">request</span>
         <span class="tk-id mono">{request.id}</span>
         {#if request.topic}<span class="tk-topic mono">#{request.topic}</span>{/if}
+        {#if request.project}
+          <span
+            class="tk-project mono"
+            title={request.projectConflict
+              ? `project: ${request.project} (conflict — tags disagree across this thread)`
+              : `project: ${request.project} (${request.projectSource})`}
+            >{request.project}{#if request.projectConflict}<span class="tk-project-warn" aria-hidden="true"> ⚠</span>{/if}</span
+          >
+        {/if}
         <CopiedToast text={toastText} />
         {#if hasParent}
           <button type="button" class="tk-back" aria-label="Back" title="Back to where you opened this from" onclick={onClose}>‹ back</button>
@@ -323,6 +332,17 @@
   .tk-topic {
     font-size: 11px;
     color: var(--muted);
+  }
+  .tk-project {
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+  .tk-project-warn {
+    color: var(--state-unowned);
   }
   .tk-close {
     margin-left: auto;

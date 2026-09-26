@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { computeAsking, computeBoardStats, computeCarrying, computeFlowBar, computeThroughput, filterRequests, summarizeThroughput, verdictParts } from './boardStats';
+import {
+  computeAsking,
+  computeBoardStats,
+  computeCarrying,
+  computeFlowBar,
+  computeThroughput,
+  filterRequests,
+  summarizeThroughput,
+  UNTAGGED_PROJECT,
+  verdictParts,
+} from './boardStats';
 import type { Agent, Message, RequestRow } from './types';
 
 function request(overrides: Partial<RequestRow> = {}): RequestRow {
@@ -199,5 +209,28 @@ describe('filterRequests', () => {
   it('both dimensions combine with AND', () => {
     expect(filterRequests([a, b, c], 'flight', 'jarvis')).toEqual([b]);
     expect(filterRequests([a, b, c], 'unowned', 'herald')).toEqual([]);
+  });
+
+  describe('project dimension', () => {
+    const tagged = request({ id: 'tagged', project: 'rocket' });
+    const otherTagged = request({ id: 'other-tagged', project: 'comet' });
+    const untagged = request({ id: 'untagged', project: null });
+
+    it('a project slug narrows to requests with that EFFECTIVE project', () => {
+      expect(filterRequests([tagged, otherTagged, untagged], null, null, 'rocket')).toEqual([tagged]);
+    });
+
+    it('the UNTAGGED_PROJECT sentinel narrows to requests with no effective project', () => {
+      expect(filterRequests([tagged, otherTagged, untagged], null, null, UNTAGGED_PROJECT)).toEqual([untagged]);
+    });
+
+    it('combines with the other two dimensions', () => {
+      const claimed = request({ id: 'claimed', project: 'rocket', status: 'CLAIMED', claimants: ['jarvis'] });
+      expect(filterRequests([tagged, claimed, untagged], 'flight', 'jarvis', 'rocket')).toEqual([claimed]);
+    });
+
+    it('null (the default) matches everything, tagged or not', () => {
+      expect(filterRequests([tagged, otherTagged, untagged], null, null, null)).toEqual([tagged, otherTagged, untagged]);
+    });
   });
 });

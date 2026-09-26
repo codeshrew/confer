@@ -422,8 +422,18 @@ fn agent_row_json(
     })
 }
 
-fn request_row_json(row: &projection::RequestRow, topic_of: &HashMap<&str, Option<&str>>) -> Value {
+fn request_row_json(
+    row: &projection::RequestRow,
+    topic_of: &HashMap<&str, Option<&str>>,
+    msgs: &[Message],
+    msg_by_id: &HashMap<&str, &Message>,
+) -> Value {
     let topic = topic_of.get(row.id.as_str()).copied().flatten().map(|t| sanitize_term(t, false));
+    let (project, project_source, project_conflict) = match msg_by_id.get(row.id.as_str()) {
+        Some(req) => projection::project_info(msgs, req),
+        None => (None, None, false),
+    };
+    let project = project.map(|p| sanitize_term(p, false));
     json!({
         "id": row.id,
         "from": row.from,
@@ -436,6 +446,9 @@ fn request_row_json(row: &projection::RequestRow, topic_of: &HashMap<&str, Optio
         "ageSecs": row.age_secs,
         "stale": row.stale,
         "topic": topic,
+        "project": project,
+        "projectSource": project_source,
+        "projectConflict": project_conflict,
     })
 }
 
@@ -460,9 +473,11 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
     let agent_rows = &snap.agents;
 
     let mut topic_of: HashMap<&str, Option<&str>> = HashMap::new();
+    let mut msg_by_id: HashMap<&str, &Message> = HashMap::new();
     let mut topics: std::collections::BTreeMap<String, TopicAgg> = Default::default();
     for m in msgs {
         topic_of.insert(&m.front.id, m.front.topic.as_deref());
+        msg_by_id.insert(&m.front.id, m);
         if let Some(t) = &m.front.topic {
             let e = topics.entry(t.clone()).or_default();
             e.messages += 1;
@@ -534,7 +549,8 @@ fn overview(dirs: &[PathBuf], cache: &Mutex<Vec<projection::Snapshot>>, q: &Hash
         })
         .collect();
 
-    let requests_json: Vec<Value> = board.rows.iter().map(|r| request_row_json(r, &topic_of)).collect();
+    let requests_json: Vec<Value> =
+        board.rows.iter().map(|r| request_row_json(r, &topic_of, msgs, &msg_by_id)).collect();
 
     ApiResponse::ok(json!({
         "hub": hub_json(dirs, dir, agent_rows.len(), Some(&snap.health)),

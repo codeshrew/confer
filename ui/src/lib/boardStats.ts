@@ -181,11 +181,29 @@ export function verdictParts(stats: BoardStats, throughput: ThroughputSummary): 
  * reading of "filter the board to their work" that doesn't force a
  * separate carrying-vs-asking choice onto the filter itself (the
  * workload visuals already show that distinction; the filter just
- * narrows which tickets are in view). */
-export function filterRequests(requests: RequestRow[], stateFilter: TicketState | null, agentFilter: string | null): RequestRow[] {
+ * narrows which tickets are in view).
+ *
+ * `projectFilter` is a third, independent dimension (effective `project`,
+ * same "own tag else latest thread tag" projection the backend already
+ * folds — see `RequestRow.project`): a project slug narrows to requests
+ * whose effective project equals it; the `UNTAGGED_PROJECT` sentinel
+ * narrows to requests with NO effective project at all (`project` null). */
+export const UNTAGGED_PROJECT = '\u0000untagged';
+
+export function filterRequests(
+  requests: RequestRow[],
+  stateFilter: TicketState | null,
+  agentFilter: string | null,
+  projectFilter: string | null = null
+): RequestRow[] {
   return requests.filter((r) => {
     if (stateFilter && ticketStateOf(r) !== stateFilter) return false;
     if (agentFilter && r.from !== agentFilter && !r.claimants.includes(agentFilter)) return false;
+    if (projectFilter === UNTAGGED_PROJECT) {
+      if (r.project) return false;
+    } else if (projectFilter && r.project !== projectFilter) {
+      return false;
+    }
     return true;
   });
 }

@@ -43,6 +43,15 @@
   <span class="dot" aria-hidden="true"></span>
   <span class="id mono">{request.id}</span>
   <span class="sum">{request.summary}</span>
+  {#if request.project}
+    <span
+      class="proj mono"
+      title={request.projectConflict
+        ? `project: ${request.project} (conflict — tags disagree across this thread)`
+        : `project: ${request.project} (${request.projectSource})`}
+      >{request.project}{#if request.projectConflict}<span class="proj-warn" aria-hidden="true"> ⚠</span>{/if}</span
+    >
+  {/if}
   {#if assignee}
     <span class="av" style="background:{assignee.color}" title={assignee.display}>{assignee.abbr}</span>
   {:else}
@@ -55,7 +64,7 @@
 <style>
   .t-row {
     display: grid;
-    grid-template-columns: 7px auto 1fr auto auto auto;
+    grid-template-columns: 7px auto 1fr auto auto auto auto;
     align-items: center;
     gap: 9px;
     width: 100%;
@@ -99,6 +108,22 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text);
+  }
+  .t-row .proj {
+    flex: 0 0 auto;
+    max-width: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+  .t-row .proj-warn {
+    color: var(--state-unowned);
   }
   .t-row .av {
     width: 18px;

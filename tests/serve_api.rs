@@ -310,11 +310,18 @@ fn overview_has_topic_board_and_fleet_shapes() {
     }
     let requests = board["requests"].as_array().expect("requests array");
     let row = requests.iter().find(|r| r["summary"] == "wire the search index").expect("seeded request present");
-    for key in ["id", "from", "to", "summary", "status", "resolution", "deferred", "claimants", "ageSecs", "stale", "topic"] {
+    for key in [
+        "id", "from", "to", "summary", "status", "resolution", "deferred", "claimants", "ageSecs", "stale", "topic",
+        "project", "projectSource", "projectConflict",
+    ] {
         assert!(row.get(key).is_some(), "missing request.{key} in {row}");
     }
     assert_eq!(row["status"], "CLAIMED");
     assert_eq!(row["topic"], "search");
+    // The seeded request carries no `--project`, so effective project stays untagged.
+    assert!(row["project"].is_null());
+    assert!(row["projectSource"].is_null());
+    assert_eq!(row["projectConflict"], false);
 
     let fleet = v["fleet"].as_array().expect("fleet array");
     assert!(!fleet.is_empty());
@@ -338,6 +345,60 @@ fn overview_has_topic_board_and_fleet_shapes() {
     assert!(agent["version"].is_null(), "no beat at all → no build to report: {agent}");
     assert!(agent["watchState"].is_null(), "no trustworthy beat → honestly unknown, not 'idle': {agent}");
     assert!(agent["keyFingerprint"].is_null(), "seeded agents never joined/published a key: {agent}");
+}
+
+#[test]
+fn overview_board_rows_carry_effective_project() {
+    let hub = new_hub();
+    let alpha = hub.clone("alpha");
+    seed(&alpha);
+
+    // Own-tagged request.
+    let r = alpha.append(&[
+        "--type", "request", "--to", "beta", "--summary", "own-tagged request", "--text", "body", "--project", "rocket",
+    ]);
+    assert!(ok(&r), "own-tagged request failed: {}", err(&r));
+
+    // Thread-tagged: an untagged request whose later `claim` carries the project tag.
+    let r2 = alpha.append(&["--type", "request", "--to", "beta", "--summary", "thread-tagged request", "--text", "body"]);
+    assert!(ok(&r2), "thread-tagged request failed: {}", err(&r2));
+    let read2 = alpha.confer(&["read", "--last", "1", "--json"]);
+    let out2 = String::from_utf8_lossy(&read2.stdout).into_owned();
+    let v2: serde_json::Value = out2.lines().last().and_then(|l| serde_json::from_str(l).ok()).unwrap();
+    let id2 = v2["id"].as_str().unwrap().to_string();
+    assert!(ok(&alpha.confer(&["claim", "--of", &id2, "--project", "comet"])));
+
+    // Conflicting: own tag disagrees with a later thread tag.
+    let r3 = alpha.append(&[
+        "--type", "request", "--to", "beta", "--summary", "conflicting request", "--text", "body", "--project", "rocket",
+    ]);
+    assert!(ok(&r3), "conflicting request failed: {}", err(&r3));
+    let read3 = alpha.confer(&["read", "--last", "1", "--json"]);
+    let out3 = String::from_utf8_lossy(&read3.stdout).into_owned();
+    let v3: serde_json::Value = out3.lines().last().and_then(|l| serde_json::from_str(l).ok()).unwrap();
+    let id3 = v3["id"].as_str().unwrap().to_string();
+    assert!(ok(&alpha.confer(&["claim", "--of", &id3, "--project", "comet", "--force"])));
+
+    let server = start_server(&alpha);
+    let (status, body) = http_get(&server.addr, "/api/overview");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let requests = v["board"]["requests"].as_array().expect("requests array");
+
+    let own = requests.iter().find(|r| r["summary"] == "own-tagged request").expect("own-tagged present");
+    assert_eq!(own["project"], "rocket");
+    assert_eq!(own["projectSource"], "own");
+    assert_eq!(own["projectConflict"], false);
+
+    let thread = requests.iter().find(|r| r["summary"] == "thread-tagged request").expect("thread-tagged present");
+    assert_eq!(thread["project"], "comet");
+    assert_eq!(thread["projectSource"], "thread");
+    assert_eq!(thread["projectConflict"], false);
+
+    let conflict = requests.iter().find(|r| r["summary"] == "conflicting request").expect("conflicting present");
+    assert_eq!(conflict["project"], "rocket");
+    assert_eq!(conflict["projectSource"], "own");
+    assert_eq!(conflict["projectConflict"], true);
 }
 
 /// Force-pushes a raw presence beat straight onto `refs/presence/<role>` (bypassing

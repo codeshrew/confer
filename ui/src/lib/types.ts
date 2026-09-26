@@ -124,6 +124,15 @@ export interface RequestRow {
   ageSecs: number;
   stale: boolean;
   topic: string | null;
+  /** Effective `project` tag (own tag, else the latest tag among lifecycle/thread
+   * messages) — null when nothing ever tagged this request. */
+  project?: string | null;
+  /** Which case supplied `project`: the request's own tag, or a later thread/
+   * lifecycle message's tag. Null alongside a null `project`. */
+  projectSource?: 'own' | 'thread' | null;
+  /** True when the request's own tag and its thread/lifecycle tags disagree
+   * (a flip-flopped or conflicting `--project`). */
+  projectConflict?: boolean;
 }
 
 // design/47 §5 Phase 2 — the health/trust signals `confer fleet`/`doctor`

@@ -14,6 +14,7 @@ describe('boardFilter', () => {
   it('starts with no filter active', () => {
     expect(boardFilter.stateFilter).toBeNull();
     expect(boardFilter.agentFilter).toBeNull();
+    expect(boardFilter.projectFilter).toBeNull();
     expect(boardFilter.active).toBe(false);
   });
 
@@ -49,12 +50,32 @@ describe('boardFilter', () => {
     expect(boardFilter.stateFilter).toBe('flight');
   });
 
-  it('clearAll resets both dimensions', () => {
+  it('setProject sets and un-sets independently of the other dimensions', () => {
+    boardFilter.toggleState('flight');
+    boardFilter.setProject('rocket');
+    expect(boardFilter.stateFilter).toBe('flight');
+    expect(boardFilter.projectFilter).toBe('rocket');
+    expect(boardFilter.active).toBe(true);
+
+    boardFilter.setProject(null);
+    expect(boardFilter.projectFilter).toBeNull();
+    expect(boardFilter.stateFilter).toBe('flight');
+  });
+
+  it('setProject replaces the previous value rather than toggling it off', () => {
+    boardFilter.setProject('rocket');
+    boardFilter.setProject('comet');
+    expect(boardFilter.projectFilter).toBe('comet');
+  });
+
+  it('clearAll resets all three dimensions', () => {
     boardFilter.toggleState('stuck');
     boardFilter.toggleAgent('jarvis');
+    boardFilter.setProject('rocket');
     boardFilter.clearAll();
     expect(boardFilter.stateFilter).toBeNull();
     expect(boardFilter.agentFilter).toBeNull();
+    expect(boardFilter.projectFilter).toBeNull();
     expect(boardFilter.active).toBe(false);
   });
 });

@@ -11,7 +11,9 @@
   reply-to lifecycle — latest wins. `confer requests --project <slug>` filters to it (`--project
   none` for untagged requests), and `--json` gains `project` (the effective tag or null),
   `project_source` (`"own"` | `"thread"` | null), and `project_conflict` (true when the tag
-  disagreed somewhere in that lifecycle) (jarvis).
+  disagreed somewhere in that lifecycle) (jarvis). `confer serve`'s task board now shows this
+  same effective project as a chip on each request (⚠ + tooltip on conflict) and filters by it,
+  including an "untagged" option.
 - **`confer whoami [--json]`: which role is this session?** For session-start hooks (jarvis). It
   answers from `$CONFER_ROLE`, the hub clone you are in, this session's armed watches, or this
   project's remembered hubs, stopping at the first that answers. Roles (with their hubs) go to
