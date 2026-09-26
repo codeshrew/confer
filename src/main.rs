@@ -40,6 +40,7 @@ mod machineconfig;
 mod orphan;
 mod plugin;
 mod plugin_ctl;
+mod whoami;
 mod patch;
 mod pollcmd;
 mod presence;
@@ -840,6 +841,7 @@ fn run() -> Result<()> {
         Cmd::Rewatch { only, role } => cmd_rewatch(only, role),
         Cmd::Identity { role } => cmd_identity(role),
         Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
+        Cmd::Whoami { json } => whoami::cmd(json),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
         Cmd::Describe {
             role,

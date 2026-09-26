@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **`confer whoami [--json]`: which role is this session?** For session-start hooks (jarvis). It
+  answers from `$CONFER_ROLE`, the hub clone you are in, this session's armed watches, or this
+  project's remembered hubs, stopping at the first that answers. Roles (with their hubs) go to
+  stdout, one per line; the source goes to stderr. With `--json`: `{source, detail, roles:[{role,
+  hubs}]}`. Nothing resolves: exit 1, nothing on stdout. It reads files only (no git), about 10ms.
+
 ## 0.8.38
 
 *From the first field reports on 0.8.37: the plugin now follows a resumed session, never hands a session another agent's hubs, and has `confer plugin status|restart`. Detached watchers upgrade themselves too.*

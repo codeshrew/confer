@@ -115,6 +115,15 @@ pub fn starting(hub_key: &str, role: &str) -> Option<u32> {
 
 type Memory = BTreeMap<String, Vec<(String, String)>>;
 
+/// The hubs this project remembers, unless more than one agent uses the project (then it cannot
+/// say whose they are). For `confer whoami`.
+pub(crate) fn remembered(project: &str) -> Option<Vec<(String, String)>> {
+    if shared_projects().iter().any(|p| p == project) {
+        return None;
+    }
+    load_memory().get(project).cloned().filter(|v| !v.is_empty())
+}
+
 fn load_memory() -> Memory {
     memory_path()
         .and_then(|p| std::fs::read_to_string(p).ok())

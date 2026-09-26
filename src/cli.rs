@@ -716,6 +716,13 @@ pub(crate) enum Cmd {
         #[arg(long)]
         role: Option<String>,
     },
+    /// Which confer role(s) is THIS session? Resolves from $CONFER_ROLE, the hub clone you are in,
+    /// this session's armed watches, or this project's remembered hubs, and names the source.
+    /// Local files only (fast enough for a session-start hook). Exits 1 when nothing resolves.
+    Whoami {
+        #[arg(long)]
+        json: bool,
+    },
     /// Resolve a loose phrase ("my iOS agent", "the book one") to a role — fuzzy
     /// match against ids / displays / descriptions / aliases / hosts.
     Whois {

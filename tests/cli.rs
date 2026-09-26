@@ -10474,3 +10474,58 @@ fn a_project_two_agents_share_does_not_hand_a_fresh_session_the_other_agents_hub
     stop(fresh);
     assert!(!took, "a fresh session in a shared project must wait for its own arm: {seen}");
 }
+
+#[test]
+fn whoami_names_the_role_and_where_it_came_from_or_exits_1() {
+    // jarvis: a session-start hook wants the caller's role, and agents mostly run in project repos,
+    // not hub clones. whoami answers from the clone, this session's armed watches, or the project's
+    // remembered hubs, says which, and never guesses.
+    let hub = new_hub();
+    let home = tmp("whoami-home");
+    let a = hub.clone_with_home("alpha", &home);
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let elsewhere = tmp("whoami-project");
+    let run = |cwd: &Path, session: Option<&str>, args: &[&str]| {
+        let mut c = Command::new(BIN);
+        c.env("HOME", &home)
+            .env_remove("CONFER_ROLE")
+            .env_remove("CONFER_HUB")
+            .env_remove("CLAUDE_PROJECT_DIR")
+            .env_remove("GROK_SESSION_ID")
+            .current_dir(cwd)
+            .args(args);
+        match session {
+            Some(s) => c.env("CLAUDE_CODE_SESSION_ID", s),
+            None => c.env_remove("CLAUDE_CODE_SESSION_ID"),
+        };
+        c.output().unwrap()
+    };
+
+    // In the hub clone: the clone decides.
+    let o = run(&a.dir, None, &["whoami"]);
+    assert!(ok(&o), "{}", err(&o));
+    assert_eq!(out(&o).split_whitespace().next(), Some("alpha"), "{}", out(&o));
+    assert!(err(&o).contains("hub clone"), "{}", err(&o));
+
+    // In a project repo with nothing armed: no guess, exit 1, empty stdout.
+    let o = run(&elsewhere, Some("sess-w"), &["whoami"]);
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(out(&o).is_empty(), "nothing on stdout when nothing resolves: {}", out(&o));
+
+    // This session armed alpha on the hub (the registry stamp arm writes): the session decides.
+    std::fs::write(
+        home.join(".confer/autoheal.json"),
+        serde_json::json!({ "enabled": true, "targets": [{ "hub": a.dir, "role": "alpha", "session": "sess-w" }] })
+            .to_string(),
+    )
+    .unwrap();
+    let o = run(&elsewhere, Some("sess-w"), &["whoami", "--json"]);
+    assert!(ok(&o), "{}", err(&o));
+    let v: serde_json::Value = serde_json::from_str(out(&o).trim()).unwrap();
+    assert_eq!(v["source"], "session", "{v}");
+    assert_eq!(v["roles"][0]["role"], "alpha", "{v}");
+
+    // Another session in the same project has not armed anything: still no guess.
+    let o = run(&elsewhere, Some("sess-other"), &["whoami"]);
+    assert_eq!(code(&o), 1, "another session's watches are not this session's: {}", out(&o));
+}
