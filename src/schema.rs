@@ -7,6 +7,15 @@ use serde::{Deserialize, Serialize};
 /// The reserved target meaning "everyone".
 pub const ALL: &str = "all";
 
+/// Validate a `--project` tag: 1–64 chars, each in `[A-Za-z0-9._/:-]`. It's an OPAQUE caller-
+/// defined slug — confer never resolves it against a registry or defaults it from `topic`/cwd.
+pub fn valid_project_tag(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | ':' | '-'))
+}
+
 /// Deserialize a YAML field that may be a single string OR a list of strings
 /// into a `Vec<String>` — so `to: bob` and `to: [carol, bob]` both work
 /// (and old scalar data keeps parsing).
@@ -127,6 +136,12 @@ pub struct Frontmatter {
     /// Thread/topic slug (= the containing folder).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    /// An opaque project tag — a caller-defined slug for cross-request grouping (e.g. so a
+    /// stuck-work checker can tell which project/owner a "general"-topic request belongs to).
+    /// confer carries it verbatim; there is no registry, no resolution, and no default derived
+    /// from `topic`/cwd. Old messages without it parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
     /// Request id (for claim/done/error).
@@ -290,6 +305,7 @@ mod tests {
                 cc: vec!["alice".into()],
                 priority: Some("high".into()),
                 topic: Some("px".into()),
+                project: None,
                 reply_to: None,
                 of: None,
                 supersedes: None,

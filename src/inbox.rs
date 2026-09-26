@@ -212,6 +212,7 @@ mod tests {
                 cc: vec![],
                 priority: None,
                 topic: None,
+                project: None,
                 reply_to: None,
                 of: None,
                 supersedes: None,
@@ -514,6 +515,7 @@ pub(crate) fn cmd_requests(
     json: bool,
     backlog: bool,
     blocked_only: bool,
+    project: Option<String>,
 ) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
@@ -558,6 +560,13 @@ pub(crate) fn cmd_requests(
         {
             continue;
         }
+        let (proj, proj_source, proj_conflict) = projection::project_info(&msgs, m);
+        if let Some(want) = &project {
+            let matches = if want == "none" { proj.is_none() } else { proj == Some(want.as_str()) };
+            if !matches {
+                continue;
+            }
+        }
         if json {
             // Re-serialize the full frontmatter (from the original message) + the
             // folded status/claimants/age/resolution — the stable JSON contract.
@@ -572,6 +581,9 @@ pub(crate) fn cmd_requests(
                 if let Some(res) = &row.resolution {
                     map.insert("resolution".into(), serde_json::json!(res));
                 }
+                map.insert("project".into(), serde_json::json!(proj));
+                map.insert("project_source".into(), serde_json::json!(proj_source));
+                map.insert("project_conflict".into(), serde_json::json!(proj_conflict));
             }
             println!("{}", serde_json::to_string(&v)?);
         } else {

@@ -23,12 +23,13 @@ fn stdin_is_socket() -> bool {
 use std::path::Path;
 
 use crate::append_ref;
+use crate::cli::{CreateArgs, LifecycleArgs};
 use crate::projection::claimants;
-use crate::schema::{Frontmatter, Message, TYPES};
+use crate::schema::{valid_project_tag, Frontmatter, Message, TYPES};
 use crate::{
     config, gitcmd, groups, hint, id_matches, is_full_ulid, is_reserved_name, now, repos,
     resolve_unique, roster, secrets, short_id, store, truncate, valid_slug,
-    warn_if_watch_should_be_live, CreateArgs, LifecycleArgs,
+    warn_if_watch_should_be_live,
 };
 
 pub(crate) struct AppendArgs {
@@ -44,6 +45,9 @@ pub(crate) struct AppendArgs {
     pub(crate) cc: Vec<String>,
     pub(crate) priority: Option<String>,
     pub(crate) topic: Option<String>,
+    /// opaque cross-request grouping tag — validated against `schema::valid_project_tag`,
+    /// otherwise never interpreted (no registry, no default from `topic`/cwd).
+    pub(crate) project: Option<String>,
     pub(crate) reply_to: Option<String>,
     pub(crate) of: Option<String>,
     pub(crate) supersedes: Option<String>,
@@ -342,6 +346,10 @@ pub(crate) fn cmd_lifecycle(
                     cc: Vec::new(),
                     priority: None,
                     topic: None,
+                    // The auto-claim is a synthetic side effect of resolving, not a user-issued
+                    // `claim --project` — leave it untagged; the resolving message carries its
+                    // own `--project` below.
+                    project: None,
                     reply_to: None,
                     of: Some(req_id.clone()),
                     supersedes: None,
@@ -412,6 +420,7 @@ pub(crate) fn cmd_lifecycle(
         cc: a.cc,
         priority: None,
         topic: None,
+        project: a.project,
         reply_to: a.reply_to,
         of: Some(a.of),
         supersedes: None,
@@ -447,6 +456,7 @@ pub(crate) fn cmd_create(msg_type: &str, a: CreateArgs, reply_to: Option<String>
         cc: a.cc,
         priority: a.priority,
         topic: a.topic,
+        project: a.project,
         reply_to,
         of: None,
         supersedes: None,
@@ -573,6 +583,13 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
         if !matches!(p.as_str(), "low" | "normal" | "high") {
             return Err(anyhow!(
                 "invalid --priority '{p}': expected low | normal | high"
+            ));
+        }
+    }
+    if let Some(p) = &a.project {
+        if !valid_project_tag(p) {
+            return Err(anyhow!(
+                "invalid --project '{p}': expected 1-64 chars of [A-Za-z0-9._/:-]"
             ));
         }
     }
@@ -980,6 +997,7 @@ pub(crate) fn cmd_append(mut a: AppendArgs) -> Result<()> {
             cc: a.cc,
             priority: a.priority,
             topic: Some(topic.clone()),
+            project: a.project,
             reply_to,
             of,
             supersedes,

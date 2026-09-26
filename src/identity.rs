@@ -359,6 +359,7 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
                 cc: vec![],
                 priority: None,
                 topic: None,
+                project: None,
                 reply_to: None,
                 of: None,
                 supersedes: None,

@@ -3,11 +3,13 @@
 //! This is pure argument *data* — derive macros only, no handler logic (the handlers live in
 //! `main.rs` and the command modules). The doc-comments on `Cmd`'s variants and their fields ARE
 //! the `--help` text, so edits here change user-facing help verbatim. `LifecycleArgs` (the shared
-//! claim/done/error/blocked/defer flag block) still lives in `main.rs`; it's referenced here via
-//! `crate::LifecycleArgs` for the `#[command(flatten)]`.
+//! claim/done/error/blocked/defer flag block) and `CreateArgs` (the shared request/note flag
+//! block) live here too — they're just more `#[derive(clap::Args)]` argument data, flattened
+//! into the `Cmd` variants below.
 
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use crate::{CreateArgs, LifecycleArgs, VERSION};
+use crate::VERSION;
 
 /// `confer autoheal <action>` — was a freeform `String` (a typo exited as a runtime error, code 3,
 /// with no shell completion); a `ValueEnum` makes clap reject a bad value itself (usage error, code
@@ -173,6 +175,10 @@ pub(crate) enum Cmd {
         /// thread/topic slug (folder); defaults to "general"
         #[arg(long)]
         topic: Option<String>,
+        /// opaque cross-request grouping tag (1-64 chars, `[A-Za-z0-9._/:-]`) — no registry, no
+        /// resolution; just a caller-defined slug carried on the message.
+        #[arg(long)]
+        project: Option<String>,
         /// id of the message this replies to (threading)
         #[arg(long = "reply-to")]
         reply_to: Option<String>,
@@ -381,6 +387,11 @@ pub(crate) enum Cmd {
         /// show only BLOCKED requests (waiting on a dependency/human)
         #[arg(long)]
         blocked: bool,
+        /// filter to requests whose EFFECTIVE project (own tag, else the latest tag among its
+        /// claim/done/error/reply-to lifecycle) equals SLUG; `--project none` lists requests
+        /// with no effective project at all.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Assemble a request's lifecycle: the message + everything referencing it
     /// (claims/dones/errors/replies/supersedes), transitively. A REPORT: exits 0
@@ -1171,4 +1182,157 @@ pub(crate) enum Cmd {
         #[arg(long)]
         bump: bool,
     },
+}
+
+/// Shared flags for the lifecycle sugar verbs (`claim`/`done`/`error`/`blocked`/
+/// `defer`). They are all thin wrappers over `append --type <verb>`, so they accept
+/// the same addressing as `append` — add a flag here once and every verb gains it.
+/// With no `--to`/`--cc`, the update auto-addresses the request's author (via `--of`),
+/// so `done --of X` already reaches the opener; `--to`/`--reply-to` override that.
+#[derive(clap::Args)]
+pub(crate) struct LifecycleArgs {
+    /// the request id this update is about (positional shorthand for --of; matching
+    /// `show`/`ack`, which already take a bare id — this closes that inconsistency)
+    pub(crate) id: Option<String>,
+    /// the request id this update is about — same as the positional id; give at most
+    /// one (both are fine if they agree)
+    #[arg(long, default_value = "")]
+    pub(crate) of: String,
+    /// one-line summary (a sensible default is used if omitted)
+    #[arg(long)]
+    pub(crate) summary: Option<String>,
+    /// optional explanatory body (`-` reads stdin) — for a substantive close/claim
+    /// without dropping to `append --type`
+    #[arg(long)]
+    pub(crate) text: Option<String>,
+    /// act as this role (default: the resolved role for this hub)
+    #[arg(long)]
+    pub(crate) from: Option<String>,
+    /// address the update to specific roles (default: the request's author)
+    #[arg(long)]
+    pub(crate) to: Vec<String>,
+    /// secondary audience (FYI)
+    #[arg(long)]
+    pub(crate) cc: Vec<String>,
+    /// reply within a thread — with no `--to`, addresses the replied-to author
+    #[arg(long = "reply-to")]
+    pub(crate) reply_to: Option<String>,
+    /// opaque cross-request grouping tag (1-64 chars, `[A-Za-z0-9._/:-]`) — no registry, no
+    /// resolution; just a caller-defined slug carried on the message.
+    #[arg(long)]
+    pub(crate) project: Option<String>,
+    /// point at a durable doc/artifact that resolves this: `repo:path[@sha][#Lstart-Lend]`;
+    /// repeatable. A good `done` often points at what actually resolved the request (field report:
+    /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
+    #[arg(long = "ref")]
+    pub(crate) refs: Vec<String>,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    pub(crate) ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    pub(crate) allow_dirty: bool,
+    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
+    /// `append --body-file`. So a substantive close/claim body no longer needs `append --type`.
+    #[arg(long = "body-file")]
+    pub(crate) body_file: Option<String>,
+    /// resolve this even though ANOTHER role holds the claim (a deliberate handoff/cleanup).
+    /// Without it, `done`/`error`/`blocked` refuse rather than silently claiming it for you.
+    #[arg(long)]
+    pub(crate) force: bool,
+}
+
+impl LifecycleArgs {
+    /// Reconcile the positional id with `--of`: either alone is fine; given both, they
+    /// must agree (a clear error otherwise beats silently preferring one over the other).
+    pub(crate) fn resolved_of(&self) -> Result<String> {
+        let of = self.of.trim();
+        match (self.id.as_deref().map(str::trim), of) {
+            (Some(pos), of) if !pos.is_empty() && !of.is_empty() && pos != of => Err(anyhow!(
+                "conflicting request id: positional '{pos}' vs --of '{of}' — pass just one"
+            )),
+            (Some(pos), _) if !pos.is_empty() => Ok(pos.to_string()),
+            (_, of) if !of.is_empty() => Ok(of.to_string()),
+            _ => Err(anyhow!("a request id is required: pass it positionally or via --of")),
+        }
+    }
+}
+
+/// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
+/// wrappers over `append --type <request|note>` with the type fixed, so they
+/// accept the same creation flags `append` does — add a flag here once and both
+/// verbs gain it. `--type` itself isn't exposed here — these verbs exist so it
+/// doesn't need to be.
+#[derive(clap::Args)]
+pub(crate) struct CreateArgs {
+    /// REQUIRED one-line summary — the triage field peers read before opening the body.
+    #[arg(long)]
+    pub(crate) summary: String,
+    /// message body; if omitted, read from stdin (supports multi-line/fenced)
+    #[arg(long)]
+    pub(crate) text: Option<String>,
+    /// primary addressee target(s) — role id, group, or `all`; repeatable
+    /// (--to a --to b). REQUIRED for `request`.
+    #[arg(long = "to")]
+    pub(crate) to: Vec<String>,
+    /// secondary audience target(s) — role id, group, or `all`; repeatable
+    #[arg(long = "cc")]
+    pub(crate) cc: Vec<String>,
+    /// triage hint: low | normal | high
+    #[arg(long)]
+    pub(crate) priority: Option<String>,
+    /// thread/topic slug (folder); defaults to "general"
+    #[arg(long)]
+    pub(crate) topic: Option<String>,
+    /// opaque cross-request grouping tag (1-64 chars, `[A-Za-z0-9._/:-]`) — no registry, no
+    /// resolution; just a caller-defined slug carried on the message.
+    #[arg(long)]
+    pub(crate) project: Option<String>,
+    /// override the writing role (defaults to the joined role)
+    #[arg(long)]
+    pub(crate) from: Option<String>,
+    /// content provenance: agent | web | human (external → downweight)
+    #[arg(long)]
+    pub(crate) src: Option<String>,
+    /// point at a durable doc/spec instead of re-transmitting it:
+    /// `repo:path[@sha][#Lstart-Lend]` (repo resolves against `confer repos`);
+    /// repeatable. sha defaults to HEAD.
+    #[arg(long = "ref")]
+    pub(crate) refs: Vec<String>,
+    /// allow a summary-only message (empty body) — otherwise an empty/`-` body
+    /// is rejected, so content isn't silently lost.
+    #[arg(long)]
+    pub(crate) allow_empty_body: bool,
+    /// mark a request as backlog/someday — captured but kept OFF the active
+    /// `requests` board until promoted. (`request` only.)
+    #[arg(long)]
+    pub(crate) defer: bool,
+    /// post anyway even if the body looks like it contains a secret (the lint
+    /// blocks common token/key shapes — history is permanent + fleet-wide).
+    #[arg(long = "allow-secret")]
+    pub(crate) allow_secret: bool,
+    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
+    #[arg(long = "ref-from")]
+    pub(crate) ref_from: Option<String>,
+    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
+    #[arg(long = "allow-dirty")]
+    pub(crate) allow_dirty: bool,
+    /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch` (design/45)
+    /// — see `append --patch`. Requires --repo.
+    #[arg(long)]
+    pub(crate) patch: Option<String>,
+    /// the `repos/<slug>` --patch is against (see `append --repo`).
+    #[arg(long = "repo")]
+    pub(crate) patch_repo: Option<String>,
+    /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
+    #[arg(long = "allow-large-patch")]
+    pub(crate) allow_large_patch: bool,
+    /// send even though `--from` names a role this clone has no identity for — the message will
+    /// NOT verify as that sender. For a deliberate, knowingly-unverifiable post only.
+    #[arg(long)]
+    pub(crate) force: bool,
+    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
+    /// `append --body-file` (mutually exclusive with --text).
+    #[arg(long = "body-file")]
+    pub(crate) body_file: Option<String>,
 }

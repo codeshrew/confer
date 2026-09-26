@@ -513,6 +513,7 @@ fn run() -> Result<()> {
             cc,
             priority,
             topic,
+            project,
             reply_to,
             of,
             supersedes,
@@ -539,6 +540,7 @@ fn run() -> Result<()> {
             cc,
             priority,
             topic,
+            project,
             reply_to,
             of,
             supersedes,
@@ -626,7 +628,8 @@ fn run() -> Result<()> {
             json,
             backlog,
             blocked,
-        } => cmd_requests(open, mine, role, json, backlog, blocked),
+            project,
+        } => cmd_requests(open, mine, role, json, backlog, blocked, project),
         Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
         Cmd::Topics {
             open,
@@ -880,150 +883,6 @@ pub(crate) fn ssh_keygen_path() -> String {
         .unwrap_or_else(|| "ssh-keygen".to_string())
 }
 
-/// Shared flags for the lifecycle sugar verbs (`claim`/`done`/`error`/`blocked`/
-/// `defer`). They are all thin wrappers over `append --type <verb>`, so they accept
-/// the same addressing as `append` — add a flag here once and every verb gains it.
-/// With no `--to`/`--cc`, the update auto-addresses the request's author (via `--of`),
-/// so `done --of X` already reaches the opener; `--to`/`--reply-to` override that.
-#[derive(clap::Args)]
-pub(crate) struct LifecycleArgs {
-    /// the request id this update is about (positional shorthand for --of; matching
-    /// `show`/`ack`, which already take a bare id — this closes that inconsistency)
-    id: Option<String>,
-    /// the request id this update is about — same as the positional id; give at most
-    /// one (both are fine if they agree)
-    #[arg(long, default_value = "")]
-    of: String,
-    /// one-line summary (a sensible default is used if omitted)
-    #[arg(long)]
-    summary: Option<String>,
-    /// optional explanatory body (`-` reads stdin) — for a substantive close/claim
-    /// without dropping to `append --type`
-    #[arg(long)]
-    text: Option<String>,
-    /// act as this role (default: the resolved role for this hub)
-    #[arg(long)]
-    from: Option<String>,
-    /// address the update to specific roles (default: the request's author)
-    #[arg(long)]
-    to: Vec<String>,
-    /// secondary audience (FYI)
-    #[arg(long)]
-    cc: Vec<String>,
-    /// reply within a thread — with no `--to`, addresses the replied-to author
-    #[arg(long = "reply-to")]
-    reply_to: Option<String>,
-    /// point at a durable doc/artifact that resolves this: `repo:path[@sha][#Lstart-Lend]`;
-    /// repeatable. A good `done` often points at what actually resolved the request (field report:
-    /// the sugar verbs used to drop `--ref`, forcing a fallback to `append --type done`).
-    #[arg(long = "ref")]
-    refs: Vec<String>,
-    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
-    #[arg(long = "ref-from")]
-    ref_from: Option<String>,
-    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
-    #[arg(long = "allow-dirty")]
-    allow_dirty: bool,
-    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
-    /// `append --body-file`. So a substantive close/claim body no longer needs `append --type`.
-    #[arg(long = "body-file")]
-    body_file: Option<String>,
-    /// resolve this even though ANOTHER role holds the claim (a deliberate handoff/cleanup).
-    /// Without it, `done`/`error`/`blocked` refuse rather than silently claiming it for you.
-    #[arg(long)]
-    force: bool,
-}
-
-impl LifecycleArgs {
-    /// Reconcile the positional id with `--of`: either alone is fine; given both, they
-    /// must agree (a clear error otherwise beats silently preferring one over the other).
-    fn resolved_of(&self) -> Result<String> {
-        let of = self.of.trim();
-        match (self.id.as_deref().map(str::trim), of) {
-            (Some(pos), of) if !pos.is_empty() && !of.is_empty() && pos != of => Err(anyhow!(
-                "conflicting request id: positional '{pos}' vs --of '{of}' — pass just one"
-            )),
-            (Some(pos), _) if !pos.is_empty() => Ok(pos.to_string()),
-            (_, of) if !of.is_empty() => Ok(of.to_string()),
-            _ => Err(anyhow!("a request id is required: pass it positionally or via --of")),
-        }
-    }
-}
-
-/// Shared flags for the creation sugar verbs (`request`/`note`). They are thin
-/// wrappers over `append --type <request|note>` with the type fixed, so they
-/// accept the same creation flags `append` does — add a flag here once and both
-/// verbs gain it. `--type` itself isn't exposed here — these verbs exist so it
-/// doesn't need to be.
-#[derive(clap::Args)]
-pub(crate) struct CreateArgs {
-    /// REQUIRED one-line summary — the triage field peers read before opening the body.
-    #[arg(long)]
-    summary: String,
-    /// message body; if omitted, read from stdin (supports multi-line/fenced)
-    #[arg(long)]
-    text: Option<String>,
-    /// primary addressee target(s) — role id, group, or `all`; repeatable
-    /// (--to a --to b). REQUIRED for `request`.
-    #[arg(long = "to")]
-    to: Vec<String>,
-    /// secondary audience target(s) — role id, group, or `all`; repeatable
-    #[arg(long = "cc")]
-    cc: Vec<String>,
-    /// triage hint: low | normal | high
-    #[arg(long)]
-    priority: Option<String>,
-    /// thread/topic slug (folder); defaults to "general"
-    #[arg(long)]
-    topic: Option<String>,
-    /// override the writing role (defaults to the joined role)
-    #[arg(long)]
-    from: Option<String>,
-    /// content provenance: agent | web | human (external → downweight)
-    #[arg(long)]
-    src: Option<String>,
-    /// point at a durable doc/spec instead of re-transmitting it:
-    /// `repo:path[@sha][#Lstart-Lend]` (repo resolves against `confer repos`);
-    /// repeatable. sha defaults to HEAD.
-    #[arg(long = "ref")]
-    refs: Vec<String>,
-    /// allow a summary-only message (empty body) — otherwise an empty/`-` body
-    /// is rejected, so content isn't silently lost.
-    #[arg(long)]
-    allow_empty_body: bool,
-    /// mark a request as backlog/someday — captured but kept OFF the active
-    /// `requests` board until promoted. (`request` only.)
-    #[arg(long)]
-    defer: bool,
-    /// post anyway even if the body looks like it contains a secret (the lint
-    /// blocks common token/key shapes — history is permanent + fleet-wide).
-    #[arg(long = "allow-secret")]
-    allow_secret: bool,
-    /// capture EVERY `--ref`'s identity from this dir instead of the mapped clone (see `append --ref-from`)
-    #[arg(long = "ref-from")]
-    ref_from: Option<String>,
-    /// allow an uncommitted/untracked `--ref` — embeds the working-tree lines instead of refusing
-    #[arg(long = "allow-dirty")]
-    allow_dirty: bool,
-    /// attach a prepared unified diff (file path, or `-` for stdin) as a `confer-patch` (design/45)
-    /// — see `append --patch`. Requires --repo.
-    #[arg(long)]
-    patch: Option<String>,
-    /// the `repos/<slug>` --patch is against (see `append --repo`).
-    #[arg(long = "repo")]
-    patch_repo: Option<String>,
-    /// raise --patch's size gate to the hard ~2000-line cap (see `append --allow-large-patch`).
-    #[arg(long = "allow-large-patch")]
-    allow_large_patch: bool,
-    /// send even though `--from` names a role this clone has no identity for — the message will
-    /// NOT verify as that sender. For a deliberate, knowingly-unverifiable post only.
-    #[arg(long)]
-    force: bool,
-    /// read the body verbatim from a file (shell-safe — no metacharacter mangling), same as
-    /// `append --body-file` (mutually exclusive with --text).
-    #[arg(long = "body-file")]
-    body_file: Option<String>,
-}
 
 /// This running binary's build identity (semver from Cargo + short git sha).
 pub(crate) fn my_build() -> version::BuildId {
@@ -1180,6 +1039,7 @@ mod tests {
                 cc: vec![],
                 priority: None,
                 topic: None,
+                project: None,
                 reply_to: None,
                 of: of.map(String::from),
                 supersedes: None,

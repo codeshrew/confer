@@ -106,6 +106,52 @@ pub fn request_author<'a>(msgs: &'a [Message], req_id: &str) -> Option<&'a str> 
         .map(|m| m.front.from.as_str())
 }
 
+/// A request's effective `project` tag + provenance + conflict flag (jarvis's stuck-work
+/// checker: 45% of requests sit in topic "general", so the topic alone can't say which
+/// project/owner a request belongs to).
+///
+/// Effective = the request's OWN `project` if it has one; else the MOST RECENT (by message id
+/// — ULID order, so also time order) `project` among its lifecycle (a `claim`/`done`/`error`
+/// whose `of` resolves to this request) and thread (any message whose `reply_to` is this
+/// request) messages — latest wins. `source` says which case won ("own" | "thread"), `None`
+/// when nothing ever tagged this request.
+///
+/// `conflict` is true when the set of DISTINCT tag values across the request's own tag plus
+/// every lifecycle/thread message's tag has more than one element — the tag flip-flopped, or a
+/// thread tag disagrees with the request's own. Untagged messages don't contribute to that set.
+pub fn project_info<'a>(msgs: &'a [Message], req: &'a Message) -> (Option<&'a str>, Option<&'static str>, bool) {
+    let req_id = &req.front.id;
+    // (message id, tag) for every TAGGED lifecycle/thread message — sorted so the last entry is
+    // the latest by id.
+    let mut tagged: Vec<(&str, &str)> = Vec::new();
+    for m in msgs {
+        let is_lifecycle = matches!(m.front.msg_type.as_str(), "claim" | "done" | "error")
+            && m.front.of.as_deref().is_some_and(|of| id_ref_matches(req_id, of));
+        let is_thread = m.front.reply_to.as_deref().is_some_and(|r| id_ref_matches(req_id, r));
+        if is_lifecycle || is_thread {
+            if let Some(p) = m.front.project.as_deref() {
+                tagged.push((m.front.id.as_str(), p));
+            }
+        }
+    }
+    tagged.sort_by(|a, b| a.0.cmp(b.0));
+    let latest_thread = tagged.last().map(|(_, p)| *p);
+
+    let mut distinct: HashSet<&str> = tagged.iter().map(|(_, p)| *p).collect();
+    if let Some(own) = req.front.project.as_deref() {
+        distinct.insert(own);
+    }
+    let conflict = distinct.len() > 1;
+
+    match req.front.project.as_deref() {
+        Some(own) => (Some(own), Some("own"), conflict),
+        None => match latest_thread {
+            Some(p) => (Some(p), Some("thread"), conflict),
+            None => (None, None, conflict),
+        },
+    }
+}
+
 /// A stale-open request is flagged for debt visibility.
 pub const STALE_SECS: i64 = 3 * 86400;
 
@@ -638,6 +684,7 @@ mod tests {
                 cc: vec![],
                 priority: None,
                 topic: None,
+                project: None,
                 reply_to: None,
                 of: of.map(String::from),
                 supersedes: sup.map(String::from),

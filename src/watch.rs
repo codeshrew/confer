@@ -976,6 +976,7 @@ mod tests {
                 cc: vec![],
                 priority: None,
                 topic: Some("general".into()),
+                project: None,
                 reply_to: None,
                 of: None,
                 supersedes: None,

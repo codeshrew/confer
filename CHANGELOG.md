@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **An opaque `--project` tag on messages, so a stuck-work checker can tell projects apart.**
+  45% of jarvis's 347 requests sit in topic "general", which can't say which project (and owner)
+  a request belongs to. `append`/`request`/`note`/`claim`/`done` all take `--project <SLUG>` (1–64
+  chars, `[A-Za-z0-9._/:-]`; a bad slug is refused and nothing is written) — confer carries it
+  verbatim, with no registry and no resolution against `topic` or cwd. A request's EFFECTIVE
+  project is its own tag, else the latest (by message id) tag among its claim/done/error and
+  reply-to lifecycle — latest wins. `confer requests --project <slug>` filters to it (`--project
+  none` for untagged requests), and `--json` gains `project` (the effective tag or null),
+  `project_source` (`"own"` | `"thread"` | null), and `project_conflict` (true when the tag
+  disagreed somewhere in that lifecycle) (jarvis).
 - **`confer whoami [--json]`: which role is this session?** For session-start hooks (jarvis). It
   answers from `$CONFER_ROLE`, the hub clone you are in, this session's armed watches, or this
   project's remembered hubs, stopping at the first that answers. Roles (with their hubs) go to

@@ -5974,6 +5974,146 @@ fn requests_mine_includes_a_broadcast_i_claimed() {
     );
 }
 
+// ── `--project`: an opaque cross-request grouping tag (jarvis's stuck-work checker) ─────────
+
+/// A request's own `--project` is stored and shown in `requests --json` as `"project_source":
+/// "own"`; with nothing to disagree with, `project_conflict` is false.
+#[test]
+fn project_own_tag_shown_in_json() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let id = a.send(&[
+        "--type", "request", "--to", "bob", "--project", "proj-x", "--summary", "s", "--text", "t",
+    ]);
+    let js = out(&a.confer(&["requests", "--json"]));
+    let row = js.lines().find(|l| l.contains(&id)).expect("request row present");
+    assert!(row.contains("\"project\":\"proj-x\""), "own tag must be the effective project: {row}");
+    assert!(row.contains("\"project_source\":\"own\""), "source must be \"own\": {row}");
+    assert!(row.contains("\"project_conflict\":false"), "a single tag never conflicts: {row}");
+}
+
+/// An untagged request retagged by a `note --reply-to <id> --project x` picks up that tag as
+/// its EFFECTIVE project, sourced "thread" (never stored on the request itself).
+#[test]
+fn project_retag_via_reply_note_becomes_thread() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let id = a.send(&["--type", "request", "--to", "bob", "--summary", "s", "--text", "t"]);
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &id, "--project", "proj-y", "--to", "bob", "--summary", "retag", "--text", "t"
+    ])));
+    let js = out(&a.confer(&["requests", "--json"]));
+    let row = js.lines().find(|l| l.contains(&id)).expect("request row present");
+    assert!(row.contains("\"project\":\"proj-y\""), "thread tag must become the effective project: {row}");
+    assert!(row.contains("\"project_source\":\"thread\""), "source must be \"thread\": {row}");
+    assert!(row.contains("\"project_conflict\":false"), "a single distinct tag never conflicts: {row}");
+}
+
+/// Among an untagged request's thread/lifecycle messages, the LATEST tag (by message id) wins
+/// — a `claim --project` posted after an earlier `note --reply-to --project` overrides it, and
+/// since the two disagree, `project_conflict` is true.
+#[test]
+fn project_claim_retag_latest_wins_over_earlier_thread_tag() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let id = a.send(&["--type", "request", "--to", "bob", "--summary", "s", "--text", "t"]);
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &id, "--project", "proj-early", "--to", "bob", "--summary", "n", "--text", "t"
+    ])));
+    assert!(ok(&a.confer(&["claim", "--of", &id, "--project", "proj-late"])));
+    let js = out(&a.confer(&["requests", "--json"]));
+    let row = js.lines().find(|l| l.contains(&id)).expect("request row present");
+    assert!(row.contains("\"project\":\"proj-late\""), "the LATEST thread tag must win: {row}");
+    assert!(row.contains("\"project_source\":\"thread\""), "source must be \"thread\": {row}");
+    assert!(row.contains("\"project_conflict\":true"), "disagreeing thread tags must conflict: {row}");
+}
+
+/// A request's own tag beats any thread/lifecycle tag, even one posted later.
+#[test]
+fn project_own_tag_beats_thread_tag() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let id = a.send(&[
+        "--type", "request", "--to", "bob", "--project", "proj-own", "--summary", "s", "--text", "t",
+    ]);
+    assert!(ok(&a.confer(&["claim", "--of", &id, "--project", "proj-other"])));
+    let js = out(&a.confer(&["requests", "--json"]));
+    let row = js.lines().find(|l| l.contains(&id)).expect("request row present");
+    assert!(row.contains("\"project\":\"proj-own\""), "own tag must win over a thread tag: {row}");
+    assert!(row.contains("\"project_source\":\"own\""), "source must be \"own\": {row}");
+}
+
+/// `project_conflict`: true when two thread/lifecycle messages disagree, false with just one
+/// distinct tag value in play (even if it's repeated).
+#[test]
+fn project_conflict_flag_true_on_disagreement_false_on_agreement() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+
+    let disagreeing = a.send(&["--type", "request", "--to", "bob", "--summary", "s1", "--text", "t"]);
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &disagreeing, "--project", "p1", "--to", "bob", "--summary", "n1", "--text", "t"
+    ])));
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &disagreeing, "--project", "p2", "--to", "bob", "--summary", "n2", "--text", "t"
+    ])));
+
+    let agreeing = a.send(&["--type", "request", "--to", "bob", "--summary", "s2", "--text", "t"]);
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &agreeing, "--project", "p1", "--to", "bob", "--summary", "n3", "--text", "t"
+    ])));
+    assert!(ok(&a.append(&[
+        "--type", "note", "--reply-to", &agreeing, "--project", "p1", "--to", "bob", "--summary", "n4", "--text", "t"
+    ])));
+
+    let js = out(&a.confer(&["requests", "--json"]));
+    let d_row = js.lines().find(|l| l.contains(&disagreeing)).expect("disagreeing row");
+    let a_row = js.lines().find(|l| l.contains(&agreeing)).expect("agreeing row");
+    assert!(d_row.contains("\"project_conflict\":true"), "disagreeing thread tags: {d_row}");
+    assert!(a_row.contains("\"project_conflict\":false"), "the same tag repeated never conflicts: {a_row}");
+}
+
+/// `requests --project <slug>` filters to that effective project; `--project none` lists
+/// requests with no effective project at all.
+#[test]
+fn requests_project_filter_and_none() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let tagged = a.send(&[
+        "--type", "request", "--to", "bob", "--project", "proj-a", "--summary", "tagged", "--text", "t",
+    ]);
+    let untagged = a.send(&["--type", "request", "--to", "bob", "--summary", "untagged", "--text", "t"]);
+
+    let only_a = out(&a.confer(&["requests", "--project", "proj-a", "--json"]));
+    assert!(only_a.contains(&tagged), "the tagged request must show under --project proj-a: {only_a}");
+    assert!(!only_a.contains(&untagged), "the untagged request must NOT show under --project proj-a: {only_a}");
+
+    let none = out(&a.confer(&["requests", "--project", "none", "--json"]));
+    assert!(none.contains(&untagged), "the untagged request must show under --project none: {none}");
+    assert!(!none.contains(&tagged), "the tagged request must NOT show under --project none: {none}");
+}
+
+/// An invalid `--project` (bad chars, or too long) is rejected — exit non-zero, nothing written.
+#[test]
+fn project_invalid_tag_rejected_writes_nothing() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+
+    let bad_chars = a.append(&[
+        "--type", "request", "--to", "bob", "--project", "has space", "--summary", "s", "--text", "t",
+    ]);
+    assert!(!ok(&bad_chars), "a --project with a space must be rejected");
+
+    let too_long = "x".repeat(65);
+    let bad_len = a.append(&[
+        "--type", "request", "--to", "bob", "--project", &too_long, "--summary", "s", "--text", "t",
+    ]);
+    assert!(!ok(&bad_len), "a --project over 64 chars must be rejected");
+
+    let js = out(&a.confer(&["requests", "--json"]));
+    assert!(js.trim().is_empty(), "neither rejected --project must have written a request: {js}");
+}
+
 // ── bugfix regression: notes-only topics are "discussion", not "closed" ─────
 #[test]
 fn threads_notes_only_topic_is_discussion_not_closed() {
