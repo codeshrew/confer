@@ -10383,3 +10383,94 @@ fn plugin_restart_finds_the_live_reader_not_a_dead_record() {
     assert!(new.is_some_and(|p| p != old), "a new reader must be running: {new:?} vs {old}");
     assert!(!dead.exists(), "the dead record must be cleared");
 }
+
+#[test]
+fn arm_after_a_resume_follows_the_plugin_reader_not_the_stale_shell_session() {
+    // jarvis, 0.8.37: after a Claude Code resume the shell still carried the pre-resume session id,
+    // while the plugin reader ran under the real one. Every arm stamped the stale id, the reader
+    // delivered nothing, and the agent re-armed 30-minute Monitors all night. Both processes share
+    // one Claude Code process (CONFER_HOST_PID stands in for it here), so arm follows the reader.
+    let hub = new_hub();
+    let home = tmp("plugin-resume-host-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let project = tmp("plugin-resume-host-project");
+
+    let (reader, rx) =
+        plugin_reader_as(Path::new(BIN), &home, "sess-real", &project, &[("CONFER_HOST_PID", "424242")]);
+    std::thread::sleep(Duration::from_secs(1));
+    let mut arm = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-stale")
+        .env("CONFER_HOST_PID", "424242")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["arm", "--role", "alpha"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Without the fix arm does not hand off: it hosts a stream and never returns. Bound it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while matches!(arm.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = arm.kill();
+    let arm = arm.wait_with_output().unwrap();
+    let said = format!("{}{}", out(&arm), err(&arm));
+    if !said.contains("plugin monitor") {
+        stop(reader);
+        panic!("arm must hand off to this process's plugin reader: {said}");
+    }
+    assert!(said.contains("stale"), "and say the shell's session id was stale: {said}");
+
+    let (started, seen) = wait_for_line(&rx, "delivering 1 hub(s)", 15);
+    assert!(started, "the reader must receive the hub: {seen}");
+    assert!(ok(&b.append(&["--type", "note", "--to", "alpha", "--summary", "resume-host-wake", "--text", "t"])));
+    let (woke, seen) = wait_for_line(&rx, "resume-host-wake", 40);
+    stop(reader);
+    assert!(woke, "and deliver to it: {seen}");
+}
+
+#[test]
+fn a_project_two_agents_share_does_not_hand_a_fresh_session_the_other_agents_hub() {
+    // jarvis: a fresh jarvis session was handed herdr's hub, because herdr had used the same
+    // project directory last and the project memory kept only the latest hubs. Once two agents
+    // with no role in common have worked in a project, a fresh session there waits for its own arm.
+    let hub = new_hub();
+    let home = tmp("plugin-shared-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let project = tmp("plugin-shared-project");
+
+    for (sess, clone, role) in [("sess-alpha", &a, "alpha"), ("sess-beta", &b, "beta")] {
+        let (reader, rx) = plugin_reader(&home, sess, &project);
+        std::thread::sleep(Duration::from_secs(1));
+        let arm = Command::new(BIN)
+            .env("HOME", &home)
+            .env("CLAUDE_CODE_SESSION_ID", sess)
+            .env_remove("CONFER_ROLE")
+            .env_remove("CONFER_HUB")
+            .current_dir(&clone.dir)
+            .args(["arm", "--role", role])
+            .output()
+            .unwrap();
+        assert!(ok(&arm), "{}", err(&arm));
+        let (started, seen) = wait_for_line(&rx, &format!("[{role}]"), 15);
+        stop(reader);
+        assert!(started, "{sess} must deliver {role}: {seen}");
+    }
+
+    // A fresh session in the same project: it could be either agent, so it must take neither.
+    let (fresh, rx) = plugin_reader(&home, "sess-fresh", &project);
+    let (took, seen) = wait_for_line(&rx, "delivering", 12);
+    stop(fresh);
+    assert!(!took, "a fresh session in a shared project must wait for its own arm: {seen}");
+}

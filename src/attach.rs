@@ -242,6 +242,16 @@ pub(crate) fn emit(out: &mut impl Write, label: &str, line: &str) -> std::io::Re
 pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Vec<String>) -> Result<()> {
     let ts = targets(&role, &session)?;
     let me_session = session.clone().or_else(autoheal::current_session);
+    if session.is_none() {
+        if let (Some(env), Some(real)) = (autoheal::env_session(), me_session.as_deref()) {
+            if env != real {
+                eprintln!(
+                    "confer arm: this shell's session id ({env}) is stale, likely from before a resume; \
+                     the confer plugin reader for this Claude Code process runs as {real}, so arming for that."
+                );
+            }
+        }
+    }
     let reg = autoheal::load();
 
     // An explicit arm claims these targets for this session, so the plugin monitor (which follows

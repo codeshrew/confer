@@ -48,6 +48,47 @@ fn reader_file(session: &str) -> Option<PathBuf> {
     readers_dir().map(|d| d.join(format!("{safe}.json")))
 }
 
+/// The Claude Code process this process runs under: the nearest ancestor that is `claude`. A plugin
+/// reader and an agent's shell share it, whatever session id each was handed. `CONFER_HOST_PID`
+/// overrides it (tests; harnesses that know better).
+pub(crate) fn host_pid() -> Option<u32> {
+    if let Some(p) = std::env::var("CONFER_HOST_PID").ok().and_then(|v| v.parse().ok()) {
+        return Some(p);
+    }
+    let mut pid = std::process::id();
+    for _ in 0..16 {
+        let o = std::process::Command::new("ps").args(["-o", "ppid=,command=", "-p", &pid.to_string()]).output().ok()?;
+        let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        let (ppid, cmd) = line.split_once(char::is_whitespace)?;
+        let first = cmd.split_whitespace().next().unwrap_or("");
+        if pid != std::process::id() && (first.rsplit('/').next() == Some("claude") || cmd.contains("claude-code/cli")) {
+            return Some(pid);
+        }
+        pid = ppid.trim().parse().ok()?;
+        if pid <= 1 {
+            return None;
+        }
+    }
+    None
+}
+
+/// The session of the live plugin reader that shares our Claude Code process, if any.
+pub(crate) fn session_for_this_host() -> Option<String> {
+    let dir = readers_dir()?;
+    let files: Vec<_> = std::fs::read_dir(&dir).ok()?.flatten().collect();
+    if files.is_empty() {
+        return None; // no plugin here: skip the process walk entirely
+    }
+    let host = host_pid()?;
+    files.iter().find_map(|e| {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+        let pid = v.get("pid")?.as_u64()? as u32;
+        (v.get("host")?.as_u64()? as u32 == host && crate::watchlock::pid_is_live_confer(pid))
+            .then(|| v.get("session")?.as_str().map(String::from))
+            .flatten()
+    })
+}
+
 /// The pid of a live plugin-monitor reader for `session`, if there is one. `confer arm` asks this
 /// before hosting anything: if the plugin is delivering, there is nothing to host.
 pub fn live_reader_for_session(session: &str) -> Option<u32> {
@@ -81,11 +122,42 @@ fn load_memory() -> Memory {
         .unwrap_or_default()
 }
 
+/// Projects that more than one agent works in. Their memory cannot say which role a fresh session
+/// is, so a fresh session there waits for its own `confer arm` (jarvis: a new jarvis session was
+/// handed herdr's hub, because herdr had used the same directory last).
+fn shared_path() -> Option<PathBuf> {
+    config::home().ok().map(|h| h.join(".confer").join("plugin").join("shared-projects.json"))
+}
+
+fn shared_projects() -> Vec<String> {
+    shared_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn mark_shared(project: &str) {
+    let Some(p) = shared_path() else { return };
+    let mut v = shared_projects();
+    if !v.iter().any(|x| x == project) {
+        v.push(project.to_string());
+        if let Ok(txt) = serde_json::to_string_pretty(&v) {
+            let _ = std::fs::write(p, txt);
+        }
+    }
+}
+
 fn save_memory(project: &str, hubs: Vec<(String, String)>) {
     let Some(p) = memory_path() else { return };
     let mut m = load_memory();
     if m.get(project) == Some(&hubs) {
         return;
+    }
+    // A different agent (no role in common with the last one here) now works in this project.
+    if let Some(prev) = m.get(project) {
+        if !prev.is_empty() && !prev.iter().any(|(_, r)| hubs.iter().any(|(_, r2)| r2 == r)) {
+            mark_shared(project);
+        }
     }
     m.insert(project.to_string(), hubs);
     if let Some(parent) = p.parent() {
@@ -110,13 +182,37 @@ fn wanted(session: &Option<String>, project: &Option<String>) -> Vec<Target> {
             }
         }
     }
-    if let Some(p) = project {
-        if let Some(hubs) = load_memory().get(p) {
-            found.extend(hubs.iter().map(|(h, r)| (PathBuf::from(h), r.clone())));
+    if let Some(p) = project.as_ref().filter(|p| !shared_projects().contains(p)) {
+        let mut remembered: Vec<(PathBuf, String)> = load_memory()
+            .get(p)
+            .map(|hubs| hubs.iter().map(|(h, r)| (PathBuf::from(h), r.clone())).collect())
+            .unwrap_or_default();
+        // Once this session has armed, it has said who it is: remembered hubs of any other role
+        // belong to another agent that uses this project. None in common means the project is shared.
+        if !found.is_empty() && !remembered.is_empty() {
+            let mine = |r: &String| found.iter().any(|(_, f)| f == r);
+            if !remembered.iter().any(|(_, r)| mine(r)) {
+                mark_shared(p);
+            }
+            remembered.retain(|(_, r)| mine(r));
         }
+        found.extend(remembered);
     }
     found.retain(|(p, r)| prune::looks_like_hub(p) && attach::is_member(p, r));
     attach::finalize(found)
+}
+
+/// Give up our lease on a spool: remove its reader marker if it still names us.
+fn release(log: &std::path::Path) {
+    let m = spool::attach_marker(log);
+    let ours = std::fs::read_to_string(&m)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
+        == Some(u64::from(std::process::id()));
+    if ours {
+        let _ = std::fs::remove_file(m);
+    }
 }
 
 const UPGRADED_FROM: &str = "CONFER_PLUGIN_UPGRADED_FROM";
@@ -124,7 +220,7 @@ const UPGRADED_FROM: &str = "CONFER_PLUGIN_UPGRADED_FROM";
 /// Run as the plugin monitor. Returns only when the session ends (SIGTERM/SIGHUP) or stdout is
 /// gone; everything else is waited out or logged to stderr.
 pub fn run(project: Option<PathBuf>) -> Result<()> {
-    let session = autoheal::current_session();
+    let session = autoheal::env_session();
     let project = project
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string());
@@ -142,6 +238,7 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
                 "project": project,
                 "session": session,
                 "version": crate::VERSION,
+                "host": host_pid(),
             })
             .to_string(),
         );
@@ -176,9 +273,20 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
                 attach::write_marker(&tail.log, "plugin", session.as_deref());
             }
 
-            // Pick up hubs we should be reading and are not.
+            // Let go of hubs this session no longer wants (another agent's, remembered from this
+            // project), then pick up the ones it wants and is not reading.
+            let want = wanted(&session, &project);
+            let before = tails.len();
+            tails.retain(|(hub_key, role), (_, _, tail)| {
+                let keep = want.iter().any(|t| &t.hub_key == hub_key && &t.role == role);
+                if !keep {
+                    release(&tail.log);
+                }
+                keep
+            });
+            let dropped = tails.len() < before;
             let mut started: Vec<String> = Vec::new();
-            for t in wanted(&session, &project) {
+            for t in want {
                 let key = (t.hub_key.clone(), t.role.clone());
                 if tails.contains_key(&key) {
                     continue;
@@ -219,13 +327,13 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
                 {
                     return Ok(()); // the session is gone
                 }
-                if let Some(p) = &project {
-                    let hubs = tails
-                        .iter()
-                        .map(|((_, role), (_, root, _))| (root.to_string_lossy().to_string(), role.clone()))
-                        .collect();
-                    save_memory(p, hubs);
-                }
+            }
+            if let (Some(p), true) = (&project, dropped || !started.is_empty()) {
+                let hubs = tails
+                    .iter()
+                    .map(|((_, role), (_, root, _))| (root.to_string_lossy().to_string(), role.clone()))
+                    .collect();
+                save_memory(p, hubs);
             }
         }
 

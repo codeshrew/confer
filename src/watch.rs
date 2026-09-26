@@ -277,7 +277,7 @@ pub fn spawn_detached(root: &std::path::Path, role: &str, extra: &[String]) -> R
     // The path confer was launched as, not current_exe(): on Linux that resolves a brew symlink to
     // the versioned keg, which an upgrade never rewrites, so the watcher could not see it change.
     let exe = crate::selfupdate::launched_as().ok_or_else(|| anyhow!("cannot locate the confer binary"))?;
-    let mut cmd = std::process::Command::new(exe);
+    let mut cmd = std::process::Command::new(&exe);
     cmd.current_dir(root)
         .arg("watch")
         .arg("--replace")
@@ -312,7 +312,9 @@ pub fn spawn_detached(root: &std::path::Path, role: &str, extra: &[String]) -> R
             }
         });
     }
-    let mut intermediate = cmd.spawn().with_context(|| format!("spawn detached watcher for {}", root.display()))?;
+    // Name both paths: ENOENT from a deleted binary read as a missing clone dir (jarvis, pop-os).
+    let mut intermediate =
+        cmd.spawn().with_context(|| format!("spawn detached watcher: run {} in {}", exe.display(), root.display()))?;
     let _ = intermediate.wait(); // it has already _exit(0)'d; reap it
     eprintln!(
         "confer watch: detached watcher for '{}' started, spooling to {} (its pid is in the watch lock)",

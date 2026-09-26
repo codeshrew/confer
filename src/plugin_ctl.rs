@@ -75,13 +75,24 @@ fn this_project(explicit: Option<PathBuf>) -> Option<String> {
         .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string())
 }
 
+/// Linux only: a process whose binary was replaced on disk shows `/proc/<pid>/exe -> … (deleted)`.
+/// Such a reader cannot start watchers (ENOENT) until it is restarted (jarvis, pop-os).
+fn runs_deleted_binary(pid: u32) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
+}
+
 fn describe(r: &Reader) -> String {
     format!(
-        "pid {} · confer {} · session {} · project {}",
+        "pid {} · confer {} · session {} · project {}{}",
         r.pid,
         r.version.as_deref().unwrap_or("unknown (0.8.37 or older)"),
         r.session.as_deref().unwrap_or("?"),
-        r.project.as_deref().unwrap_or("?")
+        r.project.as_deref().unwrap_or("?"),
+        if runs_deleted_binary(r.pid) {
+            " · ⚠ its binary was replaced on disk; it cannot start watchers until restarted: confer plugin restart"
+        } else {
+            ""
+        }
     )
 }
 

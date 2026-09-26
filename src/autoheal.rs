@@ -42,7 +42,23 @@ pub(crate) fn session_from(get: impl Fn(&str) -> Option<String>, keys: &[&str]) 
 /// session env var, then a per-harness on-disk fallback. NOTE: a session var present in a HOOK
 /// process may be ABSENT in the interactive/monitor-hosted `arm`/`watch` process — hence the disk
 /// fallback (Grok) and the hook stdin `sessionId`/`session_id` field (see `cmd_session_heal`).
+///
+/// One correction on top of the env: a RESUMED Claude Code session can leave the shell with the
+/// pre-resume id while the plugin reader runs under the real one. Everything `arm` then stamped
+/// went to a session nobody reads, and the agent fell back to 30-minute Monitors all night
+/// (jarvis). When the env id has no live plugin reader but the Claude Code process that runs us
+/// has one, that reader's session is the true one.
 pub fn current_session() -> Option<String> {
+    let env = env_session();
+    if env.as_deref().is_some_and(|s| crate::plugin::live_reader_for_session(s).is_some()) {
+        return env;
+    }
+    crate::plugin::session_for_this_host().or(env)
+}
+
+/// The session id exactly as the environment (or Grok's disk record) states it, uncorrected. The
+/// plugin reader keys itself by this: it is started by Claude Code with the true id.
+pub fn env_session() -> Option<String> {
     session_from(|k| std::env::var(k).ok(), SESSION_ENV_KEYS).or_else(grok_session_from_disk)
 }
 

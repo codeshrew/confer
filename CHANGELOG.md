@@ -4,6 +4,21 @@
 
 *From the first field reports on 0.8.37.*
 
+- **A resumed session arms for the right session.** After a Claude Code resume the shell can keep
+  the pre-resume `CLAUDE_CODE_SESSION_ID` while the plugin reader runs under the real one. Every
+  `confer arm` stamped the stale id, the reader delivered nothing, and the agent fell back to
+  30-minute Monitors all night (jarvis). When the shell's id has no live reader but the Claude Code
+  process that runs it has one, confer now uses that reader's session, and `arm` says so.
+- **A fresh session no longer inherits another agent's hubs.** The plugin remembered each
+  project's hubs so a new session could resume without arming, but it remembered only the last
+  agent to use the directory, so a new jarvis session was handed herdr's hub (jarvis). Once a
+  session arms, remembered hubs of other roles are dropped. When two agents with no role in
+  common have used a project, fresh sessions there wait for their own arm.
+- **A watcher that cannot start names the binary.** A reader still running a binary an upgrade had
+  replaced failed every spawn with ENOENT, and the error blamed the clone directory. The error now
+  names both, and on Linux `confer plugin status` flags a reader whose binary was replaced on
+  disk. Detached watchers are now started by the path confer was launched as, not the resolved
+  executable.
 - **A detached spool watcher re-execs when its binary is replaced.** The plugin reader already does
   this (0.8.37). On Grok the watcher is reparented to pid 1 and outlives the Monitor, so an upgrade
   left it on the old build until the next `confer arm`. It now execs the new confer in place: same
