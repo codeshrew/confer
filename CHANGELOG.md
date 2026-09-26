@@ -4,6 +4,12 @@
 
 *From the first field reports on 0.8.37.*
 
+- **A detached spool watcher re-execs when its binary is replaced.** The plugin reader already does
+  this (0.8.37). On Grok the watcher is reparented to pid 1 and outlives the Monitor, so an upgrade
+  left it on the old build until the next `confer arm`. It now execs the new confer in place: same
+  pid, the lock is adopted instead of signalling itself, and it prints one `upgraded from …` line.
+  Inline watchers are unchanged. `CONFER_WATCH_UPGRADE_SECS` (default 30) is the check interval.
+
 - **`confer plugin status` and `confer plugin restart`.** The documented way to move an old plugin
   reader onto a new build was to read its pid from `~/.confer/plugin/readers/<session>.json` and
   kill it. On a real machine that file named a reader that had died hours before, and the live

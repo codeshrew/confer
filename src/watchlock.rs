@@ -273,7 +273,10 @@ impl WatchLock {
             let alive = pid.is_some_and(|p| process_alive(p) && is_confer_process(p));
             let fresh = age_secs(&path) < stale_secs;
             if alive && fresh {
-                if !replace {
+                // A spool watcher re-execs itself onto a new binary. exec keeps the pid and does
+                // not run Drop, so the lock still names us. Killing it would signal ourselves.
+                let adopting = pid.is_some_and(crate::selfupdate::adopting_own_lock);
+                if !adopting && !replace {
                     return Err(anyhow!(
                         "another confer watch for role '{label}' is already running on {this_host} \
                          (pid {}). It owns the cursor — a second watcher would race it and silently \
@@ -281,6 +284,7 @@ impl WatchLock {
                         pid.unwrap_or(0)
                     ));
                 }
+                if !adopting {
                 if let Some(p) = pid {
                     let _ = std::process::Command::new("kill").arg(p.to_string())
                         .stderr(std::process::Stdio::null()).status();
@@ -313,6 +317,7 @@ impl WatchLock {
                              the live process rather than the name.)"
                         );
                     }
+                }
                 }
             } else {
                 eprintln!(

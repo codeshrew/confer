@@ -53,6 +53,7 @@ mod repomap;
 mod repos;
 mod reposdiscover;
 mod roster;
+mod selfupdate;
 mod schema;
 mod screen;
 mod secrets;

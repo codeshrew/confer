@@ -500,6 +500,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(24 * 3600);
     let started = std::time::Instant::now();
+    let mut upgrade = crate::selfupdate::WatchUpgrade::new(spooled);
     loop {
         // A Monitor-hosted watcher whose Monitor is gone would otherwise keep heartbeating, keep
         // the lock, and read as healthy until its next write fails — hours, on a quiet hub — while
@@ -508,6 +509,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
             return Ok(()); // Drop releases the lock; nothing is left to print to
         }
         lock.heartbeat(); // prove liveness so a later watcher can tell we're alive
+        upgrade.poll();
         if let Some(log) = &spool_log {
             if let Err(e) = spool_housekeeping(log, idle_exit, started) {
                 if e.downcast_ref::<IdleExitMarker>().is_some() {

@@ -32,10 +32,8 @@ use crate::{autoheal, config, prune, spool};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant, SystemTime};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 pub(crate) fn readers_dir() -> Option<PathBuf> {
     config::home().ok().map(|h| h.join(".confer").join("plugin").join("readers"))
@@ -121,51 +119,6 @@ fn wanted(session: &Option<String>, project: &Option<String>) -> Vec<Target> {
     attach::finalize(found)
 }
 
-/// The binary this reader was started as, by path and unresolved: an upgrade replaces the file
-/// behind that path (brew relinks it; `cargo install` rewrites it), and that is what we watch.
-fn launched_as() -> Option<PathBuf> {
-    let a0 = PathBuf::from(std::env::args_os().next()?);
-    if a0.components().count() > 1 {
-        return Some(a0);
-    }
-    std::env::var_os("PATH")
-        .and_then(|p| std::env::split_paths(&p).map(|d| d.join(&a0)).find(|c| c.is_file()))
-        .or_else(|| std::env::current_exe().ok())
-}
-
-type Fingerprint = (PathBuf, Option<SystemTime>, u64);
-
-fn fingerprint(exe: &Path) -> Option<Fingerprint> {
-    let real = exe.canonicalize().ok()?;
-    let m = std::fs::metadata(&real).ok()?;
-    Some((real, m.modified().ok(), m.len()))
-}
-
-enum Installed {
-    /// A different confer build that can run the plugin reader: its `--version` line.
-    Upgrade(String),
-    /// Our own build, or one without `attach --plugin`: nothing to do until the file changes again.
-    Stay,
-    /// It would not run (mid-install, say): look again next time.
-    Unknown,
-}
-
-fn installed(exe: &Path) -> Installed {
-    let Ok(v) = Command::new(exe).arg("--version").output() else { return Installed::Unknown };
-    let v = String::from_utf8_lossy(&v.stdout).trim().to_string();
-    if !v.starts_with("confer ") {
-        return Installed::Unknown;
-    }
-    if v.contains(crate::BUILD_SHA) {
-        return Installed::Stay;
-    }
-    match Command::new(exe).args(["attach", "--help"]).output() {
-        Ok(h) if String::from_utf8_lossy(&h.stdout).contains("--plugin") => Installed::Upgrade(v),
-        Ok(_) => Installed::Stay,
-        Err(_) => Installed::Unknown,
-    }
-}
-
 const UPGRADED_FROM: &str = "CONFER_PLUGIN_UPGRADED_FROM";
 
 /// Run as the plugin monitor. Returns only when the session ends (SIGTERM/SIGHUP) or stdout is
@@ -202,11 +155,9 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
         std::process::id()
     );
 
-    let exe = launched_as();
-    let mut exe_fp = exe.as_deref().and_then(fingerprint);
-    let upgrade_every = Duration::from_secs(
-        std::env::var("CONFER_PLUGIN_UPGRADE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
-    );
+    let exe = crate::selfupdate::launched_as();
+    let mut exe_fp = exe.as_deref().and_then(crate::selfupdate::fingerprint);
+    let upgrade_every = crate::selfupdate::interval("CONFER_PLUGIN_UPGRADE_SECS");
     let mut last_upgrade_check = Instant::now();
     let upgraded_from = std::env::var(UPGRADED_FROM).ok().filter(|v| !v.is_empty());
 
@@ -302,21 +253,19 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
         if last_upgrade_check.elapsed() >= upgrade_every {
             last_upgrade_check = Instant::now();
             if let Some(exe) = &exe {
-                let fp = fingerprint(exe);
+                let fp = crate::selfupdate::fingerprint(exe);
                 if fp.is_some() && fp != exe_fp {
-                    match installed(exe) {
-                        Installed::Upgrade(v) => {
+                    match crate::selfupdate::installed(exe, &["attach", "--help"], "--plugin") {
+                        crate::selfupdate::Installed::Upgrade(v) => {
                             eprintln!("confer attach --plugin: {} installed; re-executing as it", v);
                             let _ = out.flush();
-                            let err = Command::new(exe)
-                                .args(std::env::args_os().skip(1))
-                                .env(UPGRADED_FROM, format!("confer {}", crate::VERSION))
-                                .exec();
+                            let from = format!("confer {}", crate::VERSION);
+                            let err = crate::selfupdate::exec_replacement(exe, &[(UPGRADED_FROM, &from)]);
                             eprintln!("confer attach --plugin: could not run {}: {err}", exe.display());
                             exe_fp = fp;
                         }
-                        Installed::Stay => exe_fp = fp,
-                        Installed::Unknown => {}
+                        crate::selfupdate::Installed::Stay => exe_fp = fp,
+                        crate::selfupdate::Installed::Unknown => {}
                     }
                 }
             }

@@ -10236,6 +10236,80 @@ fn a_plugin_reader_becomes_the_newly_installed_confer_without_exiting() {
     assert!(woke, "the upgraded reader must still deliver: {seen}");
 }
 
+#[test]
+fn a_spooled_watcher_becomes_the_newly_installed_confer_without_dying() {
+    use std::io::BufRead;
+    // Grok's reader is a Monitor and dies on the host cap; the watcher is reparented to pid 1 and
+    // keeps the old build until the next arm (the 0.8.37 plugin reader already re-execs). A spool
+    // watcher now does the same: same pid, lock adopted instead of signalling itself, still delivers.
+    let hub = new_hub();
+    let home = tmp("watch-upgrade-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let bin_dir = tmp("watch-upgrade-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let exe = bin_dir.join("confer");
+    std::fs::copy(BIN, &exe).unwrap();
+
+    let mut child = Command::new(&exe)
+        .env("HOME", &home)
+        .env("CONFER_WATCH_UPGRADE_SECS", "1")
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .env_remove("GROK_SESSION_ID")
+        .current_dir(&a.dir)
+        .args(["watch", "--role", "alpha", "--delivery", "spool", "--poll", "1", "--no-version-notice"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::sleep(Duration::from_secs(1));
+
+    let next = bin_dir.join("confer.next");
+    std::fs::write(
+        &next,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'confer 99.0.0 (fffffff)'; exit 0; fi\nexec '{BIN}' \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&next, &exe).unwrap();
+
+    let (upgraded, seen) = wait_for_line(&rx, "upgraded from", 20);
+    assert!(upgraded, "the spool watcher must re-exec and say so: {seen}");
+    assert!(matches!(child.try_wait(), Ok(None)), "the watcher process must never exit");
+    let status = Command::new(BIN)
+        .env("HOME", &home)
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .current_dir(&a.dir)
+        .args(["watch-status", "--role", "alpha"])
+        .output()
+        .unwrap();
+    let st = out(&status);
+    assert!(st.contains(&pid.to_string()), "same pid after the upgrade: {st}");
+
+    assert!(ok(&b.append(&["--type", "note", "--to", "alpha", "--summary", "after-watch-upgrade", "--text", "t"])));
+    let (woke, seen) = wait_for_line(&rx, "after-watch-upgrade", 40);
+    stop(child);
+    assert!(woke, "the upgraded watcher must still deliver: {seen}");
+}
+
 fn live_reader_pid(home: &Path, session: &str) -> Option<u32> {
     let txt = std::fs::read_to_string(home.join(format!(".confer/plugin/readers/{session}.json"))).ok()?;
     let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
