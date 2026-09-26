@@ -43,15 +43,18 @@
   <span class="dot" aria-hidden="true"></span>
   <span class="id mono">{request.id}</span>
   <span class="sum">{request.summary}</span>
-  {#if request.project}
-    <span
-      class="proj mono"
-      title={request.projectConflict
+  <!-- Always rendered (empty when untagged) so every row fills the same grid columns and the
+       trailing assignee/age columns line up across tagged and untagged rows. -->
+  <span
+    class="proj mono"
+    class:empty={!request.project}
+    title={!request.project
+      ? undefined
+      : request.projectConflict
         ? `project: ${request.project} (conflict — tags disagree across this thread)`
         : `project: ${request.project} (${request.projectSource})`}
-      >{request.project}{#if request.projectConflict}<span class="proj-warn" aria-hidden="true"> ⚠</span>{/if}</span
-    >
-  {/if}
+    >{request.project ?? ''}{#if request.projectConflict}<span class="proj-warn" aria-hidden="true"> ⚠</span>{/if}</span
+  >
   {#if assignee}
     <span class="av" style="background:{assignee.color}" title={assignee.display}>{assignee.abbr}</span>
   {:else}
@@ -122,8 +125,22 @@
     border-radius: 999px;
     padding: 1px 7px;
   }
+  .t-row .proj.empty {
+    visibility: hidden;
+    padding: 0;
+    border: 0;
+  }
   .t-row .proj-warn {
     color: var(--state-unowned);
+  }
+  /* At phone width the summary needs the room; the project stays visible in the ticket popover. */
+  @media (max-width: 480px) {
+    .t-row {
+      grid-template-columns: 7px auto 1fr auto auto auto;
+    }
+    .t-row .proj {
+      display: none;
+    }
   }
   .t-row .av {
     width: 18px;
