@@ -10,7 +10,9 @@
   When that becomes a different confer build that can run the reader, it re-executes as it within
   about 30 seconds: same process, same output, so Claude Code never sees the monitor stop. The new
   build then replaces the watchers, and the reader says so once ("upgraded the plugin reader from
-  … to …"). Readers started by 0.8.35 or 0.8.36 need one last `/reload-plugins` to get this.
+  … to …"). A reader started by 0.8.35 or 0.8.36 cannot do this, and `/reload-plugins` does not
+  restart a running plugin monitor. To move one onto 0.8.37, stop just that reader (its pid is in
+  `~/.confer/plugin/readers/<session id>.json`); the plugin's wrapper restarts it within 30 seconds.
 - **`watch-status` outside your hubs no longer raises a false alarm.** Run from a repo that is not
   a hub you joined (a project dir, say), it printed "watch [<role>]: not-watching" and advised
   arming a watcher, while every watcher the agent had was healthy. Following that advice starts a
