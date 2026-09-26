@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "confer-cli"
-version = "0.8.37"
+version = "0.8.38"
 dependencies = [
  "anyhow",
  "axoupdater",

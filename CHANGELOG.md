@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.38
 
-*From the first field reports on 0.8.37.*
+*From the first field reports on 0.8.37: the plugin now follows a resumed session, never hands a session another agent's hubs, and has `confer plugin status|restart`. Detached watchers upgrade themselves too.*
 
 - **A resumed session arms for the right session.** After a Claude Code resume the shell can keep
   the pre-resume `CLAUDE_CODE_SESSION_ID` while the plugin reader runs under the real one. Every
