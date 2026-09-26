@@ -218,8 +218,9 @@ pub(crate) fn stopping() -> bool {
 /// not wakes. Every line printed here wakes the agent, and a watcher restart used to deliver six of
 /// them for nothing (astrolabos-voice, 0.8.37). They stay in the spool file for anyone debugging.
 pub(crate) fn emit(out: &mut impl Write, label: &str, line: &str) -> std::io::Result<()> {
-    const LIFECYCLE: [&str; 6] = [
+    const LIFECYCLE: [&str; 7] = [
         "confer watch: --replace killed the existing watcher",
+        "confer watch: upgraded from",
         "confer watch: (that lock was recorded under host",
         "confer watch: reclaimed a stale watch lock",
         "confer watch: owned by role",

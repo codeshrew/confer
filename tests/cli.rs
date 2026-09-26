@@ -10276,7 +10276,11 @@ fn a_spooled_watcher_becomes_the_newly_installed_confer_without_dying() {
             }
         }
     });
-    std::thread::sleep(Duration::from_secs(1));
+    // Replace the binary only once the watcher is running (it fingerprints the binary as its loop
+    // starts). A fixed 1s sleep lost that race under a loaded suite: the watcher's baseline was
+    // already the new file, so it never saw a change.
+    wait_for_watch_lock(&home);
+    std::thread::sleep(Duration::from_millis(1500));
 
     let next = bin_dir.join("confer.next");
     std::fs::write(

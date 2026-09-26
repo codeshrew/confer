@@ -274,7 +274,9 @@ pub fn spawn_detached(root: &std::path::Path, role: &str, extra: &[String]) -> R
     let hub = config::hub_key(root);
     let (log, out) = crate::spool::open_for_append(&hub, role)?;
     let err = out.try_clone()?;
-    let exe = std::env::current_exe()?;
+    // The path confer was launched as, not current_exe(): on Linux that resolves a brew symlink to
+    // the versioned keg, which an upgrade never rewrites, so the watcher could not see it change.
+    let exe = crate::selfupdate::launched_as().ok_or_else(|| anyhow!("cannot locate the confer binary"))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.current_dir(root)
         .arg("watch")

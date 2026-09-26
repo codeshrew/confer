@@ -284,8 +284,7 @@ impl WatchLock {
                         pid.unwrap_or(0)
                     ));
                 }
-                if !adopting {
-                if let Some(p) = pid {
+                if let Some(p) = pid.filter(|_| !adopting) {
                     let _ = std::process::Command::new("kill").arg(p.to_string())
                         .stderr(std::process::Stdio::null()).status();
                     // Wait for the old watcher to actually EXIT before we write our lock — a still-
@@ -317,7 +316,6 @@ impl WatchLock {
                              the live process rather than the name.)"
                         );
                     }
-                }
                 }
             } else {
                 eprintln!(
