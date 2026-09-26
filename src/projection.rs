@@ -129,7 +129,9 @@ pub fn project_info<'a>(msgs: &'a [Message], req: &'a Message) -> (Option<&'a st
             && m.front.of.as_deref().is_some_and(|of| id_ref_matches(req_id, of));
         let is_thread = m.front.reply_to.as_deref().is_some_and(|r| id_ref_matches(req_id, r));
         if is_lifecycle || is_thread {
-            if let Some(p) = m.front.project.as_deref() {
+            // A tag read from disk was written by a peer or by hand: one that fails the append-time
+            // check (a newline, markup) is not a tag, and never reaches a terminal or the dashboard.
+            if let Some(p) = m.front.project.as_deref().filter(|p| crate::schema::valid_project_tag(p)) {
                 tagged.push((m.front.id.as_str(), p));
             }
         }
@@ -138,12 +140,13 @@ pub fn project_info<'a>(msgs: &'a [Message], req: &'a Message) -> (Option<&'a st
     let latest_thread = tagged.last().map(|(_, p)| *p);
 
     let mut distinct: HashSet<&str> = tagged.iter().map(|(_, p)| *p).collect();
-    if let Some(own) = req.front.project.as_deref() {
+    let own = req.front.project.as_deref().filter(|p| crate::schema::valid_project_tag(p));
+    if let Some(own) = own {
         distinct.insert(own);
     }
     let conflict = distinct.len() > 1;
 
-    match req.front.project.as_deref() {
+    match own {
         Some(own) => (Some(own), Some("own"), conflict),
         None => match latest_thread {
             Some(p) => (Some(p), Some("thread"), conflict),
