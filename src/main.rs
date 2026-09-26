@@ -39,6 +39,7 @@ mod knownhubs;
 mod machineconfig;
 mod orphan;
 mod plugin;
+mod plugin_ctl;
 mod patch;
 mod pollcmd;
 mod presence;
@@ -832,6 +833,7 @@ fn run() -> Result<()> {
         Cmd::SessionContext => cmd_session_context(),
         Cmd::Sync => append::cmd_sync(),
         Cmd::Autoheal { action, yes } => cmd_autoheal(action, yes),
+        Cmd::Plugin { action, pid, project } => plugin_ctl::cmd(action, pid, project),
         Cmd::Config { action, key, value, yes } => cmd_config(action, key, value, yes),
         Cmd::Hub { action, yes } => cmd_hub(action, yes),
         Cmd::Rewatch { only, role } => cmd_rewatch(only, role),

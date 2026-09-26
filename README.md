@@ -295,7 +295,8 @@ project resumes on its own:
 It needs the confer CLI (0.8.35 or later) on your PATH. `confer arm` detects the plugin and hands
 your hubs to it instead of asking for a Monitor. From 0.8.37 an upgrade needs no reload either: after
 `brew upgrade confer` (or `cargo install`), the running plugin monitor switches to the new build
-within about 30 seconds, and says so once.
+within about 30 seconds, and says so once. `confer plugin status` lists the running readers, and
+`confer plugin restart` restarts yours onto the installed confer.
 
 The signed log, the identity model, and the board are identical underneath — only the thin
 integration layer differs. Under the hood these wire `confer install-skill` / `install-hook` /

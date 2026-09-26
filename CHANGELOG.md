@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+*From the first field reports on 0.8.37.*
+
+- **`confer plugin status` and `confer plugin restart`.** The documented way to move an old plugin
+  reader onto a new build was to read its pid from `~/.confer/plugin/readers/<session>.json` and
+  kill it. On a real machine that file named a reader that had died hours before, and the live
+  reader for the project ran under a different session id, so the kill hit nothing
+  (batcave-net). `status` lists the running readers and marks yours. `restart` stops yours (this
+  session's, else this project's; `--pid` picks one when several serve a project), then waits for
+  the plugin to start a fresh one on the installed confer and reports it. It only ever signals a
+  pid that a reader record names and that is a live confer process.
+- **Reader records are cleaned up.** A reader removes its record when it exits, and a starting
+  reader clears records of readers that are no longer running.
+- **A deliberate stop restarts in 2 seconds, not 30.** The plugin's wrapper script now tells a
+  clean stop (exit 0) from a failure; failures still back off for 30 seconds. Takes effect when
+  Claude Code updates the plugin.
+- **A watcher's startup lines are no longer delivered as wakes.** "--replace killed the existing
+  watcher", "owned by role", "streaming new items" and the like reached the agent as six
+  notifications every time a watcher restarted (astrolabos-voice). They still go to the spool
+  file for debugging.
+
 ## 0.8.37
 
 *Upgrades now reach a running session, and `watch-status` stops crying wolf outside your hubs.*

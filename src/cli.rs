@@ -22,6 +22,15 @@ pub(crate) enum AutohealAction {
     Prune,
 }
 
+/// `confer plugin <action>`: the Claude Code plugin monitor's readers on this machine.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PluginAction {
+    /// List the running readers (yours marked); clears records of readers that have died.
+    Status,
+    /// Stop your reader so the plugin starts a fresh one on the installed confer.
+    Restart,
+}
+
 /// `confer config <action>` — see `AutohealAction` (design/37 item 9): a typed value so a bad
 /// action is a clap usage error, not a runtime one. Same accepted values as before.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -647,6 +656,19 @@ pub(crate) enum Cmd {
         /// with `prune`: actually remove stale targets (default is a dry-run listing).
         #[arg(long)]
         yes: bool,
+    },
+    /// The confer Claude Code plugin's readers: `status` lists them, `restart` stops yours (this
+    /// session's, else this project's) and waits for the plugin to start a fresh one.
+    Plugin {
+        /// status | restart
+        #[arg(value_enum)]
+        action: PluginAction,
+        /// with `restart`: this reader, by pid (as `confer plugin status` lists it).
+        #[arg(long)]
+        pid: Option<u32>,
+        /// with `restart`: the project whose reader to restart (default: $CLAUDE_PROJECT_DIR, else cwd).
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
     },
     /// Inspect or set this machine's policy config (`~/.confer/config.json`: clone location,
     /// per-hub transport/auth, tuning, update posture — design/35). NOT the shared repo contract

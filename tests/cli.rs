@@ -10097,6 +10097,10 @@ fn arm_hands_off_to_the_plugin_reader_which_then_delivers_wakes() {
     let (woke, seen) = wait_for_line(&rx, "plugin-delivered-wake", 40);
     stop(reader);
     assert!(woke, "a message to alpha must reach the plugin reader's stdout: {seen}");
+    // Every line wakes the agent; the watcher starting up is not news (astrolabos-voice, 0.8.37).
+    for chatter in ["owned by role", "streaming new items", "--replace killed", "reclaimed a stale"] {
+        assert!(!seen.contains(chatter), "watcher startup chatter must not be delivered ({chatter}): {seen}");
+    }
 }
 
 #[test]
@@ -10230,4 +10234,74 @@ fn a_plugin_reader_becomes_the_newly_installed_confer_without_exiting() {
     let (woke, seen) = wait_for_line(&rx, "after-upgrade-wake", 40);
     stop(reader);
     assert!(woke, "the upgraded reader must still deliver: {seen}");
+}
+
+fn live_reader_pid(home: &Path, session: &str) -> Option<u32> {
+    let txt = std::fs::read_to_string(home.join(format!(".confer/plugin/readers/{session}.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let pid = v.get("pid")?.as_u64()? as u32;
+    Command::new("kill").args(["-0", &pid.to_string()]).status().ok()?.success().then_some(pid)
+}
+
+#[test]
+fn plugin_restart_finds_the_live_reader_not_a_dead_record() {
+    // batcave-net, 0.8.37: the upgrade remedy read the reader's pid from the file for the agent's
+    // session id. That file named a reader that had died hours before (records were never cleared),
+    // and the live reader for the project ran under a different session id. The kill hit nothing.
+    // `confer plugin restart` clears dead records, falls back to this project's live reader, and
+    // waits for the plugin's own wrapper script to bring a fresh one up.
+    let home = tmp("plugin-restart-home");
+    std::fs::create_dir_all(home.join(".confer/plugin/readers")).unwrap();
+    let project = tmp("plugin-restart-project");
+    let bin_dir = tmp("plugin-restart-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::os::unix::fs::symlink(BIN, bin_dir.join("confer")).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/confer/scripts/monitor.sh");
+    let mut wrapper = Command::new("sh")
+        .arg(&script)
+        .arg(&project)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-live")
+        .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+        .env_remove("CONFER_ROLE")
+        .env_remove("CONFER_HUB")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut old = None;
+    for _ in 0..100 {
+        old = live_reader_pid(&home, "sess-live");
+        if old.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let old = old.expect("the plugin wrapper must start a reader");
+    // The dead record the agent's own session id points at.
+    let dead = home.join(".confer/plugin/readers/sess-dead.json");
+    std::fs::write(&dead, format!("{{\"pid\":999999,\"project\":\"{}\"}}", project.display())).unwrap();
+
+    let r = Command::new(BIN)
+        .env("HOME", &home)
+        .env("CLAUDE_CODE_SESSION_ID", "sess-dead")
+        .env("CLAUDE_PROJECT_DIR", &project)
+        .env("CONFER_PLUGIN_RESTART_WAIT", "20")
+        .args(["plugin", "restart"])
+        .output()
+        .unwrap();
+    let said = format!("{}{}", out(&r), err(&r));
+    let new = live_reader_pid(&home, "sess-live");
+    let _ = Command::new("kill").arg(wrapper.id().to_string()).status();
+    let _ = wrapper.wait();
+    if let Some(p) = new {
+        let _ = Command::new("kill").arg(p.to_string()).status();
+    }
+    let _ = Command::new("kill").arg(old.to_string()).status();
+
+    assert!(ok(&r), "restart must succeed: {said}");
+    assert!(said.contains(&format!("pid {old}")), "it must stop the LIVE reader, pid {old}: {said}");
+    assert!(said.contains("restarted:"), "and report the fresh one: {said}");
+    assert!(new.is_some_and(|p| p != old), "a new reader must be running: {new:?} vs {old}");
+    assert!(!dead.exists(), "the dead record must be cleared");
 }

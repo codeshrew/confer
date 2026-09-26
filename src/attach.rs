@@ -212,8 +212,23 @@ pub(crate) fn stopping() -> bool {
     STOP.load(Ordering::SeqCst)
 }
 
-/// Print a spool line: wake lines get the hub prefix; the watcher's own chatter passes through.
+/// Print a spool line: wake lines get the hub prefix; the watcher's other notices pass through.
+///
+/// A watcher's own startup lines (took the lock, replaced its predecessor, started streaming) are
+/// not wakes. Every line printed here wakes the agent, and a watcher restart used to deliver six of
+/// them for nothing (astrolabos-voice, 0.8.37). They stay in the spool file for anyone debugging.
 pub(crate) fn emit(out: &mut impl Write, label: &str, line: &str) -> std::io::Result<()> {
+    const LIFECYCLE: [&str; 6] = [
+        "confer watch: --replace killed the existing watcher",
+        "confer watch: (that lock was recorded under host",
+        "confer watch: reclaimed a stale watch lock",
+        "confer watch: owned by role",
+        "confer watch: streaming new items",
+        "confer watch: detached watcher for",
+    ];
+    if LIFECYCLE.iter().any(|p| line.starts_with(p)) {
+        return Ok(());
+    }
     if line.starts_with("confer") || line.starts_with("──") || line.starts_with("   ") {
         writeln!(out, "{line}")
     } else {

@@ -29,6 +29,14 @@ while :; do
   fi
   # Run from $HOME, not the project: a project dir can look like a hub.
   ( cd "$HOME" && exec confer attach --plugin --project "$project" ) 2>>"$log"
-  note "confer attach --plugin exited with $?; restarting in 30s"
-  sleep 30
+  status=$?
+  # 0 is a clean stop (SIGTERM, e.g. `confer plugin restart`): come straight back, on whatever
+  # confer is installed now. Anything else is a failure: back off before trying again.
+  if [ "$status" -eq 0 ]; then
+    note "confer attach --plugin stopped cleanly; restarting in 2s"
+    sleep 2
+  else
+    note "confer attach --plugin exited with $status; restarting in 30s"
+    sleep 30
+  fi
 done

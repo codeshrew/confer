@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
-fn readers_dir() -> Option<PathBuf> {
+pub(crate) fn readers_dir() -> Option<PathBuf> {
     config::home().ok().map(|h| h.join(".confer").join("plugin").join("readers"))
 }
 
@@ -175,12 +175,25 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
     let project = project
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string());
-    if let Some(f) = session.as_deref().and_then(reader_file) {
+    // Readers that died without cleaning up (a crash, a reboot) leave files naming dead pids, and a
+    // remedy keyed on them signals nothing (batcave-net). Clear them, and clear ours on the way out.
+    crate::plugin_ctl::reap();
+    let _own = session.as_deref().and_then(reader_file).map(|f| {
         if let Some(parent) = f.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&f, serde_json::json!({ "pid": std::process::id(), "project": project }).to_string());
-    }
+        let _ = std::fs::write(
+            &f,
+            serde_json::json!({
+                "pid": std::process::id(),
+                "project": project,
+                "session": session,
+                "version": crate::VERSION,
+            })
+            .to_string(),
+        );
+        crate::plugin_ctl::OwnFile(f)
+    });
     attach::install_stop_handlers();
     eprintln!(
         "confer attach --plugin: session {} project {} (pid {})",
