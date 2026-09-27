@@ -10669,3 +10669,204 @@ fn whoami_names_the_role_and_where_it_came_from_or_exits_1() {
     let o = run(&elsewhere, Some("sess-other"), &["whoami"]);
     assert_eq!(code(&o), 1, "another session's watches are not this session's: {}", out(&o));
 }
+
+// ---- verified rename links (design: whois/who fold old ids into a new role ONLY when the
+// link is signature-verified — mirrors how `status` is honored via `verify::card_trust`) ----
+
+/// Join `role` on `hub` with a fresh ed25519 signing key, returning the Clone. Shared setup
+/// for the verified-rename-link tests.
+fn join_signed(hub: &Hub, role: &str, keydir: &Path) -> Clone {
+    let c = hub.clone(role);
+    let key = keydir.join(role);
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", role, "-q"])
+            .status()
+            .unwrap()
+            .success(),
+        "ssh-keygen for {role}"
+    );
+    let j = c.confer(&["join", "--role", role, "--signing-key", key.to_str().unwrap()]);
+    assert!(ok(&j), "join {role}: {}", err(&j));
+    c
+}
+
+#[test]
+fn rename_both_sides_agree_folds_whois_and_json() {
+    // Rule 2: `old`'s (Verified) card has `renamed_to: new`, AND `new`'s (Verified) card has
+    // `renamed_from` containing `old` — different keys, both sides signed. `whois <old>` must
+    // resolve to `new` and say "(renamed from <old>)"; `--json` must show it verified.
+    let hub = new_hub();
+    let keydir = tmp("key");
+    let old = join_signed(&hub, "herdr", &keydir);
+    let newc = join_signed(&hub, "nerf-herdr", &keydir);
+
+    let d1 = old.confer(&["describe", "--renamed-to", "nerf-herdr"]);
+    assert!(ok(&d1), "old describe: {}", err(&d1));
+    let d2 = newc.confer(&["describe", "--renamed-from", "herdr"]);
+    assert!(ok(&d2), "new describe: {}", err(&d2));
+
+    let wi = newc.confer(&["whois", "herdr"]);
+    assert!(ok(&wi), "{}", err(&wi));
+    let wi_out = out(&wi);
+    assert!(
+        wi_out.contains("nerf-herdr") && wi_out.contains("(renamed from herdr)"),
+        "whois must fold a verified both-sides link: {wi_out}"
+    );
+
+    let wj = newc.confer(&["whois", "herdr", "--json"]);
+    assert!(ok(&wj), "{}", err(&wj));
+    let v: serde_json::Value = serde_json::from_str(out(&wj).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "nerf-herdr", "{v}");
+    assert_eq!(v[0]["renamed_to"], "nerf-herdr", "{v}");
+    assert_eq!(v[0]["rename_verified"], true, "{v}");
+
+    // `who --json` must also report the fold from the new role's side.
+    let wj2 = newc.confer(&["who", "--json"]);
+    assert!(ok(&wj2), "{}", err(&wj2));
+    let rows: serde_json::Value = serde_json::from_str(out(&wj2).trim()).unwrap();
+    let new_row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["role"] == "nerf-herdr")
+        .expect("nerf-herdr row");
+    assert_eq!(new_row["rename_verified"], true, "{new_row}");
+    assert!(
+        new_row["renamed_from"].as_array().unwrap().iter().any(|x| x == "herdr"),
+        "{new_row}"
+    );
+}
+
+#[test]
+fn rename_one_sided_claim_is_not_folded() {
+    // Only the NEW side claims `renamed_from` — the old role never reciprocates with
+    // `renamed_to`. Must NOT fold; `whois` stays on the original role and surfaces an
+    // unverified-claim note instead.
+    let hub = new_hub();
+    let keydir = tmp("key");
+    let old = join_signed(&hub, "herdr2", &keydir);
+    let newc = join_signed(&hub, "nerf-herdr2", &keydir);
+    let _ = old; // old never calls describe --renamed-to: no reciprocation
+
+    let d = newc.confer(&["describe", "--renamed-from", "herdr2"]);
+    assert!(ok(&d), "{}", err(&d));
+
+    let wi = newc.confer(&["whois", "herdr2"]);
+    assert!(ok(&wi), "{}", err(&wi));
+    let wi_out = out(&wi);
+    assert!(
+        wi_out.contains("[herdr2]") && !wi_out.contains("renamed from"),
+        "a one-sided claim must not fold: {wi_out}"
+    );
+    assert!(
+        wi_out.contains("unverified rename claim"),
+        "a one-sided claim should still be surfaced as unverified: {wi_out}"
+    );
+
+    let wj = newc.confer(&["whois", "herdr2", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&wj).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "herdr2", "{v}");
+    assert_eq!(v[0]["renamed_to"], serde_json::Value::Null, "{v}");
+    assert_eq!(v[0]["rename_verified"], false, "{v}");
+    assert!(
+        !v[0]["rename_claims_unverified"].as_array().unwrap().is_empty(),
+        "{v}"
+    );
+}
+
+#[test]
+fn rename_hijack_claim_does_not_redirect_the_victim() {
+    // The classic attack this whole feature exists to prevent: an unrelated role claims
+    // `renamed_from <victim>` with NO reciprocation from victim and no shared key. `whois
+    // victim` must keep resolving to victim, never to the attacker.
+    let hub = new_hub();
+    let keydir = tmp("key");
+    let victim = join_signed(&hub, "victim", &keydir);
+    let attacker = join_signed(&hub, "attacker", &keydir);
+    let _ = victim; // victim never claims anything about attacker
+
+    let d = attacker.confer(&["describe", "--renamed-from", "victim"]);
+    assert!(ok(&d), "{}", err(&d));
+
+    let wi = attacker.confer(&["whois", "victim"]);
+    assert!(ok(&wi), "{}", err(&wi));
+    let wi_out = out(&wi);
+    assert!(
+        wi_out.contains("[victim]") && !wi_out.contains("[attacker]"),
+        "a hijack claim must not redirect the victim's whois: {wi_out}"
+    );
+
+    let wj = attacker.confer(&["whois", "victim", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&wj).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "victim", "{v}");
+    assert_eq!(v[0]["rename_verified"], false, "{v}");
+}
+
+#[test]
+fn rename_unsigned_card_edit_is_ignored() {
+    // Mirrors `status_is_self_sovereign_signed_honored_unsigned_ignored`: a role joined WITHOUT
+    // a signing key can still write `renamed_to` onto its own card (describe succeeds), but
+    // because that card has no published key its card-trust is `Unverified` — never honored,
+    // even when the other side properly reciprocates with a signed card.
+    let hub = new_hub();
+    let keydir = tmp("key");
+    let old = hub.clone("forgeold");
+    assert!(ok(&old.confer(&["join", "--role", "forgeold"])), "unsigned join");
+    let newc = join_signed(&hub, "forgenew", &keydir);
+
+    let d1 = old.confer(&["describe", "--renamed-to", "forgenew"]);
+    assert!(ok(&d1), "unsigned describe still writes the card: {}", err(&d1));
+    assert!(
+        std::fs::read_to_string(old.dir.join("roles/forgeold.md"))
+            .unwrap()
+            .contains("renamed_to: forgenew"),
+        "the claim is recorded on disk"
+    );
+    let d2 = newc.confer(&["describe", "--renamed-from", "forgeold"]);
+    assert!(ok(&d2), "{}", err(&d2));
+
+    let wi = newc.confer(&["whois", "forgeold"]);
+    assert!(ok(&wi), "{}", err(&wi));
+    let wi_out = out(&wi);
+    assert!(
+        !wi_out.contains("renamed from"),
+        "an unsigned card's renamed_to must not be honored: {wi_out}"
+    );
+
+    let wj = newc.confer(&["whois", "forgeold", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&wj).trim()).unwrap();
+    assert_eq!(v[0]["rename_verified"], false, "{v}");
+}
+
+#[test]
+fn rename_chain_folds_transitively_to_the_final_role() {
+    // a -> b -> c, each hop independently verified (mutual, both-signed). `whois a` (and `whois
+    // b`) must fold all the way to `c`, cycle-safely (no infinite chase).
+    let hub = new_hub();
+    let keydir = tmp("key");
+    let a = join_signed(&hub, "rena", &keydir);
+    let b = join_signed(&hub, "renb", &keydir);
+    let c = join_signed(&hub, "renc", &keydir);
+
+    assert!(ok(&a.confer(&["describe", "--renamed-to", "renb"])));
+    assert!(ok(&b.confer(&["describe", "--renamed-from", "rena", "--renamed-to", "renc"])));
+    assert!(ok(&c.confer(&["describe", "--renamed-from", "renb"])));
+
+    let wi = c.confer(&["whois", "rena"]);
+    assert!(ok(&wi), "{}", err(&wi));
+    assert!(
+        out(&wi).contains("renc") && out(&wi).contains("(renamed from rena)"),
+        "a->b->c must fold to c: {}",
+        out(&wi)
+    );
+
+    let wj = c.confer(&["whois", "rena", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&wj).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "renc", "{v}");
+    assert_eq!(v[0]["renamed_to"], "renc", "{v}");
+
+    let wjb = c.confer(&["whois", "renb", "--json"]);
+    let vb: serde_json::Value = serde_json::from_str(out(&wjb).trim()).unwrap();
+    assert_eq!(vb[0]["resolved"], "renc", "{vb}");
+}

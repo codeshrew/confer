@@ -2,7 +2,7 @@
 //! and the dormant/retired/resume status setter. Moved verbatim from `main.rs`.
 
 use crate::append::{cmd_append, AppendArgs};
-use crate::{alias, config, crosshub, gitcmd, presence, projection, roster, schema, store, verify};
+use crate::{alias, config, crosshub, gitcmd, presence, projection, rename, roster, schema, store, verify};
 use crate::warn_safety;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
@@ -44,38 +44,10 @@ pub(crate) fn cmd_who(json: bool) -> Result<()> {
 
     if json {
         let mut vc = verify::Cache::default();
+        let links = rename::resolve(&root, &hub_key, &roster, &mut vc);
         let mut arr = Vec::with_capacity(rows.len());
         for a in &rows {
-            let ct = verify::card_trust(&root, &hub_key, &roster, &mut vc, &a.id);
-            let live = matches!(&a.presence, Some(p) if presence::liveness(p, now) == presence::Live::Up);
-            let liveness = a.presence.as_ref().map(|p| match presence::liveness(p, now) {
-                presence::Live::Up => "up",
-                presence::Live::Stale => "stale",
-                presence::Live::Down => "down",
-            });
-            let status = if matches!(ct, verify::Trust::Verified { .. }) {
-                roster.get(&a.id).and_then(|r| r.status.clone())
-            } else {
-                None
-            };
-            let aliases: Vec<&str> = roster
-                .get(&a.id)
-                .map(|r| r.aliases.iter().map(String::as_str).collect())
-                .unwrap_or_default();
-            arr.push(serde_json::json!({
-                "role": a.id,
-                "display": a.display,
-                "desc": a.desc,
-                "host": a.last_host,
-                "expected_host": a.expected_host,
-                "live": live,
-                "liveness": liveness,
-                "last_posted": a.last_ts,
-                "aliases": aliases,
-                "trust": { "status": ct.status_str(), "detail": ct.tag() },
-                "status": status,
-                "xhub": a.xhub.iter().map(|(h, r)| serde_json::json!({"hub": h, "role": r})).collect::<Vec<_>>(),
-            }));
+            arr.push(who_row_json(&root, &hub_key, &roster, &mut vc, &links, a, now));
         }
         println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
         return Ok(());
@@ -185,6 +157,58 @@ pub(crate) fn cmd_who(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// One `who --json` row — split out of `cmd_who` to keep that function under the line budget.
+fn who_row_json(
+    root: &std::path::Path,
+    hub_key: &str,
+    roster: &roster::Roster,
+    vc: &mut verify::Cache,
+    links: &rename::RenameLinks,
+    a: &projection::AgentRow,
+    now: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    let ct = verify::card_trust(root, hub_key, roster, vc, &a.id);
+    let res = links.get(&a.id);
+    let claims = links
+        .claims_touching(&a.id)
+        .into_iter()
+        .map(|c| serde_json::json!({"old": c.old, "new": c.new, "claimed_by": c.claimed_by}))
+        .collect::<Vec<_>>();
+    let live = matches!(&a.presence, Some(p) if presence::liveness(p, now) == presence::Live::Up);
+    let liveness = a.presence.as_ref().map(|p| match presence::liveness(p, now) {
+        presence::Live::Up => "up",
+        presence::Live::Stale => "stale",
+        presence::Live::Down => "down",
+    });
+    let status = if matches!(ct, verify::Trust::Verified { .. }) {
+        roster.get(&a.id).and_then(|r| r.status.clone())
+    } else {
+        None
+    };
+    let aliases: Vec<&str> = roster
+        .get(&a.id)
+        .map(|r| r.aliases.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    serde_json::json!({
+        "role": a.id,
+        "display": a.display,
+        "desc": a.desc,
+        "host": a.last_host,
+        "expected_host": a.expected_host,
+        "live": live,
+        "liveness": liveness,
+        "last_posted": a.last_ts,
+        "aliases": aliases,
+        "trust": { "status": ct.status_str(), "detail": ct.tag() },
+        "status": status,
+        "xhub": a.xhub.iter().map(|(h, r)| serde_json::json!({"hub": h, "role": r})).collect::<Vec<_>>(),
+        "renamed_from": res.renamed_from,
+        "renamed_to": res.renamed_to,
+        "rename_verified": res.verified(),
+        "rename_claims_unverified": claims,
+    })
+}
+
 /// The `●/○/✕ word (hb HH:MM) · ` liveness prefix for an agent (shared by `who`
 /// and the dashboard). Two spaces when the agent has published no heartbeat.
 fn agent_liveness_prefix(a: &projection::AgentRow, now: chrono::DateTime<chrono::Utc>) -> String {
@@ -231,12 +255,19 @@ pub(crate) fn cmd_identity(role: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a loose human phrase to a role (fuzzy over id/display/desc/aliases/host).
-pub(crate) fn cmd_whois(phrase: String) -> Result<()> {
+/// Resolve a loose human phrase to a role (fuzzy over id/display/desc/aliases/host). When the
+/// matched role has a VERIFIED rename link (`rename::resolve`), follows the chain to the final
+/// role and reports it instead — an unverified rename claim is surfaced as an advisory note, but
+/// never redirects the resolution (see `rename.rs` for why a bare claim must not fold).
+pub(crate) fn cmd_whois(phrase: String, json: bool) -> Result<()> {
     let root = config::repo_root()?;
     let roster = roster::load(&root);
     let matches = alias::resolve(&roster, &phrase);
     if matches.is_empty() {
+        if json {
+            println!("[]");
+            return Ok(());
+        }
         println!("no role matches \"{phrase}\". Try `confer who`, or teach it: the agent runs `confer describe --add-alias \"{phrase}\"`.");
         return Ok(());
     }
@@ -245,23 +276,73 @@ pub(crate) fn cmd_whois(phrase: String) -> Result<()> {
     // human doesn't trust the redirection.
     let hub_key = config::hub_key(&root);
     let mut vc = verify::Cache::default();
+    let links = rename::resolve(&root, &hub_key, &roster, &mut vc);
+
+    if json {
+        let mut arr = Vec::new();
+        for m in matches.iter().take(4) {
+            let res = links.get(&m.id);
+            let resolved_id = res.renamed_to.clone().unwrap_or_else(|| m.id.clone());
+            let claims = links
+                .claims_touching(&m.id)
+                .into_iter()
+                .map(|c| serde_json::json!({"old": c.old, "new": c.new, "claimed_by": c.claimed_by}))
+                .collect::<Vec<_>>();
+            arr.push(serde_json::json!({
+                "match": m.id,
+                "resolved": resolved_id,
+                "renamed_to": res.renamed_to,
+                "renamed_from": links.get(&resolved_id).renamed_from,
+                "rename_verified": res.renamed_to.is_some(),
+                "rename_claims_unverified": claims,
+                "trust": verify::card_trust(&root, &hub_key, &roster, &mut vc, &m.id).status_str(),
+            }));
+        }
+        println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
+        return Ok(());
+    }
+
     for (i, m) in matches.iter().take(4).enumerate() {
-        let disp = schema::sanitize_term(roster::display(&roster, &m.id), false);
+        let res = links.get(&m.id);
+        // Fold to the final role only when the LINK is verified; an unverified claim never
+        // redirects who we resolve to.
+        let target = res.renamed_to.as_deref().unwrap_or(&m.id);
+        let disp = schema::sanitize_term(roster::display(&roster, target), false);
         let about = roster
-            .get(&m.id)
+            .get(target)
             .and_then(|r| r.desc.as_deref())
             .map(|d| format!(" — {}", schema::sanitize_term(d, false)))
             .unwrap_or_default();
-        let warn = match verify::card_trust(&root, &hub_key, &roster, &mut vc, &m.id) {
+        let renamed_note = if res.renamed_to.is_some() {
+            format!(" (renamed from {})", m.id)
+        } else {
+            String::new()
+        };
+        let warn = match verify::card_trust(&root, &hub_key, &roster, &mut vc, target) {
             verify::Trust::Mismatch { .. } => "  ‼ this card was RE-KEYED — the name/desc may be an impostor's; verify out-of-band before trusting".to_string(),
             verify::Trust::FirstSight { .. } => "  ⚠ first-sight key — confirm out-of-band (`confer confirm-key`) before trusting this name".to_string(),
             verify::Trust::Unverified { .. } => "  (· unverified card — name/desc advisory)".to_string(),
             verify::Trust::Verified { .. } => String::new(),
         };
+        // An unverified rename claim touching the ORIGINAL match — never folds resolution, but
+        // worth a heads-up so a human can chase it down.
+        let claim_note = if res.renamed_to.is_none() {
+            let claims = links.claims_touching(&m.id);
+            if let Some(c) = claims.first() {
+                format!(
+                    "  (note: an unverified rename claim exists — {} claims {} -> {}; not folded)",
+                    c.claimed_by, c.old, c.new
+                )
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         println!(
-            "{} {disp} [{}]{about}{warn}",
+            "{} {disp} [{}]{renamed_note}{about}{warn}{claim_note}",
             if i == 0 { "→" } else { " " },
-            m.id
+            target
         );
     }
     Ok(())
@@ -338,7 +419,7 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
         }
     }
     // Display = the name; aliases resolve via `confer whois`. Adds are collision-checked.
-    cmd_describe(role, None, Some(name.clone()), add, vec![], force)?;
+    cmd_describe(role, None, Some(name.clone()), add, vec![], RenameClaim::default(), force)?;
 
     // L3 — rename broadcast: announce to peers so LIVE agents refresh their
     // working memory immediately, plus a who-was-called-what audit trail. Only when the
@@ -385,12 +466,125 @@ pub(crate) fn cmd_rename(name: String, role: Option<String>, force: bool) -> Res
     Ok(())
 }
 
+/// A rename claim passed to `describe` — bundled into one argument to keep the function's
+/// arg count down; see `Role::renamed_from`/`renamed_to` for the semantics.
+#[derive(Default)]
+pub(crate) struct RenameClaim {
+    pub renamed_from: Vec<String>,
+    pub renamed_to: Option<String>,
+}
+
+impl RenameClaim {
+    fn is_empty(&self) -> bool {
+        self.renamed_from.is_empty() && self.renamed_to.is_none()
+    }
+
+    /// Refuse a self-reference or a malformed role id up front — fail before any card is touched.
+    fn validate(&self, me: &str) -> Result<()> {
+        if self.renamed_from.iter().any(|o| o == me) {
+            return Err(anyhow!("--renamed-from {me} is a self-reference; refusing"));
+        }
+        if self.renamed_to.as_deref() == Some(me) {
+            return Err(anyhow!("--renamed-to {me} is a self-reference; refusing"));
+        }
+        for o in &self.renamed_from {
+            if !crate::valid_slug(o) {
+                return Err(anyhow!("--renamed-from '{o}' is not a valid role id"));
+            }
+        }
+        if let Some(n) = &self.renamed_to {
+            if !crate::valid_slug(n) {
+                return Err(anyhow!("--renamed-to '{n}' is not a valid role id"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply additive `renamed_from` + set `renamed_to` onto the card's frontmatter map.
+    /// Returns whether anything changed.
+    fn apply(&self, map: &mut serde_yaml::Mapping) -> bool {
+        let mut changed = false;
+        let mut rfrom: Vec<String> = map
+            .get("renamed_from")
+            .and_then(|v| v.as_sequence())
+            .map(|s| s.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        for old in &self.renamed_from {
+            if !rfrom.iter().any(|o| o == old) {
+                rfrom.push(old.clone());
+                println!("claimed renamed_from '{old}' (folded only if {old}'s own card reciprocates)");
+                changed = true;
+            }
+        }
+        if let Some(new) = &self.renamed_to {
+            if map.get("renamed_to").and_then(|v| v.as_str()) != Some(new.as_str()) {
+                map.insert("renamed_to".into(), new.clone().into());
+                println!("claimed renamed_to '{new}' (folded only if {new}'s own card reciprocates)");
+                changed = true;
+            }
+        }
+        if rfrom.is_empty() {
+            map.remove("renamed_from");
+        } else {
+            let seq: serde_yaml::Sequence = rfrom.iter().map(|a| serde_yaml::Value::String(a.clone())).collect();
+            map.insert("renamed_from".into(), serde_yaml::Value::Sequence(seq));
+        }
+        changed
+    }
+}
+
+/// Apply `--remove-alias`/`--add-alias` onto the working alias list (collision-checked adds,
+/// unless `force`). Split out of `cmd_describe` to keep that function under the line budget.
+/// Returns whether anything changed.
+fn apply_alias_updates(
+    aliases: &mut Vec<String>,
+    add_alias: &[String],
+    remove_alias: &[String],
+    roster: &roster::Roster,
+    me: &str,
+    force: bool,
+) -> bool {
+    let mut changed = false;
+    for rm in remove_alias {
+        let before = aliases.len();
+        aliases.retain(|a| !a.eq_ignore_ascii_case(rm.trim()));
+        if aliases.len() < before {
+            println!("removed alias '{}'", rm.trim());
+            changed = true;
+        }
+    }
+    for add in add_alias {
+        let add = add.trim();
+        if add.is_empty() || aliases.iter().any(|a| a.eq_ignore_ascii_case(add)) {
+            continue;
+        }
+        if !force {
+            if let Some((who, s, why)) = alias::conflict(roster, me, add) {
+                if who.is_empty() {
+                    eprintln!("confer describe: skipping alias '{add}' — {why}.");
+                } else {
+                    eprintln!(
+                        "confer describe: skipping alias '{add}' — it {why} '{s}' ({} [{who}]). Use --force to add anyway.",
+                        roster::display(roster, &who)
+                    );
+                }
+                continue;
+            }
+        }
+        aliases.push(add.to_string());
+        println!("added alias '{add}'");
+        changed = true;
+    }
+    changed
+}
+
 pub(crate) fn cmd_describe(
     role: Option<String>,
     desc: Option<String>,
     display: Option<String>,
     add_alias: Vec<String>,
     remove_alias: Vec<String>,
+    rename_claim: RenameClaim,
     force: bool,
 ) -> Result<()> {
     let root = config::repo_root()?;
@@ -401,11 +595,17 @@ pub(crate) fn cmd_describe(
             "no role card roles/{me}.md — join first: confer join --role {me}"
         ));
     }
+    rename_claim.validate(&me)?;
     let _ = gitcmd::integrate(&root); // freshen the roster so collision checks see peers
     let roster = roster::load(&root);
 
     // Show current state when called with nothing to change.
-    if desc.is_none() && display.is_none() && add_alias.is_empty() && remove_alias.is_empty() {
+    if desc.is_none()
+        && display.is_none()
+        && add_alias.is_empty()
+        && remove_alias.is_empty()
+        && rename_claim.is_empty()
+    {
         let r = roster.get(&me);
         println!(
             "{me}: {} — {}",
@@ -471,34 +671,10 @@ pub(crate) fn cmd_describe(
                 .collect()
         })
         .unwrap_or_default();
-    for rm in &remove_alias {
-        let before = aliases.len();
-        aliases.retain(|a| !a.eq_ignore_ascii_case(rm.trim()));
-        if aliases.len() < before {
-            println!("removed alias '{}'", rm.trim());
-            changed = true;
-        }
+    if apply_alias_updates(&mut aliases, &add_alias, &remove_alias, &roster, &me, force) {
+        changed = true;
     }
-    for add in &add_alias {
-        let add = add.trim();
-        if add.is_empty() || aliases.iter().any(|a| a.eq_ignore_ascii_case(add)) {
-            continue;
-        }
-        if !force {
-            if let Some((who, s, why)) = alias::conflict(&roster, &me, add) {
-                if who.is_empty() {
-                    eprintln!("confer describe: skipping alias '{add}' — {why}.");
-                } else {
-                    eprintln!(
-                        "confer describe: skipping alias '{add}' — it {why} '{s}' ({} [{who}]). Use --force to add anyway.",
-                        roster::display(&roster, &who)
-                    );
-                }
-                continue;
-            }
-        }
-        aliases.push(add.to_string());
-        println!("added alias '{add}'");
+    if rename_claim.apply(&mut map) {
         changed = true;
     }
     if !changed {

@@ -740,6 +740,9 @@ pub(crate) enum Cmd {
         /// the phrase to resolve (quotes optional: `confer whois my ios agent`)
         #[arg(required = true, num_args = 1..)]
         phrase: Vec<String>,
+        /// machine-readable output (the match plus any verified rename resolution).
+        #[arg(long)]
+        json: bool,
     },
     /// Update your OWN role card: set a description and add/remove the aliases the
     /// owner uses for you. Alias adds are collision-checked against every other
@@ -759,6 +762,14 @@ pub(crate) enum Cmd {
         /// remove an alias (repeatable).
         #[arg(long = "remove-alias")]
         remove_alias: Vec<String>,
+        /// claim you used to be known as this OLD role id (repeatable). Folded into a VERIFIED
+        /// rename only if the old role's own card reciprocates with `--renamed-to` (or the two
+        /// cards share a pubkey) — a one-sided claim is shown as unverified, never resolved.
+        #[arg(long = "renamed-from")]
+        renamed_from: Vec<String>,
+        /// claim you moved to this NEW role id. Same both-sides-agree rule as `--renamed-from`.
+        #[arg(long = "renamed-to")]
+        renamed_to: Option<String>,
         /// add even if it looks confusingly close to another role's name.
         #[arg(long)]
         force: bool,

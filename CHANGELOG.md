@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Verified role-rename links: `whois`/`who` now fold an old role id into the role it became,
+  but only when the fold is cryptographically earned.** A role card is data any hub writer can
+  rewrite, so a bare self-declared `renamed_from` would let any role hijack `whois <victim>` and
+  redirect peers to an impostor. `describe --renamed-from <OLD>` / `--renamed-to <NEW>` let a role
+  claim it moved, but the claim is only VERIFIED — and only then folded — when either the two
+  cards publish the SAME pubkey, or BOTH sides agree (`new`'s card lists `renamed_from` containing
+  `old`, and `old`'s card lists `renamed_to: new`), and in every case a card's field only counts
+  when that card's latest edit is signature-verified against its pinned key (the same rule that
+  already gates the self-declared `status` field). `whois <old>` follows a verified chain to its
+  final role and says "(renamed from `<old>`)"; a one-sided or unsigned claim is never folded, only
+  surfaced as an advisory note. `who --json` and `whois --json` (new `--json` flag) both gain
+  `renamed_from`, `renamed_to`, `rename_verified`, and `rename_claims_unverified` (jarvis).
 - **An opaque `--project` tag on messages, so a stuck-work checker can tell projects apart.**
   45% of jarvis's 347 requests sit in topic "general", which can't say which project (and owner)
   a request belongs to. `append`/`request`/`note`/`claim`/`done` all take `--project <SLUG>` (1–64

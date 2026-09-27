@@ -49,6 +49,7 @@ mod spool;
 mod projection;
 mod reconnect;
 mod refcmd;
+mod rename;
 mod refcode;
 mod repomap;
 mod repos;
@@ -843,7 +844,7 @@ fn run() -> Result<()> {
         Cmd::Hub { action, yes } => cmd_hub(action, yes),
         Cmd::Rewatch { only, role } => cmd_rewatch(only, role),
         Cmd::Identity { role } => cmd_identity(role),
-        Cmd::Whois { phrase } => cmd_whois(phrase.join(" ")),
+        Cmd::Whois { phrase, json } => cmd_whois(phrase.join(" "), json),
         Cmd::Whoami { json } => whoami::cmd(json),
         Cmd::Rename { name, role, force } => cmd_rename(name.join(" "), role, force),
         Cmd::Describe {
@@ -852,8 +853,18 @@ fn run() -> Result<()> {
             display,
             add_alias,
             remove_alias,
+            renamed_from,
+            renamed_to,
             force,
-        } => cmd_describe(role, desc, display, add_alias, remove_alias, force),
+        } => cmd_describe(
+            role,
+            desc,
+            display,
+            add_alias,
+            remove_alias,
+            identity::RenameClaim { renamed_from, renamed_to },
+            force,
+        ),
         Cmd::Retire { role, permanent } => {
             cmd_set_status(role, if permanent { "retired" } else { "dormant" })
         }

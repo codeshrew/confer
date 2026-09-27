@@ -41,6 +41,22 @@ pub struct Role {
     /// no body. Empty/whitespace-only body normalizes to `None`.
     #[serde(skip)]
     pub profile: Option<String>,
+    /// Self-declared claim: "this role used to be known as these old role ids" (the role
+    /// that MOVED here, e.g. `nerf-herdr` claiming `renamed_from: [herdr]`). Self-sovereign
+    /// like `status`: honored by `rename::resolve` ONLY when the card edit that carries it is
+    /// signature-verified against the role's pinned key (`verify::card_trust`), and even then
+    /// only as ONE side of a mutual, both-signed agreement (see `rename::resolve`) — a bare
+    /// self-asserted `renamed_from` must never by itself redirect a peer's old id (impersonation/
+    /// hijack). Values are validated as role ids (`valid_slug`) on write; a malformed value read
+    /// back is simply not honored, never a crash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed_from: Vec<String>,
+    /// Self-declared claim: "I moved to this new role id" (the OLD role pointing forward,
+    /// e.g. `herdr` claiming `renamed_to: nerf-herdr`). Same self-sovereign rule as
+    /// `renamed_from`/`status`: only honored when signed by the role's pinned key, and even
+    /// then only as one side of a mutual agreement — see `rename::resolve`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_to: Option<String>,
 }
 
 /// The role's published SSH public key, if any.
@@ -102,6 +118,8 @@ pub fn load(root: &Path) -> Roster {
                             status: s("status"),
                             pubkey: None,
                             profile: None, // legacy roles.toml has no markdown body
+                            renamed_from: Vec::new(),
+                            renamed_to: None,
                         },
                     );
                 }

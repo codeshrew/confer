@@ -181,6 +181,8 @@ mod tests {
             status: None,
             pubkey: None,
             profile: None,
+            renamed_from: Vec::new(),
+            renamed_to: None,
         }
     }
 
