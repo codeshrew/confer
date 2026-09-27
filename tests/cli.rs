@@ -10870,3 +10870,37 @@ fn rename_chain_folds_transitively_to_the_final_role() {
     let vb: serde_json::Value = serde_json::from_str(out(&wjb).trim()).unwrap();
     assert_eq!(vb[0]["resolved"], "renc", "{vb}");
 }
+
+#[test]
+fn rename_same_key_folds_on_the_new_sides_claim_but_a_shared_key_alone_does_not() {
+    // Rule 1: the agent kept its key and joined a new role. Holding old's key is the proof, so the
+    // new side's `renamed_from` suffices. But one agent may run two LIVE roles under one key, so a
+    // shared key without a claim must not fold anything.
+    let hub = new_hub();
+    let keydir = tmp("key-same");
+    let key = keydir.join("shared");
+    std::fs::create_dir_all(&keydir).unwrap();
+    assert!(Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", key.to_str().unwrap(), "-N", "", "-C", "shared", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    let join = |role: &str| {
+        let c = hub.clone(role);
+        let j = c.confer(&["join", "--role", role, "--signing-key", key.to_str().unwrap()]);
+        assert!(ok(&j), "join {role}: {}", err(&j));
+        c
+    };
+    let _old = join("lane-a");
+    let newc = join("lane-b");
+
+    let before = newc.confer(&["whois", "lane-a", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&before).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "lane-a", "a shared key alone is not a rename: {v}");
+
+    assert!(ok(&newc.confer(&["describe", "--renamed-from", "lane-a"])));
+    let after = newc.confer(&["whois", "lane-a", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(out(&after).trim()).unwrap();
+    assert_eq!(v[0]["resolved"], "lane-b", "same key + the new side's claim folds: {v}");
+    assert_eq!(v[0]["rename_verified"], true, "{v}");
+}

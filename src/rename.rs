@@ -6,7 +6,8 @@
 //! peers to the impostor. The fix mirrors how `status` is honored (`verify::card_trust`): a card
 //! field only counts when the card's LATEST edit is signature-verified against that role's pinned
 //! key. A link `old -> new` is VERIFIED iff either:
-//!   1. `old` and `new` publish the SAME pubkey (both cards Verified) — the strongest proof, since
+//!   1. `new` claims `renamed_from: [old]` and both publish the SAME pubkey (both cards Verified) —
+//!      a shared key without the claim is not a rename (one agent may hold two live roles). Proof, since
 //!      a role can only publish a pubkey it can sign with (TOFU-pins on first sight, so a copied
 //!      pubkey string that isn't actually held fails that role's OWN card-trust check); or
 //!   2. BOTH sides agree: `new`'s (Verified) card has `renamed_from` containing `old`, AND `old`'s
@@ -15,7 +16,7 @@
 //! A one-sided claim, or a claim riding an unverified/mismatched card, is surfaced only as an
 //! unverified claim — never folded.
 
-use crate::{gitcmd, roster, verify};
+use crate::{roster, verify};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -63,19 +64,6 @@ impl RenameLinks {
     }
 }
 
-/// The oldest commit timestamp (`%at`, unix seconds) touching a role's card — used ONLY to break
-/// the direction of a pubkey-match link (rule 1 carries no old/new of its own): whichever card was
-/// created first is `old`. An objective git-log fact, not a self-declared field, so it can't be
-/// gamed by either side's card content.
-fn card_first_seen(root: &Path, role: &str) -> Option<i64> {
-    let rel = format!("roles/{role}.md");
-    let out = gitcmd::output(root, &["log", "--format=%at", "--", &rel]).ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .last() // git log is newest-first; the LAST line is the oldest commit
-        .and_then(|s| s.trim().parse::<i64>().ok())
-}
-
 /// Build the verified rename graph for every role in `roster`, plus the unverified claims left
 /// over. Best-effort/read-only: any IO hiccup just drops a role from consideration, never panics.
 pub fn resolve(
@@ -96,31 +84,29 @@ pub fn resolve(
     let mut edges: HashMap<String, String> = HashMap::new();
     let mut unverified = Vec::new();
 
-    // Rule 1 — same pubkey, both cards Verified. Direction from first-seen commit timestamp.
-    let ids: Vec<&String> = ros.keys().collect();
-    for i in 0..ids.len() {
-        for j in (i + 1)..ids.len() {
-            let (a, b) = (ids[i], ids[j]);
-            if !verified.contains(a) || !verified.contains(b) {
+    // Rule 1 — the new role claims `renamed_from: [old]` and both cards are Verified under the
+    // SAME pubkey: holding old's key is the proof, so old need not reciprocate. A shared key alone
+    // is NOT a rename (one agent may run two live roles under one key), so the claim is required,
+    // and it also gives the direction. An old id claimed this way by two different roles is
+    // ambiguous and folds nowhere.
+    let mut by_key: HashMap<String, Vec<String>> = HashMap::new();
+    for (new, role) in ros {
+        for old in &role.renamed_from {
+            if old == new || !verified.contains(old) || !verified.contains(new) {
                 continue;
             }
-            let (Some(pa), Some(pb)) = (roster::pubkey(ros, a), roster::pubkey(ros, b)) else {
-                continue;
-            };
-            if pa != pb {
-                continue;
-            }
-            let (ta, tb) = (card_first_seen(root, a), card_first_seen(root, b));
-            match (ta, tb) {
-                (Some(ta), Some(tb)) if ta < tb => {
-                    edges.insert(a.clone(), b.clone());
+            if let (Some(po), Some(pn)) = (roster::pubkey(ros, old), roster::pubkey(ros, new)) {
+                if po == pn {
+                    by_key.entry(old.clone()).or_default().push(new.clone());
                 }
-                (Some(ta), Some(tb)) if tb < ta => {
-                    edges.insert(b.clone(), a.clone());
-                }
-                _ => {} // equal/unknown timestamps: same-key link is real, but direction is
-                        // ambiguous — skip rather than guess.
             }
+        }
+    }
+    for (old, mut news) in by_key {
+        news.sort();
+        news.dedup();
+        if let [only] = news.as_slice() {
+            edges.insert(old, only.clone());
         }
     }
 

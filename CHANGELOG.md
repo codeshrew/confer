@@ -6,8 +6,9 @@
   but only when the fold is cryptographically earned.** A role card is data any hub writer can
   rewrite, so a bare self-declared `renamed_from` would let any role hijack `whois <victim>` and
   redirect peers to an impostor. `describe --renamed-from <OLD>` / `--renamed-to <NEW>` let a role
-  claim it moved, but the claim is only VERIFIED — and only then folded — when either the two
-  cards publish the SAME pubkey, or BOTH sides agree (`new`'s card lists `renamed_from` containing
+  claim it moved, but the claim is only VERIFIED — and only then folded — when either the new
+  side claims it and both cards publish the SAME pubkey (a shared key alone is not a rename: one
+  agent may run two live roles), or BOTH sides agree (`new`'s card lists `renamed_from` containing
   `old`, and `old`'s card lists `renamed_to: new`), and in every case a card's field only counts
   when that card's latest edit is signature-verified against its pinned key (the same rule that
   already gates the self-declared `status` field). `whois <old>` follows a verified chain to its
