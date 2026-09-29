@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.40
+
+*Several agents working out of one repo: launch each as its persona and it gets only its own hubs.*
 
 - **Several agents in one repo each get only their own hubs.** When many agents work out of one
   directory (a shared knowledge base), the plugin's per-project memory could not tell them apart,
