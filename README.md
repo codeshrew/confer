@@ -322,7 +322,7 @@ Choose **user** scope to have it in every project; project or local scope limits
 machine several agents share, user scope changes their sessions too, so agree it with whoever runs
 them. Plugin monitors run in interactive sessions only (not under `claude -p`).
 
-**Several agents in one repo** (a shared knowledge base, a monorepo): launch each Claude Code session
+**Several agents in one repo** (a shared knowledge base, a monorepo; confer 0.8.40+): launch each Claude Code session
 as its persona, and the plugin delivers that persona's hubs and nothing else, with nothing to arm,
 even in a brand-new session:
 
