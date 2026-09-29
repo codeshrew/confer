@@ -309,6 +309,7 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
     let cur = BUILD_SHA;
     let mc_cfg = machineconfig::load(); // per-hub `watch` posture (design/35): don't nudge an `off` hub
     let mut nudges: Vec<String> = Vec::new();
+    let mut unread_lines: Vec<String> = Vec::new();
     let mut stale = 0usize;
     for t in &reg.targets {
         if !std::path::Path::new(&t.hub).exists() {
@@ -354,7 +355,10 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
         // the day it is real, so give it the number that makes it un-skimmable.
         let waiting = count_unread(std::path::Path::new(&t.hub), &hub_key, &t.role);
         let waiting = match waiting {
-            Some(n) if n > 0 => format!(" — {n} unread waiting"),
+            Some(n) if n > 0 => {
+                unread_lines.push(format!("• role '{}' @ {}: {n} unread", t.role, t.hub));
+                format!(" — {n} unread waiting")
+            }
             _ => String::new(),
         };
         nudges.push(format!(
@@ -424,6 +428,20 @@ pub(crate) fn cmd_session_heal() -> Result<()> {
              current one. Run `confer changelog` if you want to know what changed in this build."
                 .to_string(),
         );
+    }
+    // With the confer Claude Code plugin, the plugin's reader starts (or restarts) this session's
+    // watchers moments after session start. This hook usually runs first, so a watcher a reboot or
+    // sleep left stale looks down here, and "re-arm under a Monitor" was the wrong advice: it
+    // starts a Monitor the plugin exists to replace. Say what is waiting instead.
+    if !nudges.is_empty() && crate::plugin_ctl::claude_plugin_enabled() {
+        let mut msg = "confer: the confer plugin delivers your hubs for this session and is starting any \
+                       watcher that is down. Nothing to arm; check with `confer plugin status`."
+            .to_string();
+        if !unread_lines.is_empty() {
+            msg.push_str(&format!(" Unread for you (`confer inbox`):\n{}", unread_lines.join("\n")));
+        }
+        sections.push(msg);
+        nudges.clear();
     }
     if !nudges.is_empty() {
         let lead = if source == "compact" {

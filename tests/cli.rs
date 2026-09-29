@@ -10904,3 +10904,50 @@ fn rename_same_key_folds_on_the_new_sides_claim_but_a_shared_key_alone_does_not(
     assert_eq!(v[0]["resolved"], "lane-b", "same key + the new side's claim folds: {v}");
     assert_eq!(v[0]["rename_verified"], true, "{v}");
 }
+
+#[test]
+fn session_heal_defers_to_the_confer_plugin_instead_of_advising_a_monitor() {
+    // After a reboot, the SessionStart hook ran before the plugin reader had restarted the
+    // watchers, saw them stale, and told the agent to re-arm under a Monitor: the very thing the
+    // plugin replaces (Herald, 2026-09-29). With the plugin installed it now says so instead.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["install-skill", "--role", "alpha"])));
+    std::fs::write(
+        a.home.join(".confer/autoheal.json"),
+        serde_json::json!({ "enabled": true, "targets": [{ "hub": a.dir, "role": "alpha", "session": "SESS-P" }] })
+            .to_string(),
+    )
+    .unwrap();
+    let heal = || {
+        let o = Command::new(BIN)
+            .env("HOME", &a.home)
+            .env("CONFER_HUB", &a.dir)
+            .env("CONFER_ROLE", "alpha")
+            .arg("session-heal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut ch| {
+                use std::io::Write;
+                ch.stdin.take().unwrap().write_all(br#"{"session_id":"SESS-P"}"#).unwrap();
+                ch.wait_with_output()
+            })
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+
+    let without = heal();
+    assert!(without.contains("/confer-arm"), "no plugin: the Monitor re-arm advice stands: {without}");
+
+    std::fs::create_dir_all(a.home.join(".claude/plugins")).unwrap();
+    std::fs::write(
+        a.home.join(".claude/plugins/installed_plugins.json"),
+        r#"{"version":2,"plugins":{"confer@confer":[{"scope":"user"}]}}"#,
+    )
+    .unwrap();
+    let with = heal();
+    assert!(with.contains("confer plugin delivers"), "with the plugin, say it is handling it: {with}");
+    assert!(!with.contains("/confer-arm skill"), "and do not advise a Monitor: {with}");
+}

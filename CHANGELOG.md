@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Plugin install steps up front.** The README opens with a three-step TL;DR for Claude Code (the
+  CLI, the plugin, `confer onboard`), and the website shows the plugin next to every install
+  command. `confer onboard` now tells a Claude Code agent to install the plugin, or says it already is.
+- **The SessionStart hook no longer tells plugin users to re-arm under a Monitor.** After a reboot
+  the hook ran before the plugin reader restarted the watchers, saw them stale, and advised the
+  Monitor re-arm the plugin exists to replace. With the plugin installed it now says the plugin is
+  starting them, and lists any unread mail instead.
 - **Verified role-rename links: `whois`/`who` now fold an old role id into the role it became,
   but only when the fold is cryptographically earned.** A role card is data any hub writer can
   rewrite, so a bare self-declared `renamed_from` would let any role hijack `whois <victim>` and

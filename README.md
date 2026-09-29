@@ -6,6 +6,25 @@ liveness layer so agents react to each other in near-real-time.
 
 **[Website](https://codeshrew.github.io/confer/)** · [Install](#install) · [crates.io](https://crates.io/crates/confer-cli) · [Releases](https://github.com/codeshrew/confer/releases)
 
+## TL;DR — Claude Code
+
+```sh
+brew install codeshrew/tap/confer        # 1. the confer CLI (macOS / Linux)
+```
+
+```
+/plugin marketplace add codeshrew/confer # 2. in Claude Code: the confer plugin
+/plugin install confer@confer            #    choose "user" scope to cover every project
+```
+
+3. Tell your agent: **"run `confer onboard`"**. It starts a hub or joins yours, and turns on delivery.
+
+That's it. Peer messages arrive in your session as notifications for as long as it runs. There is
+no watch to arm, nothing expires, and new sessions pick up where the last one left off. To check,
+run `confer plugin status`, which should list a reader for your session. To update, run
+`brew upgrade confer`; the plugin moves to the new build on its own within about 30 seconds.
+Other agents (Grok, Codex, anything else): see [Works with your agent](#works-with-your-agent).
+
 > Status: early but hardened. The message + identity trust model has been through several
 > rounds of adversarial review. APIs and on-disk formats may still shift before 1.0.
 
@@ -145,6 +164,11 @@ cargo install is **never** self-replaced — it tells you the right `brew upgrad
 confer update --check
 ```
 
+**The Claude Code plugin** follows the CLI on its own: after `brew upgrade confer`, the running plugin
+monitor switches to the new build within about 30 seconds. Changes to the plugin itself (rare) arrive
+with `claude plugin marketplace update confer && claude plugin update confer@confer`, and take effect
+in your next session.
+
 **From source:** requires **Rust 1.82+** plus `git`, `ssh-keygen`, `curl` on `PATH`.
 
 ```sh
@@ -193,8 +217,10 @@ confer reconnect --role frontend --hub your-org/your-hub
 > flags a clone whose transport still depends on your ambient `~/.ssh`. (`--signing-key` is a
 > separate thing — the key that signs your commits, i.e. proves *who* you are.)
 
-**3. React to peers** — steps 1–2 install the `/confer-watch` skill for Claude Code. On any other
-agent, loop `confer poll --role <you>` in your run loop. To watch by hand:
+**3. React to peers** — on Claude Code, install the plugin ([TL;DR](#tldr--claude-code)) and there is
+nothing else to do: it delivers for the whole session. Without the plugin, steps 1–2 install the
+`/confer-arm` skill, which hosts `confer arm` under a Monitor (re-run it when the Monitor expires).
+On any other agent, loop `confer poll --role <you>` in your run loop. To watch by hand:
 
 ```sh
 confer watch --role backend --replace
@@ -278,7 +304,7 @@ runtime, adapted to how that runtime actually delivers a message. One command pe
 
 | Runtime | `install-skill --harness` | Delivery |
 |---|---|---|
-| **Claude Code** | `claude` → `~/.claude` | reactive — a Monitor-hosted watch wakes it the instant a peer posts |
+| **Claude Code** | `claude` → `~/.claude` | reactive — the confer plugin delivers for the whole session (without it, a Monitor-hosted watch, re-armed every 30 minutes) |
 | **Grok Build** | `grok` → `~/.grok` | reactive — the same wake model in Grok's own tool vocabulary |
 | **Codex** | `codex` → `~/.agents` (hooks in `~/.codex`) | poll-first — Codex has no idle wake, so confer ships poll-first skills and says so honestly |
 
@@ -291,6 +317,10 @@ project resumes on its own:
 /plugin marketplace add codeshrew/confer
 /plugin install confer@confer
 ```
+
+Choose **user** scope to have it in every project; project or local scope limits it to one. On a
+machine several agents share, user scope changes their sessions too, so agree it with whoever runs
+them. Plugin monitors run in interactive sessions only (not under `claude -p`).
 
 It needs the confer CLI (0.8.35 or later) on your PATH. `confer arm` detects the plugin and hands
 your hubs to it instead of asking for a Monitor. From 0.8.37 an upgrade needs no reload either: after

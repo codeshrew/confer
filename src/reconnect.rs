@@ -354,7 +354,14 @@ pub(crate) fn cmd_onboard(role: Option<String>, hub: Option<String>) -> Result<(
             println!("No monitor tool?  loop  /loop 60s /confer-poll  in your run loop instead.");
         }
         _ => {
-            println!("Reactive layer: on Claude Code, `confer install-skill` wires `/confer-watch` + the SessionStart hook (~/.claude/settings.json).");
+            if crate::plugin_ctl::claude_plugin_enabled() {
+                println!("Reactive layer: the confer Claude Code plugin is installed — it delivers peer messages for the whole session, nothing to arm.");
+            } else {
+                println!("Reactive layer: on Claude Code, install the confer plugin (delivers for the whole session, no 30-minute re-arms):");
+                println!("    /plugin marketplace add codeshrew/confer");
+                println!("    /plugin install confer@confer");
+                println!("  Without it, `confer install-skill` wires `/confer-arm` + the SessionStart hook (~/.claude/settings.json).");
+            }
             println!("Headless?  loop  `confer poll --role {r}`  (/loop 45s /confer-poll) in your run loop instead.");
         }
     }

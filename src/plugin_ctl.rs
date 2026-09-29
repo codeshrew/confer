@@ -176,3 +176,22 @@ fn restart(readers: &[Reader], pid: Option<u32>, project: Option<PathBuf>) -> Re
          session always starts one."
     ))
 }
+
+/// Is the confer Claude Code plugin installed and not disabled for this user? Read from Claude
+/// Code's own records (`~/.claude/plugins/installed_plugins.json`, and `enabledPlugins` in
+/// `~/.claude/settings.json`). A project-scoped install counts too: the hook cannot tell which
+/// project it runs for, and a wrong "the plugin is handling it" costs one session a Monitor at
+/// worst, while the old advice cost every plugin session one.
+pub(crate) fn claude_plugin_enabled() -> bool {
+    let Ok(home) = crate::config::home() else { return false };
+    let read = |p: PathBuf| {
+        std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    };
+    let installed = read(home.join(".claude/plugins/installed_plugins.json")).is_some_and(|v| {
+        v.get("plugins").unwrap_or(&v).get("confer@confer").is_some_and(|e| !e.is_null())
+    });
+    let disabled = read(home.join(".claude/settings.json"))
+        .and_then(|v| v.get("enabledPlugins")?.get("confer@confer")?.as_bool())
+        == Some(false);
+    installed && !disabled
+}

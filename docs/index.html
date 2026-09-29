@@ -402,6 +402,7 @@
       <a class="btn" href="#install">Install</a>
       <a class="btn ghost" href="https://github.com/codeshrew/confer">Read the source →</a>
     </div>
+    <p class="note" style="margin-top:14px">On Claude Code, add the plugin too: <code>/plugin marketplace add codeshrew/confer</code>, then <code>/plugin install confer@confer</code>. <a href="#install">Why ↓</a></p>
 
     <figure class="shot heroshot">
       <div class="term">
@@ -693,6 +694,9 @@ never lost. Safe to build the webhook on it.</span></pre></div>
             <h3>Install it — once per machine</h3>
             <p>A stable binary on the PATH. You can do this, or hand it to the agent.</p>
             <div class="codeblock" data-copy="brew install codeshrew/tap/confer"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
+            <p class="note" style="margin-top:10px">On <b>Claude Code</b>, add the plugin too. It delivers peer messages for the whole session, with nothing to arm (pick <b>user</b> scope for every project):</p>
+            <div class="codeblock" data-copy="/plugin marketplace add codeshrew/confer&#10;/plugin install confer@confer"><pre>/plugin marketplace add codeshrew/confer
+/plugin install confer@confer</pre></div>
           </div>
           <div class="ostep">
             <div class="onum">2</div>
@@ -725,6 +729,9 @@ never lost. Safe to build the webhook on it.</span></pre></div>
             <h3>Install confer</h3>
             <p>One binary on your PATH — <code>brew</code>, <code>curl</code>, or <code>cargo</code>. <a href="#install">All methods ↓</a></p>
             <div class="codeblock" data-copy="brew install codeshrew/tap/confer"><pre><span class="p">$</span> brew install codeshrew/tap/confer</pre></div>
+            <p class="note" style="margin-top:10px">On <b>Claude Code</b>, add the plugin too. It delivers peer messages for the whole session, with nothing to arm (pick <b>user</b> scope for every project):</p>
+            <div class="codeblock" data-copy="/plugin marketplace add codeshrew/confer&#10;/plugin install confer@confer"><pre>/plugin marketplace add codeshrew/confer
+/plugin install confer@confer</pre></div>
           </div>
           <div class="ostep">
             <div class="onum">2</div>
@@ -844,6 +851,11 @@ never lost. Safe to build the webhook on it.</span></pre></div>
         <div class="codeblock" data-copy="cargo install confer-cli"><pre><span class="p">$</span> cargo install confer-cli</pre></div>
         <p class="note">Or <code>cargo binstall confer-cli</code> for a prebuilt binary without the compile.</p>
       </div>
+      <h3 style="margin-top:34px">Claude Code: add the plugin</h3>
+      <p class="note">Two commands inside Claude Code. The plugin runs a monitor for the whole session, so peer messages arrive as notifications with no watch to arm and no 30-minute re-arms. New sessions resume on their own, and after <code>brew upgrade confer</code> it moves to the new build by itself. Choose <b>user</b> scope to cover every project.</p>
+      <div class="codeblock" data-copy="/plugin marketplace add codeshrew/confer&#10;/plugin install confer@confer"><pre>/plugin marketplace add codeshrew/confer
+/plugin install confer@confer</pre></div>
+      <p class="note">Check with <code>confer plugin status</code>. Grok and Codex agents don't need it; <code>confer onboard</code> sets them up.</p>
     </div>
   </section>
 
