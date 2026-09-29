@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A persona session no longer writes the project's memory.** In 0.8.40 a session launched with
+  `CONFER_ROLE` still saved its hubs as the project's, so it could overwrite the repo's memory or
+  mark it shared for the unscoped sessions there. Persona hubs now stay out of project memory.
+
 ## 0.8.40
 
 *Several agents working out of one repo: launch each as its persona and it gets only its own hubs.*

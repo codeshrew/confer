@@ -357,7 +357,10 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
                     return Ok(()); // the session is gone
                 }
             }
-            if let (Some(p), true) = (&project, dropped || !started.is_empty()) {
+            // A persona session's hubs are the persona's, not the project's: keep them out of the
+            // per-project memory, or one persona would mark a shared repo, or hand its hubs to the
+            // next unscoped session there.
+            if let (Some(p), true, None) = (&project, dropped || !started.is_empty(), persona()) {
                 let hubs = tails
                     .iter()
                     .map(|((_, role), (_, root, _))| (root.to_string_lossy().to_string(), role.clone()))

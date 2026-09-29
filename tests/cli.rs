@@ -10987,4 +10987,9 @@ fn agents_sharing_one_repo_each_get_only_their_persona_hubs_with_nothing_to_arm(
     assert!(started_b, "{seen_b}");
     assert!(seen_a.contains("[alpha]") && !seen_a.contains("[beta]"), "alpha gets only alpha: {seen_a}");
     assert!(seen_b.contains("[beta]") && !seen_b.contains("[alpha]"), "beta gets only beta: {seen_b}");
+    // Persona hubs are not the project's: nothing is remembered for the repo, and it is not marked
+    // shared (found live on Batman: a persona session would otherwise overwrite the repo's memory).
+    let memory = std::fs::read_to_string(home.join(".confer/plugin/projects.json")).unwrap_or_default();
+    assert!(!memory.contains(kb.file_name().unwrap().to_str().unwrap()), "no project memory: {memory}");
+    assert!(!home.join(".confer/plugin/shared-projects.json").exists(), "not marked shared");
 }
