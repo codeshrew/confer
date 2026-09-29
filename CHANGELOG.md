@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.41
+
+*One fix to 0.8.40 persona scoping, found in a live test.*
 
 - **A persona session no longer writes the project's memory.** In 0.8.40 a session launched with
   `CONFER_ROLE` still saved its hubs as the project's, so it could overwrite the repo's memory or
