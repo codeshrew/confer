@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.39
+
+*Built with jarvis: `confer whoami`, an opaque `--project` tag on requests (with a dashboard filter), and verified rename links between roles. Plus plugin install steps up front, and a SessionStart hook that stops telling plugin users to arm a Monitor.*
 
 - **Plugin install steps up front.** The README opens with a three-step TL;DR for Claude Code (the
   CLI, the plugin, `confer onboard`), and the website shows the plugin next to every install
