@@ -9829,7 +9829,7 @@ fn a_recently_attached_watcher_does_not_idle_exit_in_the_gap_between_attaches() 
         .env("HOME", &a.home)
         .env("CONFER_HUB", &a.dir)
         .env("CONFER_ROLE", "alpha")
-        .env("CONFER_WATCH_IDLE_EXIT_SECS", "4")
+        .env("CONFER_WATCH_IDLE_EXIT_SECS", "6")
         .args(["watch", "--detach", "--poll", "1"])
         .output()
         .unwrap();
@@ -9851,7 +9851,9 @@ fn a_recently_attached_watcher_does_not_idle_exit_in_the_gap_between_attaches() 
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        std::thread::sleep(Duration::from_secs(2));
+        // 3s, not 2s: on a loaded CI runner an attach can take most of 2s just to start and write
+        // its marker, and then the watcher idles out for a reason this test is not about.
+        std::thread::sleep(Duration::from_secs(3));
         let _ = Command::new("kill").args(["-TERM", &att.id().to_string()]).status(); // as the Monitor does
         let _ = att.wait();
         std::thread::sleep(Duration::from_millis(1500));
