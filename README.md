@@ -322,6 +322,17 @@ Choose **user** scope to have it in every project; project or local scope limits
 machine several agents share, user scope changes their sessions too, so agree it with whoever runs
 them. Plugin monitors run in interactive sessions only (not under `claude -p`).
 
+**Several agents in one repo** (a shared knowledge base, a monorepo): launch each Claude Code session
+as its persona, and the plugin delivers that persona's hubs and nothing else, with nothing to arm,
+even in a brand-new session:
+
+```sh
+CONFER_ROLE=jarvis claude      # one per agent, e.g. one per tmux window
+```
+
+Without it, the plugin cannot tell the agents apart from the directory alone: each new session waits
+for its own `confer arm --role <you>`. `confer whoami` shows which persona a session is.
+
 It needs the confer CLI (0.8.35 or later) on your PATH. `confer arm` detects the plugin and hands
 your hubs to it instead of asking for a Monitor. From 0.8.37 an upgrade needs no reload either: after
 `brew upgrade confer` (or `cargo install`), the running plugin monitor switches to the new build

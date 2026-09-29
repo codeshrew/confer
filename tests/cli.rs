@@ -10125,12 +10125,12 @@ fn plugin_reader_as(
 ) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
     use std::io::BufRead;
     let mut child = Command::new(exe)
-        .envs(envs.iter().copied())
         .env("HOME", home)
         .env("CLAUDE_CODE_SESSION_ID", session)
         .env_remove("CONFER_ROLE")
         .env_remove("CONFER_HUB")
         .env_remove("GROK_SESSION_ID")
+        .envs(envs.iter().copied())
         .current_dir(home)
         .args(["attach", "--plugin", "--project", project.to_str().unwrap()])
         .stdout(Stdio::piped())
@@ -10950,4 +10950,41 @@ fn session_heal_defers_to_the_confer_plugin_instead_of_advising_a_monitor() {
     let with = heal();
     assert!(with.contains("confer plugin delivers"), "with the plugin, say it is handling it: {with}");
     assert!(!with.contains("/confer-arm skill"), "and do not advise a Monitor: {with}");
+}
+
+#[test]
+fn agents_sharing_one_repo_each_get_only_their_persona_hubs_with_nothing_to_arm() {
+    // Stefan: many agents run out of one knowledge-base repo. Project memory cannot tell them
+    // apart, so a fresh session there waited for its own arm (or, before 0.8.38, got the last
+    // agent's hubs). Launched as a persona (CONFER_ROLE in the Claude Code environment), a
+    // session's plugin reader delivers that persona's hubs, only those, with no arm at all.
+    let hub = new_hub();
+    let home = tmp("persona-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let _guard = Daemons(home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    // Both personas have armed here before, in sessions long gone.
+    std::fs::write(
+        home.join(".confer/autoheal.json"),
+        serde_json::json!({ "enabled": true, "targets": [
+            { "hub": a.dir, "role": "alpha", "session": "old-alpha" },
+            { "hub": b.dir, "role": "beta", "session": "old-beta" },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    let kb = tmp("persona-kb"); // the one repo both agents work in
+
+    let (ra, rxa) = plugin_reader_as(Path::new(BIN), &home, "fresh-a", &kb, &[("CONFER_ROLE", "alpha")]);
+    let (started, seen_a) = wait_for_line(&rxa, "delivering", 15);
+    assert!(started, "a persona session must start delivering with no arm: {seen_a}");
+    let (rb, rxb) = plugin_reader_as(Path::new(BIN), &home, "fresh-b", &kb, &[("CONFER_ROLE", "beta")]);
+    let (started_b, seen_b) = wait_for_line(&rxb, "delivering", 15);
+    stop(ra);
+    stop(rb);
+    assert!(started_b, "{seen_b}");
+    assert!(seen_a.contains("[alpha]") && !seen_a.contains("[beta]"), "alpha gets only alpha: {seen_a}");
+    assert!(seen_b.contains("[beta]") && !seen_b.contains("[alpha]"), "beta gets only beta: {seen_b}");
 }

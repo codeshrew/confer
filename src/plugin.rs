@@ -182,7 +182,27 @@ fn save_memory(project: &str, hubs: Vec<(String, String)>) {
 
 /// The hubs this session should read: targets stamped with this session, plus this project's hubs
 /// from last time. Only real hubs the role has joined.
+/// The persona this Claude Code session was launched as: `CONFER_ROLE` in its environment (for
+/// example `CONFER_ROLE=jarvis claude`). Several agents working out of one repo each get only their
+/// own hubs this way, with nothing to arm, even in a fresh session.
+pub(crate) fn persona() -> Option<String> {
+    std::env::var("CONFER_ROLE").ok().filter(|r| !r.is_empty())
+}
+
 fn wanted(session: &Option<String>, project: &Option<String>) -> Vec<Target> {
+    if let Some(me) = persona() {
+        // Launched as a persona: every hub this machine has that persona watching, and nothing
+        // else. No project memory (it cannot tell personas apart); a spool another live session is
+        // reading stays theirs (the lease check at pickup).
+        let found: Vec<(PathBuf, String)> = autoheal::load()
+            .targets
+            .into_iter()
+            .filter(|t| t.role == me)
+            .map(|t| (PathBuf::from(t.hub), t.role))
+            .filter(|(p, r)| prune::looks_like_hub(p) && attach::is_member(p, r))
+            .collect();
+        return attach::finalize(found);
+    }
     let mut found: Vec<(PathBuf, String)> = Vec::new();
     if let Some(s) = session {
         for t in autoheal::load().targets {

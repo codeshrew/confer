@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Several agents in one repo each get only their own hubs.** When many agents work out of one
+  directory (a shared knowledge base), the plugin's per-project memory could not tell them apart,
+  so a fresh session waited for its own arm. Launch each session as its persona
+  (`CONFER_ROLE=jarvis claude`): its plugin reader then delivers that persona's hubs and no one
+  else's, with nothing to arm, and a bare `confer arm` in that session arms only that persona.
+
 ## 0.8.39
 
 *Built with jarvis: `confer whoami`, an opaque `--project` tag on requests (with a dashboard filter), and verified rename links between roles. Plus plugin install steps up front, and a SessionStart hook that stops telling plugin users to arm a Monitor.*

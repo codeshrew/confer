@@ -240,6 +240,9 @@ pub(crate) fn emit(out: &mut impl Write, label: &str, line: &str) -> std::io::Re
 /// Attach: ensure watchers, then stream. Long-lived; returns on SIGTERM/SIGINT (the Monitor
 /// expiring) or when told to stop.
 pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Vec<String>) -> Result<()> {
+    // A session launched as a persona (`CONFER_ROLE=jarvis claude`) arms that persona by default,
+    // so a bare `confer arm` in a repo several agents share never picks up another agent's hubs.
+    let role = role.or_else(crate::plugin::persona);
     let ts = targets(&role, &session)?;
     let me_session = session.clone().or_else(autoheal::current_session);
     if session.is_none() {
