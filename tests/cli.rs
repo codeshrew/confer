@@ -2326,7 +2326,8 @@ fn git_subprocess_timeout_does_not_hang() {
     // else returns instantly so the unwrapped helper calls don't confound timing.
     let bindir = tmp("fakebin");
     let fg = bindir.join("git");
-    std::fs::write(&fg, "#!/bin/sh\n[ \"$1\" = fetch ] && sleep 30\nexit 0\n").unwrap();
+    // (git is invoked as `git -C <root> fetch …`, so match the word anywhere, not `$1`.)
+    std::fs::write(&fg, "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) sleep 30 ;; esac\nexit 0\n").unwrap();
     std::fs::set_permissions(&fg, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
@@ -2343,8 +2344,11 @@ fn git_subprocess_timeout_does_not_hang() {
         .output()
         .unwrap();
     let el = start.elapsed();
+    // A poll makes a bounded number of fetch attempts (sync + retry), each cut at the 2s timeout
+    // here: about 30s in all. Before the fake matched `fetch` (git runs as `git -C <root> fetch`)
+    // nothing hung at all and this bound was never exercised. 60s still catches a real hang.
     assert!(
-        el < Duration::from_secs(25),
+        el < Duration::from_secs(60),
         "poll hung {el:?} — git timeout not enforced (R2)"
     );
 }
@@ -10994,4 +10998,103 @@ fn agents_sharing_one_repo_each_get_only_their_persona_hubs_with_nothing_to_arm(
     let memory = std::fs::read_to_string(home.join(".confer/plugin/projects.json")).unwrap_or_default();
     assert!(!memory.contains(kb.file_name().unwrap().to_str().unwrap()), "no project memory: {memory}");
     assert!(!home.join(".confer/plugin/shared-projects.json").exists(), "not marked shared");
+}
+
+#[test]
+fn a_timed_out_git_takes_its_children_with_it() {
+    // argus on Athena (0.8.38): a timed-out git was SIGKILLed, but what it had started (ssh, the
+    // remote helper, lazy fetches) lived on, each hung one holding a process slot, until the
+    // machine could not fork. The timeout now kills git's whole process group.
+    use std::os::unix::fs::PermissionsExt;
+    let hubdir = tmp("kg-hub");
+    std::fs::create_dir_all(hubdir.join("threads")).unwrap();
+    let bindir = tmp("kg-bin");
+    let mark = tmp("kg-mark").join("child.pid");
+    std::fs::create_dir_all(mark.parent().unwrap()).unwrap();
+    let fg = bindir.join("git");
+    std::fs::write(
+        &fg,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) sleep 300 & echo $! > '{}'; wait ;; esac\nexit 0\n",
+            mark.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bindir.display(), std::env::var("PATH").unwrap_or_default());
+    let _ = Command::new(BIN)
+        .env("CONFER_HUB", &hubdir)
+        .env("CONFER_ROLE", "x")
+        .env("CONFER_GIT_TIMEOUT_SECS", "2")
+        .env("PATH", path)
+        .args(["poll", "--role", "x"])
+        .output()
+        .unwrap();
+    let pid = std::fs::read_to_string(&mark).expect("the fake fetch started a child").trim().to_string();
+    std::thread::sleep(Duration::from_millis(300));
+    let alive = Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status().unwrap().success();
+    if alive {
+        let _ = Command::new("kill").args(["-9", &pid]).status();
+    }
+    assert!(!alive, "the timed-out git's child (pid {pid}) must not outlive it");
+}
+
+#[test]
+fn a_transient_git_failure_does_not_fork_the_hub_identity() {
+    // argus on Athena: git returned EAGAIN under load, the hub key fell back to a URL-derived form,
+    // and the watch lock moved with it, so every reader started another watcher. A clone now caches
+    // its resolved root id and reuses it when git fails.
+    use std::os::unix::fs::PermissionsExt;
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let cached = std::fs::read_to_string(a.dir.join(".git/confer-hub-key")).expect("the resolved id is cached");
+    assert_eq!(cached.trim().len(), 40, "{cached}");
+
+    // Now git cannot answer the root-commit question (as under EAGAIN).
+    let bindir = tmp("tf-bin");
+    let real = String::from_utf8(Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap();
+    let fg = bindir.join("git");
+    std::fs::write(
+        &fg,
+        format!("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = rev-list ] && {{ echo 'fork: Resource temporarily unavailable' >&2; exit 128; }}; done\nexec '{}' \"$@\"\n", real.trim()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("PATH", format!("{}:{}", bindir.display(), std::env::var("PATH").unwrap_or_default()))
+        .args(["inbox"])
+        .output()
+        .unwrap();
+    assert!(
+        !err(&o).contains("cannot determine this hub's root-commit id"),
+        "a cached id must not fall back to a URL key: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn a_watcher_running_under_another_hub_identity_blocks_a_duplicate() {
+    // The cap behind the cache: if the hub key ever resolves differently, a live watcher for the
+    // same clone and role under the other key must stop a second one from starting.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let o = a.confer(&["watch", "--detach", "--poll", "1"]);
+    assert!(ok(&o), "{}", err(&o));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    // Present the live watcher's lock as if under a different identity namespace.
+    let other = a.home.join(".confer/watch/some-other-key");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(&lock, other.join("alpha.json")).unwrap();
+    std::fs::remove_file(&lock).unwrap();
+
+    let again = a.confer(&["watch", "--detach", "--poll", "1"]);
+    let said = format!("{}{}", out(&again), err(&again));
+    assert!(said.contains("different hub"), "a second watcher must be refused: {said}");
 }

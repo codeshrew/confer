@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+*An incident fix: on one machine (argus on Athena, 0.8.38) confer watchers filled the process table and the machine had to be rebooted.*
+
+- **A transient git failure can no longer fork a hub's identity.** Under load, git returned EAGAIN
+  when asked for a hub's root commit, and the hub key fell back to a URL-derived form. The watch
+  lock lives under that key, so every plugin reader (each re-checking its watchers every minute)
+  saw "no watcher" there and started another, while the original kept running. The extra git load
+  made more calls fail, which fed the loop. Each clone now caches its resolved root id in
+  `.git/confer-hub-key` and reuses it. This also saves a git process on most confer commands.
+- **A timed-out git takes its children with it.** confer killed only the git process, so whatever
+  it had started (ssh, the remote helper, a blob:none clone's lazy fetches) was orphaned and kept a
+  process slot when it hung. git now runs in its own process group and a timeout kills the group,
+  with a direct `kill(2)` and no extra fork.
+- **A cap on detached watchers.** Starting a watcher is refused when a live watcher for the same
+  clone and role is already running under a different hub key, or when 64 watchers are already
+  live on the machine (`CONFER_MAX_WATCHERS` raises it). The error says why.
+
 ## 0.8.41
 
 *One fix to 0.8.40 persona scoping, found in a live test.*

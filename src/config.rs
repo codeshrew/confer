@@ -121,9 +121,30 @@ pub fn declared_hub_id(root: &Path) -> Option<String> {
     (id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
 }
 
+/// Where a clone remembers its own resolved root-commit id: `.git/confer-hub-key`, local to the
+/// clone and never committed. Once a clone has resolved its id, it never needs git to know it again.
+fn cached_key_path(root: &Path) -> Option<std::path::PathBuf> {
+    let git = root.join(".git");
+    git.is_dir().then(|| git.join("confer-hub-key"))
+}
+
+fn cached_hub_key(root: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(cached_key_path(root)?).ok()?;
+    let id = raw.trim().to_string();
+    (id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
+}
+
 pub fn hub_key(root: &Path) -> String {
     // Declared beats derived: a checked-out file cannot fail the way a traversal can.
     if let Some(id) = declared_hub_id(root) {
+        return id;
+    }
+    // Then what this clone resolved before. Deriving it again on every call is what let a TRANSIENT
+    // git failure fork the namespace: on Athena (argus, 0.8.38) git hit EAGAIN under load, the key
+    // fell back to the URL form, the watch lock moved with it, every plugin reader saw "no watcher"
+    // there and spawned another, and the extra git load made more calls fail. A root commit never
+    // changes, so once known it is cached, and a later git failure cannot change the answer.
+    if let Some(id) = cached_hub_key(root) {
         return id;
     }
     if let Ok(o) = Command::new("git")
@@ -134,6 +155,12 @@ pub fn hub_key(root: &Path) -> String {
     {
         if o.status.success() {
             if let Some(sha) = String::from_utf8_lossy(&o.stdout).split_whitespace().next() {
+                if let Some(p) = cached_key_path(root) {
+                    let tmp = p.with_extension("tmp");
+                    if std::fs::write(&tmp, sha).is_ok() {
+                        let _ = std::fs::rename(&tmp, &p);
+                    }
+                }
                 return sha.to_string();
             }
         }

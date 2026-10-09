@@ -139,6 +139,62 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
     })
 }
 
+/// Refuse to start a detached watcher that would duplicate one already running, or push past a
+/// machine-wide cap. Called by every spawner (arm, attach, the plugin reader) through
+/// `watch::spawn_detached`.
+///
+/// argus on Athena (0.8.38): transient git failures made the hub key flip between the root sha and
+/// a URL-derived key. The watch lock lives under that key, so every plugin reader (each checking its
+/// watchers every minute) saw "no watcher" in the other namespace and started another, and the extra
+/// git load made more calls fail. The process table filled and the machine needed a reboot. The key
+/// is now cached per clone, which removes the flip; this is the cap in case anything else ever does.
+/// A live, heartbeating watcher for the same clone and role under any OTHER key means do not spawn.
+/// The same key is the caller's to replace (an outdated or orphaned watcher), so it is not checked.
+pub fn spawn_guard(hub: &str, root: &std::path::Path, role: &str) -> Result<()> {
+    let Ok(dir) = config::home().map(|h| h.join(".confer").join("watch")) else { return Ok(()) };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let role = if role.is_empty() { "_all" } else { role };
+    let mut live = 0usize;
+    for ns in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        for f in std::fs::read_dir(ns.path()).into_iter().flatten().flatten() {
+            let path = f.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") || age_secs(&path) >= 90 {
+                continue; // not a lock, or no heartbeat for 90s
+            }
+            let Some(v) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            else {
+                continue;
+            };
+            let Some(pid) = v.get("pid").and_then(|p| p.as_u64()) else { continue };
+            // kill(pid, 0): a liveness probe that does not fork.
+            if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                continue;
+            }
+            live += 1;
+            let same_clone = v.get("root").and_then(|r| r.as_str()).map(PathBuf::from) == Some(root.clone())
+                && path.file_stem().and_then(|s| s.to_str()) == Some(role);
+            if same_clone && ns.file_name().to_string_lossy() != hub {
+                return Err(anyhow!(
+                    "a watcher for '{role}' on {} is already running (pid {pid}) under a different hub \
+                     identity ({}); not starting a second. The hub id resolved differently this time, \
+                     which is the split confer warns about.",
+                    root.display(),
+                    ns.file_name().to_string_lossy()
+                ));
+            }
+        }
+    }
+    let cap = std::env::var("CONFER_MAX_WATCHERS").ok().and_then(|v| v.parse().ok()).unwrap_or(64usize);
+    if live >= cap {
+        return Err(anyhow!(
+            "{live} confer watchers are already running on this machine (cap {cap}); not starting \
+             another. Check `confer plugin status` and `confer rewatch` for duplicates. Raise the cap \
+             with CONFER_MAX_WATCHERS if this many is really intended."
+        ));
+    }
+    Ok(())
+}
+
 fn lock_path(hub: &str, role: &str) -> Result<PathBuf> {
     let role = if role.is_empty() { "_all" } else { role };
     Ok(config::home()?
@@ -354,6 +410,10 @@ impl WatchLock {
             "dev": is_dev_build(),
             "started_at": self.started_at,
             "delivery": self.delivery,
+            // Which clone and role, independent of the namespace this file sits in, so a spawner can
+            // see a live watcher for the same clone under a DIFFERENT hub key (`spawn_guard`).
+            "root": std::env::current_dir().ok().map(|d| d.canonicalize().unwrap_or(d)),
+            "role": self.path.file_stem().map(|s| s.to_string_lossy().to_string()),
         });
         std::fs::write(&self.path, serde_json::to_string_pretty(&info)?)?;
         Ok(())

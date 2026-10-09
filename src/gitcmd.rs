@@ -36,6 +36,26 @@ fn op_deadline() -> std::time::Instant {
     std::time::Instant::now() + Duration::from_secs(secs)
 }
 
+/// Put a timed git in its own process group, so a timeout can kill everything it started.
+fn own_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+/// Kill a timed-out git AND its children. Killing only the git pid orphaned what it had started
+/// (ssh, the remote helper, a blob:none clone's lazy-fetch subprocesses), and each one hung on the
+/// network kept a process slot. Watchers poll every 10s, so on a struggling hub they piled up until
+/// a machine could no longer fork (argus on Athena, 0.8.38: `fork: Resource temporarily
+/// unavailable`, reboot required). A direct kill(2) on the group: no extra fork, which matters most
+/// exactly when forking is what is failing.
+fn kill_group(pid: u32) {
+    // SAFETY: plain kill(2) on a process group we created (process_group(0) makes pgid == pid).
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
 fn base(root: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C").arg(root);
@@ -89,6 +109,7 @@ fn run_to(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
 fn run_once(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     let mut cmd = base(root);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
     let child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -98,7 +119,7 @@ fn run_once(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     match rx.recv_timeout(timeout) {
         Ok(r) => Ok(r?),
         Err(_) => {
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            kill_group(pid);
             Err(anyhow!("git {} timed out after {}s (killed)", args.join(" "), timeout.as_secs()))
         }
     }
@@ -116,6 +137,7 @@ pub fn output_stdin(root: &Path, args: &[&str], input: &str) -> Result<Output> {
     use std::io::Write;
     let mut cmd = base(root);
     cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
     let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
     let inp = input.to_string();
@@ -130,7 +152,7 @@ pub fn output_stdin(root: &Path, args: &[&str], input: &str) -> Result<Output> {
     match rx.recv_timeout(git_timeout()) {
         Ok(r) => Ok(r?),
         Err(_) => {
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            kill_group(pid);
             Err(anyhow!("git {} timed out after {}s (killed)", args.join(" "), git_timeout().as_secs()))
         }
     }
@@ -147,6 +169,7 @@ pub fn output_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ou
         cmd.env(k, v);
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
     let child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -157,7 +180,7 @@ pub fn output_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ou
     match rx.recv_timeout(timeout) {
         Ok(r) => Ok(r?),
         Err(_) => {
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            kill_group(pid);
             Err(anyhow!("git {} timed out after {}s (killed)", args.join(" "), timeout.as_secs()))
         }
     }

@@ -272,6 +272,7 @@ impl std::error::Error for IdleExitMarker {}
 pub fn spawn_detached(root: &std::path::Path, role: &str, extra: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let hub = config::hub_key(root);
+    watchlock::spawn_guard(&hub, root, role)?;
     let (log, out) = crate::spool::open_for_append(&hub, role)?;
     let err = out.try_clone()?;
     // The path confer was launched as, not current_exe(): on Linux that resolves a brew symlink to
