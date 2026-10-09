@@ -440,6 +440,9 @@ pub(crate) enum Cmd {
     Watch {
         #[arg(long, default_value_t = true)]
         follow: bool,
+        /// Ignored: a detached watcher carries its hub's name so `ps` shows which hub it serves.
+        #[arg(long, hide = true)]
+        hub_label: Option<String>,
         #[arg(long = "since-cursor", default_value_t = true)]
         since_cursor: bool,
         #[arg(long)]

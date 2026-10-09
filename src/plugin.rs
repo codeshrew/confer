@@ -413,7 +413,7 @@ pub fn run(project: Option<PathBuf>) -> Result<()> {
 
         let mut any = false;
         for (label, _, tail) in tails.values_mut() {
-            for line in tail.drain() {
+            for line in crate::attach::drop_superseded(tail.drain()) {
                 any = true;
                 if attach::emit(&mut out, label, &line).is_err() {
                     return Ok(());

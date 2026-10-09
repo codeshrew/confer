@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+*Follow-ups from the Athena incident and the field reports around it.*
+
+- **A spool replayed after a restart no longer replays the old watcher's warnings.** On Athena a
+  spool nobody had read since before a reboot replayed days-old "cannot determine this hub's
+  root-commit id" warnings into a healthy session, which read as a live failure. When a batch of
+  spool lines spans a watcher restart, that watcher's own notices from before the new start line
+  are dropped. Message wakes are always kept.
+- **Claiming, closing or erroring a request marks it read.** A request you had just closed kept
+  appearing in the "unread for you" footer until a separate `confer ack`.
+- **A detached watcher's command line names its hub** (`--hub-label <hub>`), so `ps` tells one
+  role's watchers on two hubs apart from a duplicate (batcave-net).
+- **Watch-lock writes are atomic.** Each heartbeat rewrote the lock in place, and a reader that
+  caught it mid-write saw an empty or partial file.
+
 ## 0.8.42
 
 *An incident fix: on one machine (argus on Athena, 0.8.38) confer watchers filled the process table and the machine had to be rebooted.*

@@ -141,7 +141,7 @@ pub fn inspect(hub: &str, role: &str, stale_secs: u64) -> Option<LockInfo> {
 
 /// Refuse to start a detached watcher that would duplicate one already running, or push past a
 /// machine-wide cap. Called by every spawner (arm, attach, the plugin reader) through
-/// `watch::spawn_detached`.
+/// `daemon::spawn_detached`.
 ///
 /// argus on Athena (0.8.38): transient git failures made the hub key flip between the root sha and
 /// a URL-derived key. The watch lock lives under that key, so every plugin reader (each checking its
@@ -415,7 +415,11 @@ impl WatchLock {
             "root": std::env::current_dir().ok().map(|d| d.canonicalize().unwrap_or(d)),
             "role": self.path.file_stem().map(|s| s.to_string_lossy().to_string()),
         });
-        std::fs::write(&self.path, serde_json::to_string_pretty(&info)?)?;
+        // Written aside and renamed in: every heartbeat rewrites this file, and a reader (watch-status,
+        // a spawner, the next acquire) that caught a half-written file read an empty or partial lock.
+        let tmp = self.path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(&info)?)?;
+        std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 

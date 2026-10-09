@@ -11,7 +11,7 @@
 //! zero messages — and each re-arm flapped presence so peers saw the agent go down and come back.
 //! One attach per session turns that into one expiry, one cheap re-attach, and no flapping.
 
-use crate::{autoheal, config, gitcmd, prune, spool, watch, watchlock, BUILD_SHA};
+use crate::{autoheal, config, gitcmd, prune, spool, watchlock, BUILD_SHA};
 use anyhow::{anyhow, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -145,7 +145,7 @@ pub(crate) fn ensure_watcher(t: &Target, extra: &[String], session_confirmed: bo
         // Everything else is replaced — including an Orphaned inline watcher, which looks live but
         // belongs to nobody (its host is gone), so H2's reason to refuse does not apply.
         _ => {
-            watch::spawn_detached(&t.root, &t.role, extra)?;
+            crate::daemon::spawn_detached(&t.root, &t.role, extra)?;
             // Give it a moment to take the lock so watch-status is truthful immediately after.
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
@@ -210,6 +210,24 @@ pub(crate) fn install_stop_handlers() {
 
 pub(crate) fn stopping() -> bool {
     STOP.load(Ordering::SeqCst)
+}
+
+/// A batch of spool lines read in one go can span a watcher restart: what the previous watcher
+/// printed, then the new one's start line, then what it printed. Its own notices from before the
+/// LAST start line (warnings, errors, lifecycle) describe a watcher that is gone, so they are not
+/// news. On Athena a spool unread since before a reboot replayed days-old "cannot determine this
+/// hub's root-commit id" warnings into a healthy 0.8.42 session, which read as a live failure.
+/// Message wakes before that point are kept: they are mail, and mail is never dropped.
+pub(crate) fn drop_superseded(lines: Vec<String>) -> Vec<String> {
+    let Some(start) = lines.iter().rposition(|l| l.starts_with("confer watch: owned by role")) else {
+        return lines;
+    };
+    lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, l)| *i >= start || !l.starts_with("confer"))
+        .map(|(_, l)| l)
+        .collect()
 }
 
 /// Print a spool line: wake lines get the hub prefix; the watcher's other notices pass through.
@@ -333,7 +351,7 @@ pub fn run(role: Option<String>, session: Option<String>, force: bool, extra: Ve
     while !stopping() {
         let mut any = false;
         for (label, tail) in tails.iter_mut() {
-            for line in tail.drain() {
+            for line in crate::attach::drop_superseded(tail.drain()) {
                 any = true;
                 emit(&mut out, label, &line)?;
             }
@@ -374,4 +392,33 @@ pub fn attachment(hub_key: &str, role: &str) -> Option<(u32, u64, bool)> {
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         .is_some_and(|v| v.get("mode").and_then(|m| m.as_str()) == Some("plugin"));
     Some((pid, spool::attach_age_secs(&log).unwrap_or(0), plugin))
+}
+
+#[cfg(test)]
+mod superseded_tests {
+    use super::drop_superseded;
+
+    #[test]
+    fn notices_from_a_replaced_watcher_are_dropped_but_mail_is_kept() {
+        let l = |s: &str| s.to_string();
+        let out = drop_superseded(vec![
+            l("confer: ⚠ cannot determine this hub's root-commit id (old)"),
+            l("NOTE 1 | 10:00 | bob → alice — still mail"),
+            l("confer watch: owned by role 'alice' on h (pid 2, confer new)"),
+            l("confer watch: streaming new items for 'alice'"),
+            l("NOTE 2 | 10:01 | bob → alice — new mail"),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                l("NOTE 1 | 10:00 | bob → alice — still mail"),
+                l("confer watch: owned by role 'alice' on h (pid 2, confer new)"),
+                l("confer watch: streaming new items for 'alice'"),
+                l("NOTE 2 | 10:01 | bob → alice — new mail"),
+            ]
+        );
+        // No restart in the batch: nothing is dropped.
+        let same = vec![l("confer: ⚠ live warning"), l("NOTE 3 | x")];
+        assert_eq!(drop_superseded(same.clone()), same);
+    }
 }

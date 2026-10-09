@@ -21,7 +21,7 @@ struct Answer {
 
 /// The hub's short name, from its origin URL, read straight from `.git/config` (no git process:
 /// this runs on every session start, and a git spawn per hub was most of the time).
-fn label(root: &std::path::Path) -> String {
+pub(crate) fn label(root: &std::path::Path) -> String {
     let url = std::fs::read_to_string(root.join(".git").join("config")).ok().and_then(|cfg| {
         let mut in_origin = false;
         cfg.lines().find_map(|l| {

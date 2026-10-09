@@ -11098,3 +11098,43 @@ fn a_watcher_running_under_another_hub_identity_blocks_a_duplicate() {
     let said = format!("{}{}", out(&again), err(&again));
     assert!(said.contains("different hub"), "a second watcher must be refused: {said}");
 }
+
+#[test]
+fn closing_a_request_marks_it_read() {
+    // Herald: after `confer done`, the request kept showing in the "unread for you" footer until a
+    // separate `confer ack`. Acting on a request is reading it.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let r = b.confer(&["request", "--to", "alpha", "--summary", "please do the thing", "--text", "t"]);
+    assert!(ok(&r), "{}", err(&r));
+    assert!(ok(&git(&a.dir, &["pull", "-q", "--rebase"])));
+    let id = out(&a.confer(&["requests", "--json"]))
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|v| v["id"].as_str().map(String::from))
+        .expect("the request is on alpha's board");
+    let d = a.confer(&["done", &id, "--summary", "did it"]);
+    assert!(ok(&d), "{}", err(&d));
+    let inbox = out(&a.confer(&["inbox"]));
+    assert!(!inbox.contains("please do the thing"), "a closed request must not still be unread: {inbox}");
+}
+
+#[test]
+fn a_detached_watcher_names_its_hub_on_its_command_line() {
+    // batcave-net read two binnacle-macos watchers as a duplicate: `ps` showed the role, not the
+    // hub, and one role on two hubs is two watchers. The command line now carries the hub.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["watch", "--detach", "--poll", "1"])));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    let pid = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&lock).unwrap()).unwrap()["pid"]
+        .as_u64()
+        .unwrap();
+    let cmd = out(&Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output().unwrap());
+    assert!(cmd.contains("--hub-label"), "the watcher's command line must name its hub: {cmd}");
+}

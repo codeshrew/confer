@@ -17,6 +17,7 @@ mod autoheal;
 mod cli;
 mod clonehome;
 mod config;
+mod daemon;
 mod config_hub;
 mod crosshub;
 mod cursor;
@@ -782,7 +783,7 @@ fn run() -> Result<()> {
                 if wake_on_cc { extra.push("--wake-on-cc".into()); }
                 if no_version_notice { extra.push("--no-version-notice".into()); }
                 if let Some(sess) = &session { extra.extend(["--session".into(), sess.clone()]); }
-                watch::spawn_detached(&root, &me, &extra)?;
+                crate::daemon::spawn_detached(&root, &me, &extra)?;
                 return Ok(());
             }
             // Resolve wake_on/min_priority/topic/all: explicit CLI flag > saved per-(hub,role)

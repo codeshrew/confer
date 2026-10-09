@@ -476,6 +476,17 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<
 
 /// Acknowledge mail as read without re-opening it. `ack <id>` dismisses just that one (the deferred
 /// rest stay unread); `ack` with no id catches up — marks EVERYTHING read.
+/// Best-effort: mark the request `of` read for the acting role (after a claim/done/error).
+pub(crate) fn mark_request_read(of: &str, role: Option<String>) {
+    let Ok(root) = config::repo_root() else { return };
+    let Ok(me) = config::resolve_role(role, &root) else { return };
+    let hub = config::hub_key(&root);
+    let Ok(msgs) = store::all_messages(&root) else { return };
+    if let Ok(id) = resolve_unique(&msgs, of) {
+        let _ = mark_read(&hub, &me, id);
+    }
+}
+
 pub(crate) fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();

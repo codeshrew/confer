@@ -407,7 +407,11 @@ pub(crate) fn cmd_lifecycle(
         ("defer", _) => "deferred to backlog".to_string(),
         _ => msg_type.to_string(),
     };
-    cmd_append(AppendArgs {
+    // Acting on a request is reading it: a claim, done or error leaves it marked read, so the
+    // "unread for you" footer stops listing work you have just closed (Herald, 0.8.38: a closed
+    // request kept nagging until a separate `confer ack`).
+    let (of_for_read, from_for_read) = (a.of.clone(), a.from.clone());
+    let sent = cmd_append(AppendArgs {
         msg_type: msg_type.to_string(),
         text: a.text, // optional body; summary-only still allowed (allow_empty_body)
         body_file: a.body_file, // shell-safe close/claim body without dropping to `append --type`
@@ -437,7 +441,11 @@ pub(crate) fn cmd_lifecycle(
         patch_repo: None,
         allow_large_patch: false,
         force: a.force,
-    })
+    });
+    if sent.is_ok() && matches!(msg_type, "claim" | "done" | "error") {
+        crate::inbox::mark_request_read(&of_for_read, from_for_read);
+    }
+    sent
 }
 
 /// Ergonomic first-class creation verbs (`confer request`/`note`) — thin sugar over
