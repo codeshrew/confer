@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.42
 
 *An incident fix: on one machine (argus on Athena, 0.8.38) confer watchers filled the process table and the machine had to be rebooted.*
 
