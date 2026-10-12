@@ -11092,7 +11092,6 @@ fn a_watcher_running_under_another_hub_identity_blocks_a_duplicate() {
     let other = a.home.join(".confer/watch/some-other-key");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::copy(&lock, other.join("alpha.json")).unwrap();
-    std::fs::remove_file(&lock).unwrap();
 
     let again = a.confer(&["watch", "--detach", "--poll", "1"]);
     let said = format!("{}{}", out(&again), err(&again));
@@ -11137,4 +11136,41 @@ fn a_detached_watcher_names_its_hub_on_its_command_line() {
         .unwrap();
     let cmd = out(&Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output().unwrap());
     assert!(cmd.contains("--hub-label"), "the watcher's command line must name its hub: {cmd}");
+}
+
+#[test]
+fn a_watcher_that_lost_its_lock_stops_instead_of_polling_on() {
+    // Herald on Batman (0.8.42): nine watchers for four hubs. Each superseded watcher kept polling
+    // its clone after another took the lock, they fought over the clone's git lock ("clone busy"),
+    // the delays made watchers look stale, and more were started. A watcher whose lock now names
+    // another process must stop.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let _guard = Daemons(a.home.clone());
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&a.confer(&["watch", "--detach", "--poll", "1"])));
+    let lock = wait_for_watch_lock(&a.home).unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+    let pid = v["pid"].as_u64().unwrap();
+    // Another watcher takes over: the lock now names someone else (a live stand-in process).
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    v["pid"] = serde_json::json!(other.id());
+    std::fs::write(&lock, v.to_string()).unwrap();
+
+    let alive = |p: u64| Command::new("kill").args(["-0", &p.to_string()]).stderr(Stdio::null()).status().unwrap().success();
+    let mut stopped = false;
+    for _ in 0..40 {
+        if !alive(pid) {
+            stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = other.kill();
+    let _ = other.wait();
+    if !stopped {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
+    assert!(stopped, "a watcher that no longer holds its lock must exit (pid {pid})");
 }

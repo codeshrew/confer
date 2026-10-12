@@ -374,6 +374,14 @@ impl WatchLock {
                     }
                 }
             } else {
+                // Alive but silent past the stale window: hung (a long git op on a loaded box),
+                // not gone. Reclaiming without stopping it left it running beside its successor.
+                if let Some(p) = pid.filter(|_| alive) {
+                    // SAFETY: plain kill(2); `alive` checked this pid is a confer process.
+                    unsafe {
+                        libc::kill(p as i32, libc::SIGTERM);
+                    }
+                }
                 eprintln!(
                     "confer watch: reclaimed a stale watch lock for role '{label}' \
                      (previous watcher not running or unresponsive)."
@@ -423,15 +431,27 @@ impl WatchLock {
         Ok(())
     }
 
-    /// Refresh the lock's mtime so a later watcher can tell we're alive. Call each cycle.
-    pub fn heartbeat(&self) {
+    /// Refresh the lock's mtime so a later watcher can tell we're alive. Call each cycle. Returns
+    /// false once another watcher holds the lock (or it is gone): the caller must stop, not carry
+    /// on polling. A superseded watcher that kept running was a second poller on the same clone,
+    /// contending for its git lock until syncs failed "clone busy", which made watchers look stale
+    /// and got more of them started (Herald on Batman, 0.8.42: nine watchers for four hubs).
+    pub fn heartbeat(&self) -> bool {
         // Don't resurrect our stamp over a successor's lock: if a `--replace` has taken over (the
-        // file now holds a foreign pid, or is gone mid-takeover), stop refreshing — we're being torn
-        // down and would otherwise clobber the new holder (H1).
+        // file now holds a foreign pid, or is gone mid-takeover), stop refreshing (H1).
+        if !self.path.exists() {
+            return false;
+        }
+        if let Some((pid, _)) = read_info(&self.path) {
+            if pid != std::process::id() {
+                return false;
+            }
+        }
         if !we_still_hold(&self.path) {
-            return;
+            return true; // unreadable this instant: neither ours to refresh nor proof we lost it
         }
         let _ = self.write();
+        true
     }
 }
 

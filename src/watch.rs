@@ -450,7 +450,10 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         if !spooled && crate::orphan::stdout_reader_gone() {
             return Ok(()); // Drop releases the lock; nothing is left to print to
         }
-        lock.heartbeat(); // prove liveness so a later watcher can tell we're alive
+        if !lock.heartbeat() {
+            eprintln!("confer watch: another watcher now holds this lock; stopping this one.");
+            return Ok(());
+        }
         upgrade.poll();
         if let Some(log) = &spool_log {
             if let Err(e) = spool_housekeeping(log, idle_exit, started) {

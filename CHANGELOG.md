@@ -4,6 +4,12 @@
 
 *Follow-ups from the Athena incident and the field reports around it.*
 
+- **A watcher that loses its lock stops.** On a loaded machine a watcher could sit in a long git
+  operation past the 90-second stale window. The plugin then started a replacement, which took the
+  lock but left the old one running, and the old one kept polling its clone. On Batman this reached
+  nine watchers for four hubs, all contending for the clones' git locks ("hub sync failed (clone
+  busy)"). A watcher whose lock now names another process exits at its next cycle, and taking over
+  a stale lock from a live but unresponsive watcher now stops it.
 - **A spool replayed after a restart no longer replays the old watcher's warnings.** On Athena a
   spool nobody had read since before a reboot replayed days-old "cannot determine this hub's
   root-commit id" warnings into a healthy session, which read as a live failure. When a batch of
