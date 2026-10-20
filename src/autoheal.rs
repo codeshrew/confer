@@ -510,6 +510,9 @@ pub fn machine_watch_report(role: Option<&str>, json: bool) -> (String, bool) {
             None => String::new(),
         };
         s.push_str(&format!("\n  {glyph} {r} @ {h}: {st}{reader}"));
+        for p in crate::gitcmd::clone_problems(std::path::Path::new(h)) {
+            s.push_str(&format!("\n      ⚠ clone: {p}"));
+        }
     }
     if !all_healthy {
         s.push_str("\n  For details on one, cd into that hub and run confer watch-status there.");

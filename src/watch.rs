@@ -1308,6 +1308,8 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
     // which has not happened yet, so I am treating it as set rather than as working." A preference
     // you cannot read back is one you cannot verify, and this is where you would look.
     let saved_prefs = crate::machineconfig::get_watch_prefs(&hub, &me);
+    // A live watcher on a clone that cannot sync delivers stale data while reading "healthy".
+    let stuck = crate::gitcmd::clone_problems(&root);
     let is_codex = crate::skills::detect_harness() == "codex";
     let delivery = if is_codex {
         Some("poll".to_string())
@@ -1316,7 +1318,7 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
     };
     if json {
         let obj = serde_json::json!({
-            "role": me, "host": this_host, "state": state, "healthy": healthy,
+            "role": me, "host": this_host, "state": state, "healthy": healthy, "clone_problems": stuck,
             "your_version": cur,
             "watcher_version": info.as_ref().and_then(|i| i.version.clone()),
             "pid": info.as_ref().map(|i| i.pid),
@@ -1382,6 +1384,9 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
         if !rec.is_empty() {
             println!("  → {rec}");
         }
+        for p in &stuck {
+            println!("  ⚠ clone: {p}");
+        }
         // WHICH binary is doing the watching. The sha alone cannot distinguish a dev build from
         // the release it was cut from; the path and the +dev marker can. An operator whose skills
         // had been quietly repointed at a scratch build would otherwise see "healthy" and the
@@ -1433,7 +1438,7 @@ pub(crate) fn cmd_watch_status(role: Option<String>, json: bool, check: bool) ->
     // the news. The scriptable gate lives behind `--check` — exit 1 when the watcher needs action. A
     // genuine "couldn't determine" is an Err raised earlier → exit 3. (design/37; the report already
     // printed, so this only sets the code — no mid-stack process::exit.)
-    if check && !healthy {
+    if check && (!healthy || !stuck.is_empty()) {
         return Err(crate::PredicateFalse.into());
     }
     Ok(())

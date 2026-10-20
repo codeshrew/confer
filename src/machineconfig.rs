@@ -392,10 +392,8 @@ fn flag_extra(extra: &Map<String, Value>, prefix: &str, out: &mut Vec<Finding>) 
     }
 }
 
-// The clamped accessors exist so the FIRST consumer (phase 3+) inherits bounded-ness by construction;
-// nothing reads them yet, hence dead_code. Keeping them now fixes the "bounds enforced only at the CLI
-// edit path" gap the red-team flagged, before any consumer can miss the re-validate.
-#[allow(dead_code)]
+// The clamped accessors give every consumer (gitcmd's timeouts) bounded values by construction, which
+// fixes the "bounds enforced only at the CLI edit path" gap the red-team flagged.
 impl Config {
     /// Bounded git-op timeout — clamps to the valid range so a consumer never inherits an
     /// out-of-range value from a config written by another tool (bounded-ness is a property of the

@@ -13,12 +13,111 @@ use std::time::Duration;
 /// stall) must not wedge a watcher or hold the clone lock forever (audit R2).
 /// `CONFER_GIT_TIMEOUT_SECS` overrides the 60s default (operators can tune it;
 /// tests shorten it to exercise the timeout without a 60s wait).
+/// With no env override, `tuning.git_timeout_secs` from the machine config applies. Until 0.8.43
+/// that key was accepted, validated and listed by `confer config`, but nothing read it.
 fn git_timeout() -> Duration {
     std::env::var("CONFER_GIT_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
+        .or_else(|| tuning().0)
         .map_or(Duration::from_secs(60), Duration::from_secs)
+}
+
+/// The machine config's (git_timeout_secs, op_budget_secs), read once per process.
+fn tuning() -> (Option<u64>, Option<u64>) {
+    static T: std::sync::OnceLock<(Option<u64>, Option<u64>)> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        let c = crate::machineconfig::load();
+        (c.git_timeout_secs(), c.op_budget_secs())
+    })
+}
+
+/// Timeout for a LOCAL op that rewrites the working tree (the sync path's fast-forward and rebase).
+/// These never touch the network, so the short sync timeout bought nothing but harm: a fast-forward
+/// over a few hundred files on a machine with slow file writes (endpoint security software) took
+/// 56s, the 15s timeout killed it mid-checkout, and the killed git left `.git/index.lock` behind.
+/// Every later sync then failed on that lock, for months (a field report, 2026-10-20). At least
+/// five minutes, or the general git timeout if that is longer.
+fn worktree_timeout() -> Duration {
+    git_timeout().max(Duration::from_secs(300))
+}
+
+/// An `.git/index.lock` older than this has no live owner: no confer op runs a working-tree git
+/// for longer than `worktree_timeout`.
+fn stale_index_lock_age() -> Duration {
+    worktree_timeout() * 2
+}
+
+fn index_lock(root: &Path) -> PathBuf {
+    root.join(".git").join("index.lock")
+}
+
+/// Age of this clone's `.git/index.lock`, if it has one.
+pub fn index_lock_age(root: &Path) -> Option<Duration> {
+    let m = std::fs::metadata(index_lock(root)).ok()?.modified().ok()?;
+    Some(std::time::SystemTime::now().duration_since(m).unwrap_or_default())
+}
+
+/// A clone confer created and owns (under `~/.confer/clones/`), as opposed to a repo the human
+/// cloned themselves. Only a managed clone has its stale index lock removed automatically.
+fn is_managed_clone(root: &Path) -> bool {
+    let Ok(base) = crate::clonehome::root() else { return false };
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(root).starts_with(canon(&base))
+}
+
+/// Remove a managed clone's abandoned `.git/index.lock`. Called with the clone lock held, so no
+/// confer op is mid-write. git's own advice for this error is to delete the file by hand; nobody
+/// did, because the only symptom was "hub sync failed … showing local state", which reads as a
+/// network blip. The report: a lock from July froze one role's clone 287 commits behind until
+/// October, while watch-status said healthy.
+fn reclaim_stale_index_lock(root: &Path) {
+    let Some(age) = index_lock_age(root) else { return };
+    if age < stale_index_lock_age() || !is_managed_clone(root) {
+        return;
+    }
+    if std::fs::remove_file(index_lock(root)).is_ok() {
+        eprintln!(
+            "confer: removed a stale .git/index.lock ({}) from {}. A killed git left it, and it \
+             was blocking every sync of this clone.",
+            human_age(age),
+            root.display()
+        );
+    }
+}
+
+/// "3h", "41d": coarse is enough for a lock's age.
+pub fn human_age(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=119 => format!("{s}s old"),
+        120..=7199 => format!("{}m old", s / 60),
+        7200..=172_799 => format!("{}h old", s / 3600),
+        _ => format!("{}d old", s / 86_400),
+    }
+}
+
+/// What is wrong with this clone that a watcher's liveness cannot show: an index lock that blocks
+/// every sync, and how far it trails the hub as of its last fetch. Local reads only (no network).
+/// Empty when nothing is wrong.
+pub fn clone_problems(root: &Path) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(age) = index_lock_age(root).filter(|a| *a >= Duration::from_secs(120)) {
+        v.push(format!(
+            ".git/index.lock is {} — every sync of this clone fails until it is removed. If no git \
+             is running there: rm {}",
+            human_age(age),
+            index_lock(root).display()
+        ));
+    }
+    if let Ok(n) = rev_count(root, "HEAD..@{u}") {
+        // A watcher fast-forwards right after each fetch, so a lag that survives is a stuck clone.
+        if n > 0 {
+            v.push(format!("{n} commit(s) behind the hub as of its last fetch; agents here read stale messages"));
+        }
+    }
+    v
 }
 
 /// Overall wall-clock budget for a WHOLE commit_and_sync / integrate op (fetch + lock-wait +
@@ -32,6 +131,7 @@ fn op_deadline() -> std::time::Instant {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| *n > 0)
+        .or_else(|| tuning().1)
         .unwrap_or(45);
     std::time::Instant::now() + Duration::from_secs(secs)
 }
@@ -110,6 +210,8 @@ fn run_once(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
     let mut cmd = base(root);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     own_group(&mut cmd);
+    let had_lock = index_lock(root).exists();
+    let spawned = std::time::SystemTime::now();
     let child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -120,8 +222,27 @@ fn run_once(root: &Path, args: &[&str], timeout: Duration) -> Result<Output> {
         Ok(r) => Ok(r?),
         Err(_) => {
             kill_group(pid);
-            Err(anyhow!("git {} timed out after {}s (killed)", args.join(" "), timeout.as_secs()))
+            let _ = rx.recv_timeout(Duration::from_secs(2)); // reaped: the group is gone
+            let cleaned = if had_lock { "" } else { remove_lock_left_by(root, args, spawned) };
+            Err(anyhow!("git {} timed out after {}s (killed){cleaned}", args.join(" "), timeout.as_secs()))
         }
+    }
+}
+
+/// After killing a git that writes the index, remove the `.git/index.lock` it left. SIGKILL gives
+/// git no chance to clean up, and an orphaned lock fails every later write in the clone. Only a
+/// lock created after this git started, by a command that takes the index lock, is ours.
+fn remove_lock_left_by(root: &Path, args: &[&str], spawned: std::time::SystemTime) -> &'static str {
+    const WRITERS: &[&str] = &["merge", "rebase", "checkout", "reset", "add", "commit", "read-tree", "stash", "rm", "mv"];
+    if !args.first().is_some_and(|a| WRITERS.contains(a)) {
+        return "";
+    }
+    let lock = index_lock(root);
+    let ours = std::fs::metadata(&lock).and_then(|m| m.modified()).is_ok_and(|m| m >= spawned);
+    if ours && std::fs::remove_file(&lock).is_ok() {
+        "; removed the .git/index.lock it left"
+    } else {
+        ""
     }
 }
 
@@ -701,6 +822,10 @@ fn reconcile_push(
     // contention (the 29-min hang the killer test found: a rate-limited credential
     // helper stalling every call to the 60s default) is killed in seconds instead.
     let sg = |args: &[&str]| run_to(root, args, Duration::from_secs(15));
+    // Fast-forward and rebase are local and rewrite the working tree: give them time to finish
+    // instead of killing them mid-checkout (see `worktree_timeout`).
+    let wt = |args: &[&str]| run_to(root, args, worktree_timeout());
+    reclaim_stale_index_lock(root);
     // Hard WALL-CLOCK budget: retry within this, then DEFER — a write can NEVER hang
     // for minutes regardless of contention (bounds total time, not just attempt count).
     // `CONFER_SYNC_BUDGET_SECS` overrides the 25s default (operators tune it; tests
@@ -727,28 +852,37 @@ fn reconcile_push(
         )))?;
         if behind > 0 {
             if ahead == 0 {
-                let m = sg(&["merge", "--ff-only", "--quiet", "@{u}"])
+                let m = wt(&["merge", "--ff-only", "--quiet", "@{u}"])
                     .map_err(|e| Stall::Transient(format!("ff-merge could not run: {e}")))?;
                 if !m.status.success() {
-                    return Err(Stall::Stranded(format!(
-                        "fast-forward from the hub failed: {}",
-                        String::from_utf8_lossy(&m.stderr).trim()
-                    )));
+                    let err = String::from_utf8_lossy(&m.stderr);
+                    // Name the lock and the fix. "showing local state" alone reads as a network
+                    // blip, and nobody acts on it.
+                    if let Some(age) = err.contains("index.lock").then(|| index_lock_age(root)).flatten() {
+                        return Err(Stall::Stranded(format!(
+                            "this clone is {behind} commit(s) behind the hub and cannot catch up: \
+                             .git/index.lock is {} and blocks every sync. If no git is running in \
+                             this clone, remove it: rm {}",
+                            human_age(age),
+                            index_lock(root).display()
+                        )));
+                    }
+                    return Err(Stall::Stranded(format!("fast-forward from the hub failed: {}", first_line(&m.stderr))));
                 }
             } else {
                 // ALWAYS abort before returning. `sg` fails on the 15s per-call timeout, and the
                 // old `?` propagated that BEFORE the abort ran — leaving the clone mid-rebase and
                 // detached, which is exactly how a clone reaches the silent state above. A slow
                 // rebase was enough; no conflict required (jarvis, 7BCAT3).
-                match sg(&["rebase", "@{u}"]) {
+                match wt(&["rebase", "@{u}"]) {
                     Err(e) => {
-                        let _ = sg(&["rebase", "--abort"]);
+                        let _ = wt(&["rebase", "--abort"]);
                         return Err(Stall::Transient(format!(
                             "rebase onto the hub timed out or could not run ({e}); aborted, nothing changed"
                         )));
                     }
                     Ok(r) if !r.status.success() => {
-                        let _ = sg(&["rebase", "--abort"]);
+                        let _ = wt(&["rebase", "--abort"]);
                         // A CONFLICT is not "the hub is busy". Retrying forever never clears it.
                         return Err(Stall::Stranded(format!(
                             "rebase onto the hub hit a conflict in this clone (aborted; nothing \
@@ -868,6 +1002,24 @@ mod tests {
             files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn a_killed_index_writer_leaves_no_lock_behind() {
+        let r = tmp();
+        git(&r, &["init", "-q", "-b", "main"]);
+        let lock = r.join(".git").join("index.lock");
+        let before = std::time::SystemTime::now() - Duration::from_secs(5);
+        std::fs::write(&lock, "").unwrap();
+        // A read never takes the index lock, so a lock seen after a killed fetch is someone else's.
+        assert_eq!(remove_lock_left_by(&r, &["fetch"], before), "");
+        assert!(lock.exists());
+        // A lock older than the killed git predates it.
+        assert_eq!(remove_lock_left_by(&r, &["merge"], std::time::SystemTime::now() + Duration::from_secs(5)), "");
+        assert!(lock.exists());
+        // Created while the killed merge ran: it is that merge's, and it goes.
+        assert!(!remove_lock_left_by(&r, &["merge", "--ff-only"], before).is_empty());
+        assert!(!lock.exists());
     }
 
     #[test]

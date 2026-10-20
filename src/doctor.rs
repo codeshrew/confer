@@ -231,6 +231,11 @@ pub fn audit(root: &Path) -> Vec<Finding> {
         Visibility::NotApplicable => {} // local/file remote → not a public-exposure concern
     }
 
+    // A clone that cannot sync passes every identity check above while its agent reads stale mail.
+    for p in gitcmd::clone_problems(root) {
+        f.push(Finding { level: Level::Warn, title: format!("This clone cannot keep up with the hub: {p}"), fix: None });
+    }
+
     f.push(Finding {
         level: Level::Info,
         title: "confer only ever writes LOCAL git config; it never modifies your global ~/.gitconfig.".into(),

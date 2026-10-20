@@ -4,6 +4,23 @@
 
 *Follow-ups from the Athena incident and the field reports around it.*
 
+- **A stale `.git/index.lock` no longer freezes a clone.** A field report: one role's clone held a
+  0-byte `index.lock` from July, every sync failed on it until October, the clone fell 287 commits
+  behind, and `watch-status` said healthy the whole time. The only sign was "hub sync failed …
+  showing local state", which reads as a network blip. Four changes:
+  - The sync path's fast-forward and rebase are local operations that rewrite files, so they no
+    longer run under the 15-second network timeout. They get at least five minutes. On a machine
+    with slow file writes (endpoint security software) a 287-file fast-forward took 56 seconds; the
+    old timeout killed it mid-checkout, and the killed git left a new lock behind.
+  - When confer does kill a git that writes the index, it removes the lock that git left.
+  - In a clone confer manages (`~/.confer/clones/`), a sync removes an `index.lock` older than ten
+    minutes and says so. In your own clones confer leaves the file alone and names it, with its age
+    and the `rm` command, instead of "showing local state".
+  - `watch-status`, the machine-wide watch report and `doctor` report a clone that has a stale index
+    lock or trails the hub as of its last fetch, and `watch-status --check` fails on it.
+- **`tuning.git_timeout_secs` and `tuning.op_budget_secs` take effect.** `confer config` accepted,
+  validated and listed both, but nothing read them. The `CONFER_GIT_TIMEOUT_SECS` and
+  `CONFER_OP_BUDGET_SECS` environment variables still take precedence.
 - **A watcher that loses its lock stops.** On a loaded machine a watcher could sit in a long git
   operation past the 90-second stale window. The plugin then started a replacement, which took the
   lock but left the old one running, and the old one kept polling its clone. On Batman this reached

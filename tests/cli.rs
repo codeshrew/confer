@@ -11174,3 +11174,54 @@ fn a_watcher_that_lost_its_lock_stops_instead_of_polling_on() {
     }
     assert!(stopped, "a watcher that no longer holds its lock must exit (pid {pid})");
 }
+
+/// A hub where alpha has posted and beta's clone holds a two-hour-old `.git/index.lock`, as a
+/// killed git leaves it. `managed` puts beta's clone under `~/.confer/clones/`.
+fn clone_behind_a_stale_index_lock(managed: bool) -> (Hub, Clone) {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let mut b = hub.clone("beta");
+    if managed {
+        let dir = hub.home.join(".confer/clones/hub-x/beta-1");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::rename(&b.dir, &dir).unwrap();
+        b.dir = dir;
+    }
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let o = a.append(&["--type", "note", "--to", "beta", "--summary", "while you were locked out", "--text", "hello"]);
+    assert!(ok(&o), "{}", err(&o));
+    let lock = b.dir.join(".git/index.lock");
+    let f = std::fs::File::create(&lock).unwrap();
+    f.set_modified(std::time::SystemTime::now() - Duration::from_secs(7200)).unwrap();
+    (hub, b)
+}
+
+#[test]
+fn a_stale_index_lock_in_a_managed_clone_is_removed_and_the_clone_catches_up() {
+    // Field report 2026-10-20: a lock left in July froze a role's clone 287 commits behind until
+    // October. Every sync failed on it while watch-status said healthy.
+    let (_hub, b) = clone_behind_a_stale_index_lock(true);
+    let o = b.confer(&["sync"]);
+    assert!(ok(&o), "sync should recover: {}{}", out(&o), err(&o));
+    assert!(err(&o).contains("removed a stale .git/index.lock"), "{}", err(&o));
+    assert!(!b.dir.join(".git/index.lock").exists());
+    let behind = git(&b.dir, &["rev-list", "--count", "HEAD..@{u}"]);
+    assert_eq!(out(&behind).trim(), "0");
+}
+
+#[test]
+fn a_stale_index_lock_in_your_own_clone_is_named_with_its_fix() {
+    // Outside the managed home confer does not delete it, but every place that reports on the clone
+    // says what is wrong and how to fix it, instead of "showing local state".
+    let (_hub, b) = clone_behind_a_stale_index_lock(false);
+    let o = b.confer(&["sync"]);
+    let all = format!("{}{}", out(&o), err(&o));
+    assert!(all.contains(".git/index.lock is 2h old") && all.contains("rm "), "{all}");
+    assert!(b.dir.join(".git/index.lock").exists(), "confer must not delete a lock in a clone it does not own");
+    let ws = b.confer(&["watch-status"]);
+    assert!(out(&ws).contains("⚠ clone: .git/index.lock"), "{}", out(&ws));
+    assert!(out(&ws).contains("1 commit(s) behind the hub"), "{}", out(&ws));
+    let d = b.confer(&["doctor"]);
+    assert!(format!("{}{}", out(&d), err(&d)).contains("cannot keep up with the hub"), "{}", out(&d));
+}
