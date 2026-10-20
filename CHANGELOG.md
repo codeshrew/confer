@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.43
 
-*Follow-ups from the Athena incident and the field reports around it.*
+*A clone frozen by a stale git lock, watchers piling up under load, and other follow-ups from the Athena incident.*
 
 - **A stale `.git/index.lock` no longer freezes a clone.** A field report: one role's clone held a
   0-byte `index.lock` from July, every sync failed on it until October, the clone fell 287 commits
