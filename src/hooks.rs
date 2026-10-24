@@ -145,6 +145,16 @@ pub(crate) fn baked_hook_bin(home: &std::path::Path, harness: &str) -> Option<St
         .filter(|s| !s.is_empty())
 }
 
+/// Whether a hook's command would find its binary. A bare name (`confer`) is looked up on PATH, as
+/// the harness's shell would; testing it as a path checked the cwd and always failed. A dotfiles
+/// manager that writes the portable form raised a false "MISSING binary" on every machine.
+pub(crate) fn hook_bin_resolves(bin: &str) -> bool {
+    if bin.contains('/') {
+        return std::path::Path::new(bin).exists();
+    }
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+}
+
 pub(crate) fn write_grok_hook(home: &std::path::Path, cmd: &str) -> Result<()> {
     let dir = home.join(".grok").join("hooks");
     std::fs::create_dir_all(&dir)?;
@@ -675,4 +685,17 @@ pub(crate) fn cmd_autoheal(action: AutohealAction, yes: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hook_bin_resolves;
+
+    #[test]
+    fn a_bare_hook_command_is_found_on_path_not_in_the_cwd() {
+        assert!(hook_bin_resolves("sh"), "a bare name resolves through PATH");
+        assert!(hook_bin_resolves("/bin/sh"));
+        assert!(!hook_bin_resolves("confer-no-such-binary-anywhere"));
+        assert!(!hook_bin_resolves("/no/such/dir/confer"));
+    }
 }

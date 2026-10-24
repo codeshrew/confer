@@ -11225,3 +11225,27 @@ fn a_stale_index_lock_in_your_own_clone_is_named_with_its_fix() {
     let d = b.confer(&["doctor"]);
     assert!(format!("{}{}", out(&d), err(&d)).contains("cannot keep up with the hub"), "{}", out(&d));
 }
+
+#[test]
+fn editing_your_card_from_a_new_machine_moves_its_host() {
+    // Herald moved from Batman to Batcomputer, and every card kept saying "expected on Batman.local":
+    // only `join` ever wrote the host.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let run = |host: &str, args: &[&str]| {
+        Command::new(BIN)
+            .env("HOME", &a.home)
+            .env("CONFER_HUB", &a.dir)
+            .env("CONFER_ROLE", "alpha")
+            .env("HOSTNAME", host)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(ok(&run("old-box", &["join", "--role", "alpha"])));
+    let card = || std::fs::read_to_string(a.dir.join("roles/alpha.md")).unwrap();
+    assert!(card().contains("host: old-box"), "{}", card());
+    let o = run("new-box", &["describe", "--desc", "moved"]);
+    assert!(ok(&o), "{}", err(&o));
+    assert!(card().contains("host: new-box"), "{}", card());
+}

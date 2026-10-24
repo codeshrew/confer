@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+*Found moving an agent to a new machine.*
+
+- **`doctor` no longer reports a bare `confer session-heal` hook as a missing binary.** It tested the
+  command name as a path in the current directory. A hook written in the portable form (by a dotfiles
+  manager, for example) raised the warning on every machine. A bare name is now looked up on PATH.
+- **Editing your role card moves its host to this machine.** Only `join` ever wrote `host`, so an
+  agent that moved machines kept "expected on <old machine>" in `who` forever. Any `describe` or
+  `rename` that changes the card now also records the current host.
+
 ## 0.8.43
 
 *A clone frozen by a stale git lock, watchers piling up under load, and other follow-ups from the Athena incident.*

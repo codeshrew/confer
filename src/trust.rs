@@ -319,7 +319,7 @@ fn harness_findings() -> Vec<doctor::Finding> {
             // M2: the hook bakes an ABSOLUTE confer path; a brew upgrade / path shadow can leave it
             // pointing at a binary that's gone, so SessionStart silently invokes nothing.
             match crate::hooks::baked_hook_bin(&home, h) {
-                Some(bin) if !std::path::Path::new(&bin).exists() => out.push(Finding {
+                Some(bin) if !crate::hooks::hook_bin_resolves(&bin) => out.push(Finding {
                     level: Level::Warn,
                     title: format!("harness {h}: auto-heal hook points at a MISSING binary ({bin}) — SessionStart heal/resync won't run (a brew upgrade or move left the path stale)"),
                     fix: Some(format!("re-run `confer install-skill --harness {h}` to re-bake the hook at the current binary path")),

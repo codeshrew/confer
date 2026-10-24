@@ -677,6 +677,15 @@ pub(crate) fn cmd_describe(
     if rename_claim.apply(&mut map) {
         changed = true;
     }
+    // `host` says where this role runs, and only `join` ever wrote it. The role signs this edit from
+    // here, so an edit also moves the card to this machine: after Herald moved from Batman to
+    // Batcomputer, every card still read "expected on Batman.local".
+    if changed {
+        if let Some(h) = config::hostname().filter(|h| map.get("host").and_then(|v| v.as_str()) != Some(h.as_str())) {
+            println!("host → {h}");
+            map.insert("host".into(), h.into());
+        }
+    }
     if !changed {
         println!("roles/{me}.md: nothing changed.");
         return Ok(());
