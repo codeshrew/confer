@@ -11165,6 +11165,13 @@ fn a_watcher_that_lost_its_lock_stops_instead_of_polling_on() {
             stopped = true;
             break;
         }
+        // A real new holder keeps heartbeating its lock. Do the same: the old watcher's heartbeat can
+        // read its own pid just before our write and rename over it just after (a slow macOS CI runner
+        // hit exactly that), and then it rightly still holds the lock.
+        let cur: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap_or_default()).unwrap_or_default();
+        if cur["pid"].as_u64() != Some(other.id() as u64) {
+            std::fs::write(&lock, v.to_string()).unwrap();
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
     let _ = other.kill();
