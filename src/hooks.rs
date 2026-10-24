@@ -75,6 +75,7 @@ pub(crate) fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()
     } else {
         serde_json::json!({})
     };
+    let before = root.clone();
     let obj = root
         .as_object_mut()
         .ok_or_else(|| anyhow!("settings.json is not a JSON object"))?;
@@ -94,6 +95,12 @@ pub(crate) fn write_session_hook(path: &std::path::Path, cmd: &str) -> Result<()
             "matcher": matcher,
             "hooks": [ { "type": "command", "command": cmd } ],
         }));
+    }
+    // Already installed: leave the file alone. Every `clone` and `install-skill` re-ran this, and
+    // rewriting a settings.json that a dotfiles manager (chezmoi) owns showed the whole file as drift
+    // even with nothing changed. Key order is kept (serde_json `preserve_order`) when it does write.
+    if path.exists() && root == before {
+        return Ok(());
     }
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
@@ -689,7 +696,25 @@ pub(crate) fn cmd_autoheal(action: AutohealAction, yes: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::hook_bin_resolves;
+    use super::{hook_bin_resolves, write_session_hook};
+
+    #[test]
+    fn reinstalling_the_hook_leaves_settings_byte_identical() {
+        let dir = std::env::temp_dir().join(format!("confer-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        // Keys deliberately out of alphabetical order, as a hand- or chezmoi-written file has them.
+        std::fs::write(&p, "{\n  \"zeta\": 1,\n  \"alpha\": {\"b\": 2, \"a\": 1}\n}").unwrap();
+        write_session_hook(&p, "confer session-heal").unwrap();
+        let first = std::fs::read_to_string(&p).unwrap();
+        assert!(first.find("zeta").unwrap() < first.find("alpha").unwrap(), "key order kept: {first}");
+        // Reformat it the way another tool might; with the hook already in place, nothing is written.
+        let compact = serde_json::to_string(&serde_json::from_str::<serde_json::Value>(&first).unwrap()).unwrap();
+        std::fs::write(&p, &compact).unwrap();
+        write_session_hook(&p, "confer session-heal").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), compact, "an unchanged hook must not rewrite the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_bare_hook_command_is_found_on_path_not_in_the_cwd() {

@@ -181,6 +181,12 @@ pub(crate) fn print_reactive_next(role: &str) {
             println!("   its first step runs `confer session-context` — the safety kernel + any re-arm nudge");
             println!("   (no monitor tool?  loop  /loop 60s /confer-poll  inside your run loop)");
         }
+        // With the plugin, /confer-watch is the old path: a new hub reaches the session only once
+        // `confer arm` hands it to the plugin's reader (field note, joining a hub on Batcomputer).
+        _ if crate::plugin_ctl::claude_plugin_enabled() => {
+            println!("   final step — hand this hub to the confer plugin:  run  confer arm  in this clone");
+            println!("   the plugin then delivers it for the whole session; there is no Monitor to host");
+        }
         _ => {
             println!("   final step — arm your reactive watch:  run  /confer-watch");
             println!("   (headless / no Monitor tool:  confer watch --role {role} --replace  — or  /loop 45s /confer-poll)");

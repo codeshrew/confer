@@ -10,6 +10,14 @@
 - **Editing your role card moves its host to this machine.** Only `join` ever wrote `host`, so an
   agent that moved machines kept "expected on <old machine>" in `who` forever. Any `describe` or
   `rename` that changes the card now also records the current host.
+- **Installing the session hook no longer rewrites an unchanged `settings.json`.** `clone` and
+  `install-skill` re-ran the install every time and rewrote the file with its keys sorted, so a
+  settings.json kept by a dotfiles manager (chezmoi) showed the whole file as drift. An already
+  installed hook now leaves the file alone, and a real change keeps the file's key order. (JSON
+  output from confer now also keeps its fields in the order written rather than sorted.)
+- **With the Claude Code plugin enabled, `clone` and `join` end with `confer arm`,** not
+  `/confer-watch`. A newly joined hub reaches the session only once `confer arm` hands it to the
+  plugin.
 
 ## 0.8.43
 
