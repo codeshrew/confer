@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.44
 
-*Found moving an agent to a new machine.*
+*Reminders for claimed work nobody closed, and fixes found moving an agent to a new machine.*
 
 - **`doctor` no longer reports a bare `confer session-heal` hook as a missing binary.** It tested the
   command name as a path in the current directory. A hook written in the portable form (by a dotfiles
