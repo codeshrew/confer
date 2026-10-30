@@ -14,6 +14,7 @@ mod append;
 mod attach;
 mod append_ref;
 mod autoheal;
+mod claimed;
 mod cli;
 mod clonehome;
 mod config;
@@ -626,12 +627,13 @@ fn run() -> Result<()> {
         Cmd::Requests {
             open,
             mine,
+            claimed,
             role,
             json,
             backlog,
             blocked,
             project,
-        } => cmd_requests(open, mine, role, json, backlog, blocked, project),
+        } => cmd_requests(open, mine, claimed, role, json, backlog, blocked, project),
         Cmd::Thread { id, full, json } => cmd_thread(id, full, json),
         Cmd::Topics {
             open,

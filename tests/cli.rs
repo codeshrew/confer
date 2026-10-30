@@ -11256,3 +11256,120 @@ fn editing_your_card_from_a_new_machine_moves_its_host() {
     assert!(ok(&o), "{}", err(&o));
     assert!(card().contains("host: new-box"), "{}", card());
 }
+
+/// A field report (2026-10-30): an agent sat on two claimed requests. Claiming marks a request read,
+/// so its inbox said "clear", and every reminder confer printed counted unread mail only.
+fn claimed_by_alpha() -> (Hub, Clone, String) {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    for s in ["port the parser", "someone else's job"] {
+        let r = b.confer(&["request", "--to", "alpha", "--summary", s, "--text", "t"]);
+        assert!(ok(&r), "{}", err(&r));
+    }
+    assert!(ok(&git(&a.dir, &["pull", "-q", "--rebase"])));
+    let id = out(&a.confer(&["requests", "--json"]))
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["summary"] == "port the parser")
+        .and_then(|v| v["id"].as_str().map(String::from))
+        .expect("the request is on alpha's board");
+    let c = a.confer(&["claim", &id, "--summary", "on it"]);
+    assert!(ok(&c), "{}", err(&c));
+    (hub, a, id)
+}
+
+#[test]
+fn claimed_work_shows_in_inbox_requests_and_status_until_it_is_done() {
+    let (_hub, a, id) = claimed_by_alpha();
+    let _ = a.confer(&["inbox"]); // read the other request, so only the claim is left
+    let ib = a.confer(&["inbox"]);
+    assert!(err(&ib).contains("inbox clear"), "{}", err(&ib));
+    assert!(
+        err(&ib).contains("1 claimed by you, not done") && err(&ib).contains("port the parser"),
+        "a clear inbox must still name the claimed work: {}",
+        err(&ib)
+    );
+    assert!(out(&ib).is_empty(), "an empty inbox keeps stdout clean: {}", out(&ib));
+
+    let mine = out(&a.confer(&["requests", "--claimed"]));
+    assert!(mine.contains("port the parser"), "{mine}");
+    assert!(!mine.contains("someone else's job"), "--claimed lists claims only, not open requests: {mine}");
+
+    let st = out(&a.confer(&["status"]));
+    assert!(st.contains("claimed: 1 request"), "{st}");
+
+    assert!(ok(&a.confer(&["done", &id, "--summary", "ported"])));
+    assert!(!err(&a.confer(&["inbox"])).contains("claimed by you"), "done takes it off the plate");
+    assert!(!out(&a.confer(&["requests", "--claimed"])).contains("port the parser"));
+}
+
+#[test]
+fn session_start_names_claimed_work_even_with_a_clear_inbox() {
+    let (_hub, a, _id) = claimed_by_alpha();
+    let _ = a.confer(&["inbox"]);
+    std::fs::write(
+        a.home.join(".confer/autoheal.json"),
+        serde_json::json!({ "enabled": true, "targets": [{ "hub": a.dir, "role": "alpha", "session": "SESS-C" }] })
+            .to_string(),
+    )
+    .unwrap();
+    let o = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .arg("session-heal")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|mut ch| {
+            use std::io::Write;
+            ch.stdin.take().unwrap().write_all(br#"{"session_id":"SESS-C"}"#).unwrap();
+            ch.wait_with_output()
+        })
+        .unwrap();
+    let ctx = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        ctx.contains("1 claimed, not done") && ctx.contains("port the parser"),
+        "the resume context must list claimed work: {ctx}"
+    );
+}
+
+#[test]
+fn the_watch_reminds_an_agent_of_claims_it_has_gone_quiet_on() {
+    use std::io::Read;
+    let (_hub, a, _id) = claimed_by_alpha();
+    std::thread::sleep(Duration::from_millis(2100)); // idle past the 1s threshold below
+    let mut child = Command::new(BIN)
+        .env("HOME", &a.home)
+        .env("CONFER_HUB", &a.dir)
+        .env("CONFER_ROLE", "alpha")
+        .env("CONFER_CLAIM_NAG_SECS", "1")
+        .args(["watch", "--role", "alpha", "--replace", "--poll", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut chunk) {
+            if n == 0 || tx.send(String::from_utf8_lossy(&chunk[..n]).to_string()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut seen = String::new();
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(20) && !seen.contains("claimed by you, not done") {
+        if let Ok(s) = rx.recv_timeout(Duration::from_millis(200)) {
+            seen.push_str(&s);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(seen.contains("claimed by you, not done") && seen.contains("port the parser"), "{seen}");
+}

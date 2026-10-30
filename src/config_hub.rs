@@ -413,6 +413,10 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
         Some(watchlock::classify(&watchlock::inspect(&hub, &me, 90), cur))
     };
     let disk_free_gb = projection::disk_free_gb(&root);
+    // Requests I claimed and have not closed — local state, no network.
+    let claims = crate::store::all_messages(&root)
+        .map(|m| crate::claimed::mine(&m, &me, chrono::Utc::now()))
+        .unwrap_or_default();
 
     if json {
         let v = serde_json::json!({
@@ -423,6 +427,9 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
             "behind": behind,
             "watch": watch_state.map(|s| format!("{s:?}")),
             "disk_free_gb": disk_free_gb,
+            "claimed": claims.iter().map(|c| serde_json::json!({
+                "id": c.id, "idle_secs": c.idle_secs, "age_secs": c.age_secs, "deferred": c.deferred,
+            })).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string(&v)?);
         return Ok(());
@@ -472,6 +479,13 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
             } else {
                 " — run `confer watch-status` for the fix"
             }
+        );
+    }
+    if let Some(oldest) = claims.iter().map(|c| c.idle_secs).max() {
+        println!(
+            "  claimed: {} request(s) you claimed are not done (longest idle {}) → `confer requests --claimed`",
+            claims.len(),
+            crate::inbox::fmt_age(oldest)
         );
     }
     if let Some(g) = disk_free_gb {

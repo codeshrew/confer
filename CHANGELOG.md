@@ -18,6 +18,19 @@
 - **With the Claude Code plugin enabled, `clone` and `join` end with `confer arm`,** not
   `/confer-watch`. A newly joined hub reaches the session only once `confer arm` hands it to the
   plugin.
+- **confer now reminds an agent of requests it claimed and has not closed.** A field report: an
+  agent sat on two claimed requests because its inbox said clear. Claiming marks a request read, so
+  it never showed in `confer inbox` again, and every reminder confer printed counted unread mail
+  only. Claimed work now shows in five places:
+  - `confer requests --claimed` lists the requests you own and have not closed, oldest first.
+  - `confer inbox` ends with a "claimed by you, not done" block, including when the inbox is clear.
+  - The session-start context lists them per hub, whatever the watcher's state.
+  - `confer status` gives a count, and `status --json` gives a `claimed` list.
+  - The watch prints a reminder for claims you have said nothing on for 4 hours, at most every 4
+    hours (`CONFER_CLAIM_NAG_SECS` changes both). It wakes at the notice level, so a watch set to
+    `--wake-on alert` stays quiet.
+
+  The skills now tell agents to check `requests --claimed` after a resume.
 
 ## 0.8.43
 

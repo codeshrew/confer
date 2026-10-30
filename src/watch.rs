@@ -421,6 +421,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     let inbox_every = Duration::from_secs(900); // re-nag at most ~every 15 min
     let mut last_inbox: Option<std::time::Instant> = None;
     let mut last_inbox_key = String::new();
+    // Claimed-work reminder: claiming marks a request read, so the footer above never covers it.
+    let claim_every = crate::claimed::nag_every();
+    let mut last_claims = std::time::Instant::now();
 
 
     // Resilience: a transient failure (disk full, a git hiccup) must
@@ -595,6 +598,19 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+
+        // Requests I claimed and have gone quiet on (field report, 2026-10-30: an agent sat on two
+        // claimed requests behind a clear inbox). A notice-rung wake, on its own slow cadence.
+        if !me.is_empty() && !opts.json && opts.topic.is_none() && opts.wake_on <= WakeRung::Notice
+            && last_claims.elapsed() >= claim_every
+        {
+            last_claims = std::time::Instant::now();
+            if let Some(b) = store::all_messages(&root).ok().and_then(|all| crate::claimed::idle_block(&all, &me, claim_every)) {
+                let mut out = std::io::stdout().lock();
+                let _ = write!(out, "{b}");
+                let _ = out.flush();
             }
         }
 

@@ -417,12 +417,19 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<
     let _ = compact_and_save(&hub, &me, &direct_ids_for_me(&msgs, &me, &grps));
     let st = load_state(&hub, &me);
     let unread = unread_for_me(&msgs, &me, &grps, &st);
+    // Claiming marks a request read, so claimed work never shows as unread: "inbox clear" read as
+    // "nothing to do" to an agent sitting on two claimed requests. Say what is still on the plate.
+    let claims = crate::claimed::mine(&msgs, &me, chrono::Utc::now());
+    let claims: Vec<&crate::claimed::Claim> = claims.iter().collect();
 
     if unread.is_empty() {
         if !json {
             // Empty result: text-mode prose moves to stderr (item 11) — inbox is a command an
             // agent pipes, and stdout must stay a clean (even if empty) payload stream.
             eprintln!("inbox clear — no unread mail addressed to {me}.");
+            if !claims.is_empty() {
+                eprint!("{}", crate::claimed::block(&claims, " (claiming marks a request read)"));
+            }
         }
         return Ok(());
     }
@@ -469,6 +476,9 @@ pub(crate) fn cmd_inbox(role: Option<String>, peek: bool, json: bool) -> Result<
             println!(
                 "({marked} marked read. `confer show <id>` re-opens one; `confer ack <id>` dismisses one without opening; deferred / not-yet-synced mail stays unread)"
             );
+        }
+        if !claims.is_empty() {
+            print!("\n{}", crate::claimed::block(&claims, ""));
         }
     }
     Ok(())
@@ -519,9 +529,11 @@ pub(crate) fn cmd_ack(id: Option<String>, role: Option<String>) -> Result<()> {
 /// Roles that have claimed a request, in fold order (first = current owner). More
 /// than one distinct role ⇒ a contested claim (a race on a broadcast request).
 /// See DESIGN.md.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_requests(
     open_only: bool,
     mine: bool,
+    claimed: bool,
     role: Option<String>,
     json: bool,
     backlog: bool,
@@ -530,6 +542,9 @@ pub(crate) fn cmd_requests(
 ) -> Result<()> {
     let root = config::repo_root()?;
     let me = config::resolve_role(role, &root).unwrap_or_default();
+    if claimed && me.is_empty() {
+        return Err(anyhow!("no role — --claimed lists your claims (join, or --role <you>)"));
+    }
     // The board is THE shared-state view — integrate first (like poll/inbox/status)
     // so an ad-hoc `requests` reflects peers' latest, not a stale working tree. A fetch that
     // FAILED (offline / timed out under load) is not an Err but leaves the board stale — surface
@@ -561,6 +576,11 @@ pub(crate) fn cmd_requests(
                 continue;
             }
         } else if open_only && !row.is_active() {
+            continue;
+        }
+        // --claimed: still CLAIMED and I am the owner (first claimant; a contested claim someone
+        // else won is theirs). Deferred claims stay in, marked ⏳ — parked, but still mine.
+        if claimed && !(row.status == "CLAIMED" && row.claimants.first() == Some(&me)) {
             continue;
         }
         let m = by_id[row.id.as_str()];

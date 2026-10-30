@@ -377,6 +377,10 @@ pub(crate) enum Cmd {
         /// only requests I sent or am assigned
         #[arg(long)]
         mine: bool,
+        /// only requests I claimed and have not closed, oldest first: my work in progress.
+        /// Claiming marks a request read, so these never show in `confer inbox`.
+        #[arg(long)]
+        claimed: bool,
         #[arg(long)]
         role: Option<String>,
         #[arg(long)]
