@@ -41,3 +41,8 @@ github-build-setup = "../build-setup.yml"
 # musl needs the cross toolchain on the Linux builders.
 [dist.dependencies.apt]
 musl-tools = { targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] }
+
+# GitHub retires the macos-14 image (dist's default for aarch64-apple-darwin) on 2026-11-02, and its
+# scheduled brownouts already cancelled the v0.8.44 build. Build Apple Silicon on macos-15.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
