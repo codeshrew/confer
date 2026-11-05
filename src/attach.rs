@@ -33,18 +33,30 @@ pub(crate) struct Target {
 }
 
 /// A short human label for a hub: the last segment of its canonical remote id, else the dir name.
+///
+/// Remembered per process: a plugin reader re-resolves its hubs every 5 seconds, and asking git each
+/// time was a process launch per hub per reader (the Batcomputer exec storm, 2026-11-04).
 fn label_for(root: &Path) -> String {
+    use std::collections::BTreeMap;
+    static LABELS: std::sync::Mutex<BTreeMap<PathBuf, String>> = std::sync::Mutex::new(BTreeMap::new());
+    if let Some(l) = LABELS.lock().ok().and_then(|m| m.get(root).cloned()) {
+        return l;
+    }
     let remote = gitcmd::output(root, &["config", "--get", "remote.origin.url"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    crate::reconnect::canonical_hub_id(&remote)
+    let label = crate::reconnect::canonical_hub_id(&remote)
         .and_then(|c| c.rsplit('/').next().map(str::to_string))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "hub".into())
-        })
+        });
+    if let Ok(mut m) = LABELS.lock() {
+        m.insert(root.to_path_buf(), label.clone());
+    }
+    label
 }
 
 /// Every hub this session should be attached to: the current clone if we are in one, plus each

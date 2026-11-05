@@ -126,7 +126,7 @@ pub fn clone_problems(root: &Path) -> Vec<String> {
 /// an `append` waits, then the append hits its own push race — the real ~100s "append hang" seen in
 /// the field. Capping the TOTAL makes an op degrade to a clean "clone/hub busy — deferred" instead
 /// of an invisible stall. `CONFER_OP_BUDGET_SECS` overrides the 45s default.
-fn op_deadline() -> std::time::Instant {
+pub fn op_deadline() -> std::time::Instant {
     let secs = std::env::var("CONFER_OP_BUDGET_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -740,6 +740,62 @@ pub fn integrate(root: &Path) -> Result<SyncResult> {
 fn integrate_inner(root: &Path) -> std::result::Result<SyncResult, Stall> {
     let deadline = op_deadline();
     let fetched = fetch_unlocked(root, deadline);
+    reconcile_after_fetch(root, fetched, deadline)
+}
+
+/// `integrate`, in two steps, for the watch: it fetches, compares [`ref_state`], and reconciles only
+/// when something moved.
+pub fn fetch(root: &Path, deadline: std::time::Instant) -> bool {
+    fetch_unlocked(root, deadline)
+}
+pub fn integrate_fetched(root: &Path, fetched: bool, deadline: std::time::Instant) -> Result<SyncResult> {
+    reconcile_after_fetch(root, fetched, deadline).map_err(|s| anyhow!("{}", s.msg()))
+}
+
+/// Every ref a sync can move, read from disk without launching anything. Equal states mean nothing
+/// was fetched and nothing was committed, so a watcher that finished the earlier state can skip the
+/// ten or so git commands that would only confirm it. `None` (a `.git` that is not a directory, an
+/// unreadable ref) means "cannot tell", and the caller does the full sync.
+pub fn ref_state(root: &Path) -> Option<Vec<u8>> {
+    fn walk(dir: &Path, out: &mut Vec<u8>) -> Option<()> {
+        let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(rd) => rd.flatten().map(|e| e.path()).collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(()),
+            Err(_) => return None,
+        };
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                walk(&p, out)?;
+            } else if p.extension().is_none_or(|x| x != "lock") {
+                out.extend_from_slice(p.as_os_str().as_encoded_bytes());
+                out.extend(std::fs::read(&p).ok()?);
+            }
+        }
+        Some(())
+    }
+    let git = root.join(".git");
+    let mut out = std::fs::read(git.join("HEAD")).ok()?;
+    match std::fs::read(git.join("packed-refs")) {
+        Ok(b) => out.extend(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    walk(&git.join("refs/heads"), &mut out)?;
+    walk(&git.join("refs/remotes"), &mut out)?;
+    Some(out)
+}
+
+/// Housekeeping that `git fetch` would otherwise start after every fetch. Best-effort.
+pub fn maintain(root: &Path) {
+    let _ = run_to(root, &["maintenance", "run", "--auto", "--quiet"], Duration::from_secs(60));
+}
+
+fn reconcile_after_fetch(
+    root: &Path,
+    fetched: bool,
+    deadline: std::time::Instant,
+) -> std::result::Result<SyncResult, Stall> {
     // A contended clone lock is transient by definition — someone else is mid-write.
     let _lock = acquire_lock_until(root, Some(deadline))
         .map_err(|e| Stall::Transient(format!("clone busy: {e}")))?;
@@ -761,7 +817,9 @@ fn fetch_unlocked(root: &Path, deadline: std::time::Instant) -> bool {
         if remaining.is_zero() {
             break;
         }
-        if run_to(root, &["fetch", "--quiet"], remaining.min(Duration::from_secs(15)))
+        // A fetch starts `git maintenance` by default: one more process per poll, per watcher. The
+        // watch runs it every few hours instead (`maintain`), and commits still trigger it.
+        if run_to(root, &["-c", "maintenance.auto=false", "fetch", "--quiet"], remaining.min(Duration::from_secs(15)))
             .map(|o| o.status.success())
             .unwrap_or(false)
         {
@@ -1002,6 +1060,27 @@ mod tests {
             files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn ref_state_moves_with_a_commit_and_not_with_a_no_op_fetch() {
+        let hub = tmp();
+        git(&hub, &["init", "-q", "--bare", "-b", "main"]);
+        let a = tmp();
+        git(&a, &["init", "-q", "-b", "main"]);
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&a, &["remote", "add", "origin", hub.to_str().unwrap()]);
+        git(&a, &["push", "-q", "-u", "origin", "main"]);
+        git(&a, &["fetch", "-q"]); // the first one may record origin/HEAD
+        let before = ref_state(&a).expect("readable");
+        git(&a, &["fetch", "-q"]);
+        assert_eq!(ref_state(&a).as_ref(), Some(&before), "a fetch that brought nothing");
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        assert_ne!(ref_state(&a).as_ref(), Some(&before), "a local commit");
+        let settled = ref_state(&a).unwrap();
+        git(&a, &["pack-refs", "--all"]);
+        assert_ne!(ref_state(&a).as_ref(), Some(&settled), "repacking errs towards a full sync");
+        assert_eq!(ref_state(&tmp()), None, "no repo: cannot tell");
     }
 
     #[test]

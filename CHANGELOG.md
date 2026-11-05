@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+*Fewer process launches, after an exec storm on a busy Mac.*
+
+- **A watcher with nothing new to do now only fetches.** On macOS every process launch costs a
+  Gatekeeper and privacy check, and on a machine with 11 watchers and several busy agents those
+  checks backed up until new programs hung. Each poll ran about a dozen git commands to learn that
+  nothing had changed. A watcher now compares the clone's refs on disk after the fetch and stops
+  there when they have not moved and everything up to them was delivered. Any moved ref, failed
+  fetch, unpushed commit or held message still takes the full path.
+- **Checking whether a process is alive no longer launches `kill` and `ps`.** Readers, watchers and
+  `--replace` ask the kernel instead.
+- **Plugin readers no longer run `git config` for every hub every 5 seconds** to work out a label.
+- **`git fetch` no longer starts `git maintenance` on every poll.** Watchers run it every 6 hours.
+
 ## 0.8.44
 
 *Reminders for claimed work nobody closed, and fixes found moving an agent to a new machine.*

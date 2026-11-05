@@ -424,6 +424,10 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     // Claimed-work reminder: claiming marks a request read, so the footer above never covers it.
     let claim_every = crate::claimed::nag_every();
     let mut last_claims = std::time::Instant::now();
+    // The ref state this watcher has fully synced and delivered, and the housekeeping fetch skips.
+    let mut settled: Option<Vec<u8>> = None;
+    let maintain_every = Duration::from_secs(6 * 3600);
+    let mut last_maintain = std::time::Instant::now();
 
 
     // Resilience: a transient failure (disk full, a git hiccup) must
@@ -466,7 +470,30 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 return Err(e);
             }
         }
-        match gitcmd::integrate(&root) {
+        // Most polls find nothing. If the fetch moved no ref and everything up to these refs was
+        // already synced and delivered, skip the rest: on macOS each git command is a process
+        // launch with a Gatekeeper and TCC check, and these added up across a machine's watchers
+        // (Batcomputer exec storm, 2026-11-04). Any ref change, failed fetch or held message
+        // takes the full path.
+        let deadline = gitcmd::op_deadline();
+        let fetched = gitcmd::fetch(&root, deadline);
+        let quiet = fetched && settled.is_some() && gitcmd::ref_state(&root) == settled;
+        if !quiet {
+            settled = None;
+        }
+        if last_maintain.elapsed() >= maintain_every {
+            last_maintain = std::time::Instant::now();
+            gitcmd::maintain(&root);
+        }
+        let sync = if quiet {
+            Ok(None)
+        } else {
+            gitcmd::integrate_fetched(&root, fetched, deadline).map(Some)
+        };
+        let in_sync = fetched && matches!(sync, Ok(Some(_)));
+        // Read BEFORE delivering: a ref that moves after this point differs at the next poll.
+        let delivering = if in_sync { gitcmd::ref_state(&root) } else { None };
+        match sync {
             Ok(_) if !synced => {
                 eprintln!("confer watch: hub reachable again");
                 synced = true;
@@ -521,9 +548,13 @@ pub fn run(opts: WatchOpts) -> Result<()> {
         }
 
         let mut n_emitted: usize = 0;
-        match emit_new(&root, &me, &opts, &mut since) {
+        match if quiet { Ok(0) } else { emit_new(&root, &me, &opts, &mut since) } {
             Ok(n) => {
                 n_emitted = n;
+                // Settled only when delivery reached the tip: a held message must be retried.
+                if delivering.is_some() && since.is_some() && since == gitcmd::cursor_anchor(&root) {
+                    settled = delivering.clone();
+                }
                 if io_degraded {
                     eprintln!("confer watch: local read recovered — resuming normally");
                     io_degraded = false;

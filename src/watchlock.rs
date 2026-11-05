@@ -238,29 +238,48 @@ pub fn pid_is_live_confer(pid: u32) -> bool {
 }
 
 fn is_confer_process(pid: u32) -> bool {
+    let is_confer = |exe: &str| {
+        let name = exe.rsplit('/').next().unwrap_or(exe);
+        name == "confer" || name == "confer.exe"
+    };
+    if let Some(exe) = process_exe(pid) {
+        return is_confer(&exe);
+    }
     std::process::Command::new("ps")
         .args(["-o", "command=", "-p", &pid.to_string()])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .is_some_and(|c| {
-            c.split_whitespace()
-                .next()
-                .map(|exe| exe.rsplit('/').next().unwrap_or(exe))
-                .is_some_and(|name| name == "confer" || name == "confer.exe")
-        })
+        .is_some_and(|c| c.split_whitespace().next().is_some_and(is_confer))
+}
+
+/// The program `pid` is running, asked of the kernel. These checks run every few seconds in every
+/// reader and watcher, and on macOS each process launch costs a Gatekeeper and TCC check: launching
+/// `ps` and `kill` for them fed the exec storm on Batcomputer (2026-11-04).
+#[cfg(target_os = "macos")]
+fn process_exe(pid: u32) -> Option<String> {
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer outlives the call, and its length is passed with it.
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+/// argv[0], not /proc/<pid>/exe: an upgraded binary reads there as "confer (deleted)".
+#[cfg(target_os = "linux")]
+fn process_exe(pid: u32) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let argv0 = raw.split(|b| *b == 0).next()?;
+    (!argv0.is_empty()).then(|| String::from_utf8_lossy(argv0).into_owned())
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_exe(_pid: u32) -> Option<String> {
+    None
 }
 
 /// Same-host liveness via `kill -0` (signal 0 probes without delivering).
 fn process_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        // Silence "kill: (pid): No such process" on a dead pid — a liveness probe read by
-        // fleet/where/adopt-clone must not leak stderr for a stale watch pid (a fleet finding).
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // SAFETY: signal 0 delivers nothing. pid 0 would address our own process group.
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 fn read_info(path: &Path) -> Option<(u32, String)> {
@@ -341,8 +360,10 @@ impl WatchLock {
                     ));
                 }
                 if let Some(p) = pid.filter(|_| !adopting) {
-                    let _ = std::process::Command::new("kill").arg(p.to_string())
-                        .stderr(std::process::Stdio::null()).status();
+                    // SAFETY: plain kill(2); `alive` checked this pid is a confer process.
+                    unsafe {
+                        libc::kill(p as i32, libc::SIGTERM);
+                    }
                     // Wait for the old watcher to actually EXIT before we write our lock — a still-
                     // running old watcher's final heartbeat or clean-exit Drop would otherwise
                     // clobber/delete the lock we're about to write (H1). Escalate to SIGKILL if it
@@ -353,8 +374,10 @@ impl WatchLock {
                         waited_ms += 50;
                     }
                     if process_alive(p) {
-                        let _ = std::process::Command::new("kill").args(["-9", &p.to_string()])
-                            .stderr(std::process::Stdio::null()).status();
+                        // SAFETY: as above.
+                        unsafe {
+                            libc::kill(p as i32, libc::SIGKILL);
+                        }
                         let mut w = 0u64;
                         while process_alive(p) && w < 500 {
                             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -469,6 +492,22 @@ impl Drop for WatchLock {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn liveness_is_answered_without_launching_anything() {
+        let me = std::process::id();
+        assert!(process_alive(me));
+        assert!(!process_alive(0), "pid 0 is our own process group, not a process");
+        assert!(!process_alive(u32::MAX));
+        let exe = process_exe(me).expect("the kernel names this process");
+        assert!(exe.contains("confer"), "{exe}");
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        assert!(process_alive(pid) && !is_confer_process(pid), "a live process that is not confer");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!process_alive(pid));
+    }
+
     use super::*;
 
     fn stamp(path: &Path, pid: u32, host: &str) {

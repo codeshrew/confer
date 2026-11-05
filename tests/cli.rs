@@ -11373,3 +11373,156 @@ fn the_watch_reminds_an_agent_of_claims_it_has_gone_quiet_on() {
     let _ = child.wait();
     assert!(seen.contains("claimed by you, not done") && seen.contains("port the parser"), "{seen}");
 }
+
+/// Exec storm on Batcomputer (2026-11-04): on macOS each process launch costs a Gatekeeper and TCC
+/// check, and every watcher ran about a dozen git commands per poll to learn nothing had changed.
+/// A settled watcher now only fetches. These pin both halves: the launches stay gone, and skipping
+/// them never costs a delivery.
+fn quiet_watcher(c: &Clone, shim_log: Option<&Path>) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    use std::io::BufRead;
+    let mut cmd = Command::new(BIN);
+    cmd.env("HOME", &c.home)
+        .env("CONFER_HUB", &c.dir)
+        .env("CONFER_ROLE", &c.role)
+        .args(["watch", "--role", &c.role, "--replace", "--poll", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(log) = shim_log {
+        let real = out(&Command::new("sh").args(["-c", "command -v git"]).output().unwrap()).trim().to_string();
+        let shim = tmp("git-shim");
+        let path = shim.join("git");
+        std::fs::write(&path, format!("#!/bin/sh\necho \"$*\" >> {}\nexec {real} \"$@\"\n", log.display())).unwrap();
+        Command::new("chmod").args(["+x", path.to_str().unwrap()]).status().unwrap();
+        cmd.env("PATH", format!("{}:{}", shim.display(), std::env::var("PATH").unwrap()));
+    }
+    let mut child = cmd.spawn().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for l in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    (child, rx)
+}
+
+#[test]
+fn a_settled_watcher_only_fetches() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let log = tmp("git-log").join("calls");
+    let (mut w, _rx) = quiet_watcher(&a, Some(&log));
+    std::thread::sleep(Duration::from_secs(4)); // settle
+    std::fs::write(&log, "").unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(calls.contains("fetch"), "it must keep polling the hub: {calls:?}");
+    assert!(calls.lines().all(|l| l.contains("fetch")), "only the fetch, nothing else: {calls}");
+}
+
+#[test]
+fn a_settled_watcher_still_delivers_what_arrives_later() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let (mut w, rx) = quiet_watcher(&a, None);
+    std::thread::sleep(Duration::from_secs(4)); // settle
+    let wait_for = |needle: &str| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(20) {
+            if rx.recv_timeout(Duration::from_millis(200)).is_ok_and(|l| l.contains(needle)) {
+                return true;
+            }
+        }
+        false
+    };
+    // Over the network, as usual.
+    assert!(ok(&b.confer(&["note", "--to", "alpha", "--summary", "first after quiet", "--text", "t"])));
+    let got = wait_for("first after quiet");
+    // The agent's own command in the same clone pulls it in first: no poll ever sees it arrive.
+    std::thread::sleep(Duration::from_secs(3)); // settle again
+    assert!(ok(&b.confer(&["note", "--to", "alpha", "--summary", "pulled in by the agent", "--text", "t"])));
+    assert!(ok(&a.confer(&["requests"])));
+    let got_pulled = wait_for("pulled in by the agent");
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(got, "a message after a quiet stretch must wake the watcher");
+    assert!(got_pulled, "a message another command merged into this clone must still wake the watcher");
+}
+
+#[test]
+fn a_settled_watcher_flushes_a_commit_that_could_not_push() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    let (mut w, _rx) = quiet_watcher(&a, None);
+    std::thread::sleep(Duration::from_secs(4)); // settle
+    // A local commit the hub has not seen, as a deferred push leaves behind.
+    std::fs::write(a.dir.join("threads/local.txt"), "x").unwrap();
+    assert!(ok(&git(&a.dir, &["add", "-A"])));
+    assert!(ok(&git(&a.dir, &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "deferred"])));
+    let head = out(&git(&a.dir, &["rev-parse", "HEAD"])).trim().to_string();
+    let mut pushed = false;
+    for _ in 0..40 {
+        let tip = Command::new("git").args(["--git-dir", hub.bare.to_str().unwrap(), "rev-parse", "main"]).output().unwrap();
+        if out(&tip).trim() == head {
+            pushed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(pushed, "the watcher must still flush a local commit");
+}
+
+#[test]
+fn a_settled_watcher_keeps_retrying_a_held_message() {
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let (mut w, _rx) = quiet_watcher(&b, None);
+    std::thread::sleep(Duration::from_secs(3)); // leaves a delivery cursor
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(ok(&a.append(&["--type", "note", "--to", "beta", "--summary", "HELDMSG", "--text", "1"])));
+    b.pull();
+    let msg = std::fs::read_dir(b.dir.join("threads").join("general"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("HELDMSG")))
+        .expect("the message is in beta's tree");
+    let saved = std::fs::read(&msg).unwrap();
+    std::fs::remove_file(&msg).unwrap();
+
+    let (mut w, rx) = quiet_watcher(&b, None);
+    let started = std::time::Instant::now();
+    let mut seen = String::new();
+    while started.elapsed() < Duration::from_secs(15) && !seen.contains("HELD") {
+        if let Ok(l) = rx.recv_timeout(Duration::from_millis(200)) {
+            seen.push_str(&l);
+        }
+    }
+    std::thread::sleep(Duration::from_secs(3)); // several polls with no ref moving
+    std::fs::write(&msg, &saved).unwrap();
+    let started = std::time::Instant::now();
+    let mut delivered = false;
+    while started.elapsed() < Duration::from_secs(15) && !delivered {
+        // The wake line itself, not the unread footer, which reads the tree on its own schedule.
+        delivered = rx.recv_timeout(Duration::from_millis(200)).is_ok_and(|l| l.contains("NOTE") && l.contains("HELDMSG"));
+    }
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(seen.contains("HELD"), "the watcher must say delivery is held: {seen}");
+    assert!(delivered, "a held message is retried on every poll until it can be read, refs moving or not");
+}
