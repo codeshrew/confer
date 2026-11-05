@@ -9618,10 +9618,10 @@ fn one_arm_covers_every_hub_and_survives_the_monitor_expiring() {
     assert_eq!(pids_before.len(), 2, "two detached watchers: {pids_before:?}");
 
     // The Monitor is gone. A message lands. The peer clones live under a DIFFERENT HOME, so the
-    // same-machine notify signal does not fire and the daemon sees it on its next 10s poll —
-    // the window below must cover a full poll interval.
+    // same-machine notify signal does not fire and the daemon sees it on its next poll, which
+    // slows to 20s after a quiet one — the window below must cover that.
     assert!(ok(&peer_a.append(&["--type", "request", "--to", "alpha", "--summary", "FROM-A-GAP", "--text", "x"])));
-    std::thread::sleep(Duration::from_secs(6));
+    std::thread::sleep(Duration::from_secs(26));
 
     let second = arm_for(&home, &neutral, "alpha", 9);
     assert!(second.contains("already running"), "watchers must NOT be restarted: {second}");
@@ -11379,19 +11379,28 @@ fn the_watch_reminds_an_agent_of_claims_it_has_gone_quiet_on() {
 /// A settled watcher now only fetches. These pin both halves: the launches stay gone, and skipping
 /// them never costs a delivery.
 fn quiet_watcher(c: &Clone, shim_log: Option<&Path>) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    watcher_with_shim(c, shim_log.map(|l| format!("echo \"$*\" >> {}", l.display())))
+}
+
+/// A watcher whose `git` first runs the shell line `pre`.
+fn watcher_with_shim(c: &Clone, pre: Option<String>) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    watcher_polling(c, pre, "1")
+}
+
+fn watcher_polling(c: &Clone, pre: Option<String>, poll: &str) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
     use std::io::BufRead;
     let mut cmd = Command::new(BIN);
     cmd.env("HOME", &c.home)
         .env("CONFER_HUB", &c.dir)
         .env("CONFER_ROLE", &c.role)
-        .args(["watch", "--role", &c.role, "--replace", "--poll", "1"])
+        .args(["watch", "--role", &c.role, "--replace", "--poll", poll])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some(log) = shim_log {
+    if let Some(pre) = pre {
         let real = out(&Command::new("sh").args(["-c", "command -v git"]).output().unwrap()).trim().to_string();
         let shim = tmp("git-shim");
         let path = shim.join("git");
-        std::fs::write(&path, format!("#!/bin/sh\necho \"$*\" >> {}\nexec {real} \"$@\"\n", log.display())).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n{pre}\nexec {real} \"$@\"\n")).unwrap();
         Command::new("chmod").args(["+x", path.to_str().unwrap()]).status().unwrap();
         cmd.env("PATH", format!("{}:{}", shim.display(), std::env::var("PATH").unwrap()));
     }
@@ -11417,7 +11426,7 @@ fn a_settled_watcher_only_fetches() {
     let (mut w, _rx) = quiet_watcher(&a, Some(&log));
     std::thread::sleep(Duration::from_secs(4)); // settle
     std::fs::write(&log, "").unwrap();
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(Duration::from_secs(9)); // the idle poll is up to 6x slower
     let calls = std::fs::read_to_string(&log).unwrap_or_default();
     let _ = w.kill();
     let _ = w.wait();
@@ -11525,4 +11534,82 @@ fn a_settled_watcher_keeps_retrying_a_held_message() {
     let _ = w.wait();
     assert!(seen.contains("HELD"), "the watcher must say delivery is held: {seen}");
     assert!(delivered, "a held message is retried on every poll until it can be read, refs moving or not");
+}
+
+#[test]
+fn a_stalled_status_push_does_not_hold_up_delivery() {
+    // Slow GitHub connections stalled the status push inside the watch loop: no polls, no lock
+    // refresh, and the plugin restarted a watcher it took for dead.
+    let hub = new_hub();
+    let a = hub.clone("alpha");
+    let b = hub.clone("beta");
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let stall = r#"case "$*" in *refs/presence/*) case "$*" in *push*) sleep 25;; esac;; esac"#;
+    let (mut w, rx) = watcher_with_shim(&a, Some(stall.to_string()));
+    std::thread::sleep(Duration::from_secs(3)); // the first status push is stalled by now
+    assert!(ok(&b.confer(&["note", "--to", "alpha", "--summary", "during the stall", "--text", "t"])));
+    let started = std::time::Instant::now();
+    let mut got = false;
+    while started.elapsed() < Duration::from_secs(12) && !got {
+        got = rx.recv_timeout(Duration::from_millis(200)).is_ok_and(|l| l.contains("during the stall"));
+    }
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(got, "delivery must carry on while a status push hangs");
+}
+
+#[test]
+fn roles_sharing_a_hub_on_one_machine_all_get_the_message() {
+    // One watcher's fetch stands in for the others until the tip moves. Each must still catch up.
+    let hub = new_hub();
+    let home = tmp("shared-fetch-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    let far = hub.clone("gamma"); // another machine: its push reaches this one through the hub
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    assert!(ok(&far.confer(&["join", "--role", "gamma"])));
+    let (mut wa, ra) = quiet_watcher(&a, None);
+    let (mut wb, rb) = quiet_watcher(&b, None);
+    std::thread::sleep(Duration::from_secs(4)); // settle
+    assert!(ok(&far.confer(&["note", "--to", "alpha,beta", "--summary", "for both of you", "--text", "t"])));
+    let saw = |rx: &std::sync::mpsc::Receiver<String>| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(25) {
+            if rx.recv_timeout(Duration::from_millis(200)).is_ok_and(|l| l.contains("for both of you")) {
+                return true;
+            }
+        }
+        false
+    };
+    let (ga, gb) = (saw(&ra), saw(&rb));
+    let _ = wa.kill();
+    let _ = wb.kill();
+    let _ = wa.wait();
+    let _ = wb.wait();
+    assert!(ga && gb, "alpha saw it: {ga}, beta saw it: {gb}");
+}
+
+#[test]
+fn a_peer_on_this_machine_still_wakes_a_watcher_at_once() {
+    // Slower idle polling and shared fetches lean on this: a same-machine push signals the watcher,
+    // and a signalled watcher looks at the hub itself rather than trusting a recent fetch.
+    let hub = new_hub();
+    let home = tmp("same-machine-home");
+    let a = hub.clone_with_home("alpha", &home);
+    let b = hub.clone_with_home("beta", &home);
+    assert!(ok(&a.confer(&["join", "--role", "alpha"])));
+    assert!(ok(&b.confer(&["join", "--role", "beta"])));
+    let (mut w, rx) = watcher_polling(&a, None, "15");
+    std::thread::sleep(Duration::from_secs(3)); // well inside the first poll interval
+    assert!(ok(&b.confer(&["note", "--to", "alpha", "--summary", "right next door", "--text", "t"])));
+    let started = std::time::Instant::now();
+    let mut got = false;
+    while started.elapsed() < Duration::from_secs(6) && !got {
+        got = rx.recv_timeout(Duration::from_millis(200)).is_ok_and(|l| l.contains("right next door"));
+    }
+    let _ = w.kill();
+    let _ = w.wait();
+    assert!(got, "a same-machine message must not wait for the next poll");
 }

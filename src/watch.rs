@@ -426,9 +426,9 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     let mut last_claims = std::time::Instant::now();
     // The ref state this watcher has fully synced and delivered, and the housekeeping fetch skips.
     let mut settled: Option<Vec<u8>> = None;
+    let mut woken = false;
     let maintain_every = Duration::from_secs(6 * 3600);
     let mut last_maintain = std::time::Instant::now();
-
 
     // Resilience: a transient failure (disk full, a git hiccup) must
     // NOT kill the watcher — the agent would go silently deaf until re-armed. The
@@ -438,6 +438,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
     // failures so a full disk doesn't spin.
     let base = interval;
     let mut wait = base;
+    let mut idle = base;
     let mut io_degraded = false;
     let mut synced = true;
     let mut version_noticed = false;
@@ -470,13 +471,13 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                 return Err(e);
             }
         }
-        // Most polls find nothing. If the fetch moved no ref and everything up to these refs was
-        // already synced and delivered, skip the rest: on macOS each git command is a process
-        // launch with a Gatekeeper and TCC check, and these added up across a machine's watchers
-        // (Batcomputer exec storm, 2026-11-04). Any ref change, failed fetch or held message
-        // takes the full path.
+        // Most polls find nothing. On macOS each git command is a process launch with a Gatekeeper
+        // and TCC check (Batcomputer exec storm, 2026-11-04), so if no ref moved and everything up
+        // to these refs was delivered, stop here. A failed fetch or held message takes the full path.
         let deadline = gitcmd::op_deadline();
-        let fetched = gitcmd::fetch(&root, deadline);
+        // Another role's clone of this hub may have just fetched. A wake means something local
+        // changed (a co-resident peer pushed, say), so that always looks at the hub itself.
+        let fetched = (!woken && gitcmd::fetched_elsewhere(&root, &hub, wait)) || gitcmd::fetch(&root, &hub, deadline);
         let quiet = fetched && settled.is_some() && gitcmd::ref_state(&root) == settled;
         if !quiet {
             settled = None;
@@ -559,7 +560,10 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                     eprintln!("confer watch: local read recovered — resuming normally");
                     io_degraded = false;
                 }
-                wait = base;
+                // Poll slower while nothing happens, up to 6x. Same-machine peers still wake us at
+                // once through the signal dir; only a peer on another machine waits for the poll.
+                idle = if quiet { (idle * 2).min(base * 6) } else { base };
+                wait = idle;
                 emitted_total += n as u64;
                 let elapsed = started.elapsed().as_secs().max(1);
                 let per_hour = emitted_total.saturating_mul(3600) / elapsed;
@@ -638,11 +642,7 @@ pub fn run(opts: WatchOpts) -> Result<()> {
             && last_claims.elapsed() >= claim_every
         {
             last_claims = std::time::Instant::now();
-            if let Some(b) = store::all_messages(&root).ok().and_then(|all| crate::claimed::idle_block(&all, &me, claim_every)) {
-                let mut out = std::io::stdout().lock();
-                let _ = write!(out, "{b}");
-                let _ = out.flush();
-            }
+            crate::claimed::remind(&root, &me, claim_every);
         }
 
         // (Version-drift awareness is emitted above as a single ONE-shot text-mode stdout line per
@@ -663,24 +663,30 @@ pub fn run(opts: WatchOpts) -> Result<()> {
                     poll_secs: opts.poll_secs,
                     build: Some(crate::my_build().pin_string()),
                 };
-                if let Err(e) = crate::presence::publish(&root, &p) {
-                    if last_heartbeat.is_none() {
-                        crate::warn_safety(format!(
-                            "presence publish failed ({e}); peers will see you as stale"
-                        ));
-                    }
-                }
+                crate::presence::publish_detached(root.clone(), p, last_heartbeat.is_none());
                 last_heartbeat = Some(std::time::Instant::now());
             }
         }
 
-        match rx.recv_timeout(wait) {
-            Ok(_) => {
-                while rx.try_recv().is_ok() {}
-                std::thread::sleep(Duration::from_millis(300));
+        // Slices, because an idle wait can outlast the lock's staleness window.
+        let until = std::time::Instant::now() + wait;
+        woken = false;
+        while !woken {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(wait),
+            match rx.recv_timeout(left.min(Duration::from_secs(20))) {
+                Ok(_) => {
+                    while rx.try_recv().is_ok() {}
+                    std::thread::sleep(Duration::from_millis(300));
+                    woken = true;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let _ = lock.heartbeat();
+                }
+                Err(RecvTimeoutError::Disconnected) => std::thread::sleep(left),
+            }
         }
     }
 }

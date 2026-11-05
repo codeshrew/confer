@@ -745,8 +745,51 @@ fn integrate_inner(root: &Path) -> std::result::Result<SyncResult, Stall> {
 
 /// `integrate`, in two steps, for the watch: it fetches, compares [`ref_state`], and reconciles only
 /// when something moved.
-pub fn fetch(root: &Path, deadline: std::time::Instant) -> bool {
-    fetch_unlocked(root, deadline)
+pub fn fetch(root: &Path, hub: &str, deadline: std::time::Instant) -> bool {
+    let ok = fetch_unlocked(root, deadline);
+    if let (true, Some(path), Some(tip)) = (ok, fetch_record(hub), origin_tip(root)) {
+        let now = chrono::Utc::now().timestamp();
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+        if std::fs::write(&tmp, format!("{tip} {now}")).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+    ok
+}
+
+/// A watcher on this machine fetched this hub within `within`, and this clone already has what it
+/// found. Each role has its own clone, so four roles on one hub fetched it four times over; now one
+/// fetches and the others follow only when the tip moves. A record that is missing, old or names
+/// another tip means fetch.
+pub fn fetched_elsewhere(root: &Path, hub: &str, within: Duration) -> bool {
+    let record = fetch_record(hub).and_then(|p| std::fs::read_to_string(p).ok());
+    match (record, origin_tip(root)) {
+        (Some(r), Some(tip)) => fetch_is_fresh(&r, &tip, within, chrono::Utc::now().timestamp()),
+        _ => false,
+    }
+}
+
+fn fetch_is_fresh(record: &str, tip: &str, within: Duration, now: i64) -> bool {
+    let Some((sha, at)) = record.trim().split_once(' ') else { return false };
+    let Ok(at) = at.parse::<i64>() else { return false };
+    sha == tip && (0..within.as_secs() as i64).contains(&(now - at))
+}
+
+fn fetch_record(hub: &str) -> Option<PathBuf> {
+    Some(crate::config::home().ok()?.join(".confer").join("fetched").join(hub))
+}
+
+/// The hub's `main` as this clone last saw it, read from disk.
+fn origin_tip(root: &Path) -> Option<String> {
+    let git = root.join(".git");
+    if let Ok(s) = std::fs::read_to_string(git.join("refs/remotes/origin/main")) {
+        return Some(s.trim().to_string());
+    }
+    let packed = std::fs::read_to_string(git.join("packed-refs")).ok()?;
+    packed
+        .lines()
+        .find_map(|l| l.strip_suffix(" refs/remotes/origin/main").map(str::to_string))
 }
 pub fn integrate_fetched(root: &Path, fetched: bool, deadline: std::time::Instant) -> Result<SyncResult> {
     reconcile_after_fetch(root, fetched, deadline).map_err(|s| anyhow!("{}", s.msg()))
@@ -1060,6 +1103,16 @@ mod tests {
             files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn a_fetch_record_only_counts_while_fresh_and_at_this_tip() {
+        let w = Duration::from_secs(10);
+        assert!(fetch_is_fresh("abc 100", "abc", w, 105));
+        assert!(!fetch_is_fresh("abc 100", "abc", w, 110), "too old");
+        assert!(!fetch_is_fresh("abc 100", "def", w, 105), "the tip moved: this clone must fetch");
+        assert!(!fetch_is_fresh("abc 100", "abc", w, 90), "a clock that went backwards proves nothing");
+        assert!(!fetch_is_fresh("garbage", "abc", w, 105));
     }
 
     #[test]

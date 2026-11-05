@@ -99,6 +99,25 @@ pub fn publish(root: &Path, p: &Presence) -> Result<()> {
     Ok(())
 }
 
+/// `publish`, off the caller's thread. The watch loop refreshes its lock between polls, so a push
+/// stalled for the full git timeout looked like a dead watcher: the plugin restarted it, and the
+/// new one's first push stalled too. Skips this beat if the last one is still running.
+pub fn publish_detached(root: std::path::PathBuf, p: Presence, warn: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(e) = publish(&root, &p) {
+            if warn {
+                crate::warn_safety(format!("presence publish failed ({e}); peers will see you as stale"));
+            }
+        }
+        BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
 /// The sha `refname` resolves to locally, if any.
 fn verify_ref(root: &Path, refname: &str) -> Option<String> {
     let o = gitcmd::output(root, &["rev-parse", "-q", "--verify", refname]).ok()?;

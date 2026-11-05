@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.45
 
-*Fewer process launches, after an exec storm on a busy Mac.*
+*Far fewer process launches, after an exec storm on a busy Mac.*
 
 - **A watcher with nothing new to do now only fetches.** On macOS every process launch costs a
   Gatekeeper and privacy check, and on a machine with 11 watchers and several busy agents those
@@ -14,6 +14,17 @@
   `--replace` ask the kernel instead.
 - **Plugin readers no longer run `git config` for every hub every 5 seconds** to work out a label.
 - **`git fetch` no longer starts `git maintenance` on every poll.** Watchers run it every 6 hours.
+- **A watcher polls slower while nothing is happening,** up to 6 times its `--poll` interval (60
+  seconds by default), and goes back to full speed after any activity. A peer on the same machine
+  still wakes it at once. A peer on another machine can now take up to a minute to arrive on an
+  idle hub.
+- **Roles sharing a hub on one machine share the fetching.** While another watcher here fetched
+  recently and this clone already has the tip it found, a watcher skips its own fetch.
+- **A slow status update no longer stalls a watcher.** Presence pushes now run off the watch loop.
+  One stuck for 60 seconds on a slow connection used to stop the watcher refreshing its lock, so
+  the plugin restarted it as dead.
+- **The skills gave a flag `confer note` does not have:** they now say `confer append --type note
+  --reply-to <id>`.
 
 ## 0.8.44
 

@@ -84,9 +84,19 @@ pub(crate) fn line(c: &Claim) -> String {
     )
 }
 
-/// The watch's periodic reminder: claims with no word from `me` for at least `idle`, or None.
-/// A claim being worked on usually gets a note, so only forgotten-looking ones wake the agent.
-pub(crate) fn idle_block(msgs: &[Message], me: &str, idle: std::time::Duration) -> Option<String> {
+/// Print the watch's periodic reminder, if there is anything to remind about.
+pub(crate) fn remind(root: &std::path::Path, me: &str, idle: std::time::Duration) {
+    use std::io::Write;
+    if let Some(b) = crate::store::all_messages(root).ok().and_then(|all| idle_block(&all, me, idle)) {
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{b}");
+        let _ = out.flush();
+    }
+}
+
+/// Claims with no word from `me` for at least `idle`, or None. A claim being worked on usually gets
+/// a note, so only forgotten-looking ones wake the agent.
+fn idle_block(msgs: &[Message], me: &str, idle: std::time::Duration) -> Option<String> {
     let claims = mine(msgs, me, Utc::now());
     let idle_secs = i64::try_from(idle.as_secs()).unwrap_or(i64::MAX);
     let quiet: Vec<&Claim> = claims.iter().filter(|c| c.idle_secs >= idle_secs).collect();
